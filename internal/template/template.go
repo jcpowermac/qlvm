@@ -107,6 +107,10 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 		if err := o.Bake(dir); err != nil {
 			return nil, fmt.Errorf("bake %s: %w", dir, err)
 		}
+		// Bake may have persisted an enriched META; keep it as-is.
+		if baked, err := LoadMeta(dir); err == nil && baked.Digest == digest {
+			return baked, nil
+		}
 	}
 	if err := t.SaveMeta(dir); err != nil {
 		return nil, err

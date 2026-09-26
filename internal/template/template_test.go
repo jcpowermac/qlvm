@@ -128,6 +128,38 @@ func TestEnsureAdoptsUnprocessedTemplate(t *testing.T) {
 	assert.Equal(t, testDigest, tpl.Digest)
 }
 
+func TestEnsurePreservesBakeEnrichedMeta(t *testing.T) {
+	root := t.TempDir()
+	wantDir := DirFor(root, slugFromRef(testRef), testDigest)
+	p := &fakePodman{digest: testDigest}
+	tpl, err := Ensure(context.Background(), p, EnsureOpts{
+		Root: root,
+		Ref:  testRef,
+		Log:  io.Discard,
+		Bake: func(dir string) error {
+			return (&Template{
+				Dir:        dir,
+				Image:      testRef,
+				Digest:     testDigest,
+				KernelVer:  "6.12.9",
+				RootDev:    "UUID=bake1234",
+				RootFlags:  "subvol=root",
+				OstreePath: "/ostree/boot.1/ns-os-bolt/commit1/0",
+			}).SaveMeta(dir)
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "UUID=bake1234", tpl.RootDev, "Ensure must return the bake-enriched template")
+	assert.Equal(t, "6.12.9", tpl.KernelVer)
+	assert.Equal(t, "subvol=root", tpl.RootFlags)
+	assert.Equal(t, "/ostree/boot.1/ns-os-bolt/commit1/0", tpl.OstreePath)
+
+	loaded, err := LoadMeta(wantDir) // #nosec G304 -- internal template dir
+	require.NoError(t, err)
+	assert.Equal(t, "UUID=bake1234", loaded.RootDev, "on-disk META must retain bake fields")
+	assert.Equal(t, tpl, loaded)
+}
+
 func TestMetaRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	orig := &Template{
