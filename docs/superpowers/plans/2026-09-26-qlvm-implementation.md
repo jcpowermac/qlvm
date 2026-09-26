@@ -88,7 +88,7 @@ git add -A && git commit -m "feat: module scaffold + config package"
 
 - [ ] **Step 1: Write the failing test**
 
-`TestHostIPMAC`: work domain (`10.100.1`), existing=0 → `10.100.1.10`, `02:00:00:00:00:0a`; existing=9 → `.19`/`...:00:13`; existing=205 → hostnum 215 → `10.100.1.215`, `02:00:00:00:01:07`.
+`TestHostIPMAC`: work domain (`10.100.1`), existing=0 → `10.100.1.10`, `02:00:00:00:00:0a`; existing=9 → `.19`/`...:00:13`; existing=205 → hostnum 215 → `10.100.1.215`, `02:00:00:00:00:d7`. (Ruling 2026-09-26: original `01:07` vector was an arithmetic typo; formula authoritative.)
 
 - [ ] **Step 2: Verify failure** — `go test ./internal/vm/ -run TestHostIPMAC` — FAIL undefined.
 
