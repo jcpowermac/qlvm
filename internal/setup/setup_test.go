@@ -219,9 +219,10 @@ func TestInstallTwiceIsNoOp(t *testing.T) {
 	r.seq = nil
 	require.NoError(t, Run(context.Background(), p, cfg, Options{}))
 
-	// Reconciler Apply is the idempotency mechanism: called once per run;
-	// the real implementations make no mutations when converged, so run 2
-	// may add no mutation calls anywhere.
+	// Ruling R5 (ratified 2026-09-26): run 2 must make zero MUTATION calls;
+	// one Apply call per run is expected because Run is stateless and Apply
+	// is the diff mechanism (zero mutations when converged is the
+	// reconcilers' job).
 	assert.Equal(t, 1, *ovsApply-ovsRun1, "run 2 made OVS Apply calls: %v", r.seq)
 	assert.Equal(t, 1, *ovnApply-ovnRun1, "run 2 made OVN Apply calls: %v", r.seq)
 	assert.Equal(t, 0, *fwMut-fwRun1, "run 2 made firewalld mutation calls: %v", r.seq)

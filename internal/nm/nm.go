@@ -199,7 +199,6 @@ func (s *systemConn) connPath(conName string) (dbus.ObjectPath, error) {
 	return "", fmt.Errorf("connection %q not found", conName)
 }
 
-// connID reads the connection.id setting of a Settings.Connection object.
 // ConnZone reads connection.zone on the named connection ("" when unset).
 func (s *systemConn) ConnZone(conName string) (string, error) {
 	p, err := s.connPath(conName)
@@ -222,6 +221,7 @@ func (s *systemConn) ConnZone(conName string) (string, error) {
 	return z, nil
 }
 
+// connID reads the connection.id setting of a Settings.Connection object.
 func (s *systemConn) connID(p dbus.ObjectPath) (string, error) {
 	var settings map[string]map[string]dbus.Variant
 	if err := s.bus.Object(nmService, p).Call(nmConnIface+".GetSettings", 0).Store(&settings); err != nil {
