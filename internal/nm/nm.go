@@ -37,6 +37,7 @@ type Conn interface {
 	ConNames() ([]string, error)
 	AddConnection(spec map[string]map[string]any) error
 	SetConnectionValue(conName, key, value string) error
+	ConnZone(conName string) (string, error)
 	Activate(conName, dev string) error
 	Deactivate(conName string) error
 }
@@ -44,10 +45,24 @@ type Conn interface {
 // Manager drives NetworkManager toward the configured OVS topology.
 type Manager struct {
 	conn Conn
+	// NICEnslaved reports whether a dom0 device already has a kernel
+	// master (e.g. enslaved to the OVS bridge); injected for tests,
+	// defaulting to /sys/class/net/<dev>/master lookup.
+	NICEnslaved func(dev string) bool
 }
 
 // New wraps a NetworkManager Conn.
-func New(c Conn) *Manager { return &Manager{conn: c} }
+func New(c Conn) *Manager {
+	return &Manager{conn: c, NICEnslaved: sysNICEnslaved}
+}
+
+// sysNICEnslaved reports whether dev has a kernel master; enslavement
+// survives NM deactivation, so it is the durable "already migrated"
+// marker.
+func sysNICEnslaved(dev string) bool {
+	_, err := os.Readlink("/sys/class/net/" + dev + "/master")
+	return err == nil
+}
 
 // NewSystem wires Manager to the live NetworkManager on the system bus.
 func NewSystem() (*Manager, error) {
@@ -120,19 +135,30 @@ func (m *Manager) SetZone(ctx context.Context, conName, zone string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	cur, err := m.conn.ConnZone(conName)
+	if err != nil {
+		return err
+	}
+	if cur == zone {
+		return nil
+	}
 	return m.conn.SetConnectionValue(conName, "zone", zone)
 }
 
 // MigrateNIC moves the dom0 NIC from its own connection into the OVS
 // topology. It refuses while inside an SSH session unless allowSSH is set
 // (re-run with --skip-nic-migration), since the NIC's deactivation would
-// drop the session.
+// drop the session. It is a no-op when the NIC already has a kernel
+// master, so install can be re-run at will.
 func (m *Manager) MigrateNIC(ctx context.Context, cfg *config.Config, allowSSH bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if os.Getenv("SSH_CONNECTION") != "" && !allowSSH {
 		return fmt.Errorf("refusing to migrate %s during an SSH session (it would drop this session); re-run with --skip-nic-migration", cfg.Network.NIC)
+	}
+	if m.NICEnslaved(cfg.Network.NIC) {
+		return nil
 	}
 	if err := m.conn.Activate(OVSBridge, OVSBridge); err != nil {
 		return err
@@ -174,6 +200,28 @@ func (s *systemConn) connPath(conName string) (dbus.ObjectPath, error) {
 }
 
 // connID reads the connection.id setting of a Settings.Connection object.
+// ConnZone reads connection.zone on the named connection ("" when unset).
+func (s *systemConn) ConnZone(conName string) (string, error) {
+	p, err := s.connPath(conName)
+	if err != nil {
+		return "", err
+	}
+	var settings map[string]map[string]dbus.Variant
+	if err := s.bus.Object(nmService, p).Call(nmConnIface+".GetSettings", 0).Store(&settings); err != nil {
+		return "", err
+	}
+	conn, ok := settings["connection"]
+	if !ok {
+		return "", fmt.Errorf("connection %q has no connection setting", conName)
+	}
+	v, ok := conn["zone"]
+	if !ok {
+		return "", nil
+	}
+	z, _ := v.Value().(string)
+	return z, nil
+}
+
 func (s *systemConn) connID(p dbus.ObjectPath) (string, error) {
 	var settings map[string]map[string]dbus.Variant
 	if err := s.bus.Object(nmService, p).Call(nmConnIface+".GetSettings", 0).Store(&settings); err != nil {
