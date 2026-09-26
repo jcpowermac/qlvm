@@ -167,11 +167,14 @@ type partMount struct {
 	cleanup func()
 }
 
-// findParts mounts each partition (ro as given), classifies it, and returns
-// the kept mounts. Non-matching partitions are umounted as they are probed;
-// when wantBoot is false the scan stops once the root is found. Every mount
-// is umounted before a failure is returned.
-func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, tag string) (root, boot partMount, rootPart, bootPart string, err error) {
+// findParts mounts each partition (ro as given, fstype from the caller),
+// classifies it, and returns the kept mounts. Non-matching partitions are
+// umounted as they are probed; when wantBoot is false the scan stops once
+// the root is found. Every mount is umounted before a failure is returned.
+func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstype, tag string) (root, boot partMount, rootPart, bootPart string, err error) {
+	if err := ctx.Err(); err != nil {
+		return partMount{}, partMount{}, "", "", err
+	}
 	var kept []partMount
 	release := func() {
 		for _, m := range kept {
@@ -180,7 +183,7 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, tag s
 		}
 		kept = nil
 	}
-	for _, part := range fs.Partitions(loop) {
+	for _, part := range fs.Partitions(ctx, loop) {
 		if err := ctx.Err(); err != nil {
 			release()
 			return partMount{}, partMount{}, "", "", err
@@ -191,7 +194,7 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, tag s
 			return partMount{}, partMount{}, "", "", err
 		}
 		dev := "/dev/" + part
-		if err := fs.Mount(dev, target, ro); err != nil {
+		if err := fs.Mount(dev, target, fstype, ro); err != nil {
 			cleanup()
 			release()
 			return partMount{}, partMount{}, "", "", fmt.Errorf("%s %s: %w", tag, dev, err)
@@ -252,30 +255,6 @@ func bootKernel(bootTarget string, fs FS) (ver, kernelRel, initramfsRel string, 
 	return ver, kernelRel, filepath.Join("ostree", osidDirs[0], want), nil
 }
 
-// mountedFSType reports the template RootFlags for a mounted root: btrfs
-// needs subvol=root (template.Template contract), anything else is "".
-func mountedFSType(target string, fs FS) (string, error) {
-	data, err := fs.ReadFile("/proc/self/mountinfo")
-	if err != nil {
-		return "", fmt.Errorf("read mountinfo: %w", err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 10 || f[4] != target {
-			continue
-		}
-		for i := 5; i+3 <= len(f); i++ {
-			if f[i] == "-" {
-				if f[i+1] == "btrfs" {
-					return "subvol=root", nil
-				}
-				return "", nil
-			}
-		}
-	}
-	return "", fmt.Errorf("mountinfo: no entry for %s", target)
-}
-
 // loopOf maps a partition node name (loop0p2) to its loop node name (loop0).
 func loopOf(part string) string {
 	return part[:strings.LastIndex(part, "p")]
@@ -310,7 +289,10 @@ func writeLine(fs FS, path, line string, mode os.FileMode) error {
 
 // maskResolvedUnit masks systemd-resolved in the deployment /etc overlay —
 // the one "unit" the brief leaves unnamed (supervisor ruling 2026-09-26):
-// the per-VM 10-bolt.network owns the static address and DNS.
+// the per-VM 10-bolt.network owns the static address and DNS. etc is under a
+// real loop-mount mountpoint, so direct os use is intentional: the FS seam
+// carries the loop/mount surface and overlay file writes, but there is no
+// approved Symlink method (supervisor: no other FS methods).
 func maskResolvedUnit(etc string) error {
 	dir := filepath.Join(etc, "systemd", "system")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -339,8 +321,9 @@ func dirDigest(dir string) (string, error) {
 }
 
 // saveMeta persists the enriched template META in dir. The digest comes from
-// the DirFor dir name (see dirDigest); a pre-existing META contributes Image,
-// which the DirFor name cannot carry.
+// the DirFor dir name (see dirDigest). Image is inherited from any
+// pre-existing META in dir — including a stale-digest META left by the
+// superseded build it replaces — because the DirFor name cannot carry it.
 func saveMeta(dir, kernelVer, rootDev, rootFlags, opath string) error {
 	digest, err := dirDigest(dir)
 	if err != nil {
@@ -361,14 +344,18 @@ func saveMeta(dir, kernelVer, rootDev, rootFlags, opath string) error {
 }
 
 // BakeTemplate prepares the adopted template raw image in dir (Task 7
-// EnsureOpts.Bake): loop-attach, find the ostree root and /boot partitions
-// (mounted read-only), copy vmlinuz+initramfs into dir, write the VM
-// identity and the systemd-resolved mask into the deployment /etc overlay,
-// and persist the enriched template META. Every loop device and mount is
-// released on every exit path.
-func BakeTemplate(ctx context.Context, fs FS, dir string) error {
+// EnsureOpts.Bake): loop-attach, probe the partitions read-only to find the
+// ostree root and /boot, copy vmlinuz+initramfs into dir, remount the root
+// partition rw for the deployment-tree writes (VM identity +
+// systemd-resolved mask), and persist the enriched template META. fstype is
+// supplied by the wiring layer (image-builder's --bootc-default-fs). Every
+// loop device and mount is released on every exit path.
+func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if fstype == "" {
+		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
 	}
 	disk := filepath.Join(dir, "template.raw")
 	loop, err := fs.LoopAttach(disk)
@@ -377,13 +364,31 @@ func BakeTemplate(ctx context.Context, fs FS, dir string) error {
 	}
 	defer func() { _ = fs.LoopDetach(loop) }()
 
-	root, boot, rootPart, _, err := findParts(ctx, fs, loop, true, true, "mount")
+	root, boot, rootPart, _, err := findParts(ctx, fs, loop, true, true, fstype, "mount")
 	if err != nil {
 		return err
 	}
+
+	// Probes are read-only; the deployment-tree writes need the root rw. Umount
+	// the ro probe and remount the same partition rw (review ruling).
+	_ = fs.Umount(root.target)
+	root.cleanup()
+
+	rwTarget, rwCleanup, err := mountTarget()
+	if err != nil {
+		_ = fs.Umount(boot.target)
+		boot.cleanup()
+		return err
+	}
+	if err := fs.Mount("/dev/"+rootPart, rwTarget, fstype, false); err != nil {
+		rwCleanup()
+		_ = fs.Umount(boot.target)
+		boot.cleanup()
+		return fmt.Errorf("mount rw /dev/%s: %w", rootPart, err)
+	}
 	defer func() {
-		_ = fs.Umount(root.target)
-		root.cleanup()
+		_ = fs.Umount(rwTarget)
+		rwCleanup()
 		_ = fs.Umount(boot.target)
 		boot.cleanup()
 	}()
@@ -403,16 +408,16 @@ func BakeTemplate(ctx context.Context, fs FS, dir string) error {
 	if err != nil {
 		return fmt.Errorf("root partuuid of %s: %w", rootPart, err)
 	}
-	rootFlags, err := mountedFSType(root.target, fs)
-	if err != nil {
-		return err
+	rootFlags := ""
+	if fstype == "btrfs" {
+		rootFlags = "subvol=root" // template.Template contract
 	}
-	opath, osid, commit, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
+	opath, osid, commit, err := ostreePath(filepath.Join(rwTarget, "ostree"), fs)
 	if err != nil {
 		return err
 	}
 
-	etc := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", commit+".0", "etc")
+	etc := filepath.Join(rwTarget, "ostree", "deploy", osid, "deploy", commit+".0", "etc")
 	if err := writeIdentity(fs, etc); err != nil {
 		return err
 	}
@@ -424,12 +429,15 @@ func BakeTemplate(ctx context.Context, fs FS, dir string) error {
 
 // BakeNetworkd writes the per-VM systemd-networkd config into the deployment
 // /etc overlay of a template copy at diskPath: loop-attach, mount the root
-// partition rw (via the FS mounter), write 10-bolt.network, umount, detach.
-// An rw mount failure on a shared template image risks a dirty journal, so
-// the error points at xfs_repair -L.
-func BakeNetworkd(ctx context.Context, fs FS, diskPath, ip, gw, mac, dns string) error {
+// partition rw (via the FS mounter, fstype from the wiring layer), write
+// 10-bolt.network, umount, detach. An rw mount failure on a shared template
+// image risks a dirty journal, so the error points at xfs_repair -L.
+func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns string) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if fstype == "" {
+		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
 	}
 	loop, err := fs.LoopAttach(diskPath)
 	if err != nil {
@@ -437,7 +445,7 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, ip, gw, mac, dns string)
 	}
 	defer func() { _ = fs.LoopDetach(loop) }()
 
-	root, _, _, _, err := findParts(ctx, fs, loop, false, false,
+	root, _, _, _, err := findParts(ctx, fs, loop, false, false, fstype,
 		"mount rw (if the filesystem is damaged run xfs_repair -L on a copy of the image and retry)")
 	if err != nil {
 		return err
@@ -452,6 +460,8 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, ip, gw, mac, dns string)
 		return err
 	}
 	dir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", commit+".0", "etc", "systemd", "network")
+	// root.target is a real loop-mount mountpoint: direct os.MkdirAll is
+	// intentional (directory creation has no FS seam method).
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}

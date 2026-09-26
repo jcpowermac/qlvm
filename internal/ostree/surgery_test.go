@@ -3,7 +3,6 @@ package ostree
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,7 +31,6 @@ type fakeFS struct {
 	partRoots map[string]string
 	dirs      map[string][]string
 	files     map[string][]byte
-	fstype    string
 
 	mountErr error
 	copyErr  error
@@ -51,8 +49,8 @@ type fakeFS struct {
 type linkRec struct{ path, target string }
 
 type mountCall struct {
-	dev, target string
-	ro          bool
+	dev, target, fstype string
+	ro                  bool
 }
 
 type copyCall struct{ src, dst string }
@@ -69,7 +67,6 @@ func newFakeFS() *fakeFS {
 		partRoots: map[string]string{},
 		dirs:      map[string][]string{},
 		files:     map[string][]byte{},
-		fstype:    "xfs",
 	}
 }
 
@@ -106,8 +103,8 @@ func (f *fakeFS) LoopDetach(dev string) error {
 	return nil
 }
 
-func (f *fakeFS) Mount(dev, target string, ro bool) error {
-	f.mounts = append(f.mounts, mountCall{dev: dev, target: target, ro: ro})
+func (f *fakeFS) Mount(dev, target, fstype string, ro bool) error {
+	f.mounts = append(f.mounts, mountCall{dev: dev, target: target, fstype: fstype, ro: ro})
 	if f.targets == nil {
 		f.targets = map[string]string{}
 	}
@@ -130,7 +127,12 @@ func (f *fakeFS) Umount(target string) error {
 	return nil
 }
 
-func (f *fakeFS) Partitions(loop string) []string { return f.parts[loop] }
+func (f *fakeFS) Partitions(ctx context.Context, loop string) []string {
+	if err := ctx.Err(); err != nil {
+		return nil // honor cancellation like the real sysfs poller
+	}
+	return f.parts[loop]
+}
 
 func (f *fakeFS) ReadDir(p string) ([]string, error) {
 	c, ok := f.key(p)
@@ -141,13 +143,6 @@ func (f *fakeFS) ReadDir(p string) ([]string, error) {
 }
 
 func (f *fakeFS) ReadFile(p string) ([]byte, error) {
-	if p == "/proc/self/mountinfo" {
-		var b strings.Builder
-		for dev, target := range f.targets {
-			fmt.Fprintf(&b, "10 9 0:31 / %s rw - %s %s rw\n", target, f.fstype, dev)
-		}
-		return []byte(b.String()), nil
-	}
 	c, ok := f.key(p)
 	if !ok {
 		return nil, &os.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
@@ -248,12 +243,11 @@ func TestLessV(t *testing.T) {
 }
 
 // bakeFS fakes a template disk: loop0p1 is /boot, loop0p2 is the ostree root.
-func bakeFS(fstype string) *fakeFS {
+func bakeFS() *fakeFS {
 	f := newFakeFS()
 	f.loops = []string{"/dev/loop0"}
 	f.parts["/dev/loop0"] = []string{"loop0p1", "loop0p2"}
 	f.partRoots = map[string]string{"loop0p1": "b", "loop0p2": "r"}
-	f.fstype = fstype
 	f.dirs = map[string][]string{
 		"b":                          {"ostree"},
 		"b/ostree":                   {"os1"},
@@ -290,8 +284,8 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			dir := template.DirFor(t.TempDir(), testSlug, testDigest)
 			require.NoError(t, os.MkdirAll(dir, 0o750))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
-			f := bakeFS(tc.fstype)
-			require.NoError(t, BakeTemplate(context.Background(), f, dir))
+			f := bakeFS()
+			require.NoError(t, BakeTemplate(context.Background(), f, dir, tc.fstype))
 
 			tpl, err := template.LoadMeta(dir)
 			require.NoError(t, err)
@@ -334,12 +328,21 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			}
 			assert.True(t, sawMask, "resolved mask symlink must exist in the deployment etc overlay")
 
-			require.Len(t, f.mounts, 2)
+			// probes are ro; the deployment-tree writes need exactly one rw
+			// remount of the root partition.
+			require.Len(t, f.mounts, 3, "two ro probes + one rw root remount")
+			var rw int
 			for _, m := range f.mounts {
-				assert.True(t, m.ro, "template bake mounts partitions read-only")
+				assert.Equal(t, tc.fstype, m.fstype, "every mount must carry the fstype")
+				if m.ro {
+					continue
+				}
+				assert.Equal(t, "/dev/loop0p2", m.dev, "the rw remount must target the root partition")
+				rw++
 			}
+			assert.Equal(t, 1, rw, "exactly one rw mount")
 			assert.Equal(t, []string{"/dev/loop0"}, f.detached, "loop must be detached")
-			assert.Len(t, f.umounted, 2, "every mount must be umounted")
+			assert.Len(t, f.umounted, 3, "every mount must be umounted, including the ro probe")
 		})
 	}
 }
@@ -348,9 +351,9 @@ func TestBakeTemplateCleanupOnFailure(t *testing.T) {
 	dir := template.DirFor(t.TempDir(), testSlug, testDigest)
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
-	f := bakeFS("xfs")
+	f := bakeFS()
 	f.copyErr = errors.New("no space left on device")
-	err := BakeTemplate(context.Background(), f, dir)
+	err := BakeTemplate(context.Background(), f, dir, "xfs")
 	require.Error(t, err)
 	assert.Equal(t, []string{"/dev/loop0"}, f.detached, "loop must be detached on failure")
 	assert.Equal(t, len(f.mounts), len(f.umounted), "every mount must be umounted on failure")
@@ -376,12 +379,13 @@ func TestBakeNetworkd(t *testing.T) {
 	disk := filepath.Join(t.TempDir(), "disk.img")
 	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
 	f := networkdFS()
-	require.NoError(t, BakeNetworkd(context.Background(), f, disk,
+	require.NoError(t, BakeNetworkd(context.Background(), f, disk, "xfs",
 		"10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1"))
 
 	assert.Equal(t, []string{disk}, f.attached, "the VM disk image must be the loop backing file")
 	require.Len(t, f.mounts, 1)
 	assert.Equal(t, "/dev/loop3p1", f.mounts[0].dev)
+	assert.Equal(t, "xfs", f.mounts[0].fstype, "mount must carry the fstype")
 	assert.False(t, f.mounts[0].ro, "networkd bake mounts the root rw")
 	require.Len(t, f.wrote, 1)
 	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/network/10-bolt.network", f.wrote[0].path)
@@ -391,12 +395,19 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Len(t, f.umounted, 1)
 }
 
+func TestPartitionsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fs := NewFS(nil)
+	assert.Empty(t, fs.Partitions(ctx, "/dev/loop999"), "cancelled context must end the sysfs poll immediately")
+}
+
 func TestBakeNetworkdMountFailure(t *testing.T) {
 	disk := filepath.Join(t.TempDir(), "disk.img")
 	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
 	f := networkdFS()
 	f.mountErr = &os.SyscallError{Syscall: "mount", Err: unix.EBUSY}
-	err := BakeNetworkd(context.Background(), f, disk,
+	err := BakeNetworkd(context.Background(), f, disk, "xfs",
 		"10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "xfs_repair -L", "mount failure must point at repair")

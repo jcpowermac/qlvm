@@ -1,6 +1,7 @@
 package ostree
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -17,12 +18,14 @@ import (
 // substitute a recording fake. ReadFile/WriteFile were added beyond the
 // original brief sketch (supervisor ruling 2026-09-26): the surgery needs
 // sysfs partition UUIDs and must write into the deployment /etc overlay.
+// Mount takes an fstype (mount(2) EINVALs on an empty fstype; the wiring
+// layer knows the image's fs from image-builder, no superblock probing).
 type FS interface {
 	LoopAttach(path string) (loop string, err error)
 	LoopDetach(dev string) error
-	Mount(dev, target string, ro bool) error
+	Mount(dev, target, fstype string, ro bool) error
 	Umount(target string) error
-	Partitions(loop string) []string
+	Partitions(ctx context.Context, loop string) []string
 	ReadDir(p string) ([]string, error)
 	ReadFile(p string) ([]byte, error)
 	WriteFile(p string, data []byte, mode os.FileMode) error
@@ -31,7 +34,7 @@ type FS interface {
 
 // Mounter is the mount(2) surface of sys, injectable so the rw ("dirty log")
 // mount path stays unit-testable.
-type Mounter func(dev, target string, ro bool) error
+type Mounter func(dev, target, fstype string, ro bool) error
 
 // NewFS returns the real FS. A nil mounter uses unix.Mount.
 func NewFS(mount Mounter) FS {
@@ -41,12 +44,12 @@ func NewFS(mount Mounter) FS {
 	return &sys{mount: mount}
 }
 
-func unixMount(dev, target string, ro bool) error {
+func unixMount(dev, target, fstype string, ro bool) error {
 	flags := uintptr(0)
 	if ro {
 		flags |= unix.MS_RDONLY
 	}
-	return unix.Mount(dev, target, "", flags, "")
+	return unix.Mount(dev, target, fstype, flags, "")
 }
 
 type sys struct {
@@ -113,7 +116,9 @@ func (s *sys) LoopDetach(dev string) error {
 	return nil
 }
 
-func (s *sys) Mount(dev, target string, ro bool) error { return s.mount(dev, target, ro) }
+func (s *sys) Mount(dev, target, fstype string, ro bool) error {
+	return s.mount(dev, target, fstype, ro)
+}
 
 func (s *sys) Umount(target string) error { return unix.Unmount(target, 0) }
 
@@ -123,11 +128,14 @@ func (s *sys) Umount(target string) error { return unix.Unmount(target, 0) }
 //
 // ponytail: 50ms sysfs poll; fine at template-bake cadence, no udev socket
 // watch unless bakes become interactive.
-func (s *sys) Partitions(loop string) []string {
+func (s *sys) Partitions(ctx context.Context, loop string) []string {
 	name := strings.TrimPrefix(loop, "/dev/")
 	base := filepath.Join("/sys", "class", "block", name)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil // caller cancelled: stop polling, let the error propagate
+		}
 		entries, err := os.ReadDir(base) // #nosec G304 -- kernel-generated sysfs path
 		if err == nil {
 			var names []string
