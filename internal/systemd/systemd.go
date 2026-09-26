@@ -5,7 +5,7 @@ package systemd
 
 import (
 	"context"
-	"strings"
+	"errors"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -26,6 +26,8 @@ type Conn interface {
 	// "static", "disabled").
 	UnitFileState(unit string) (string, error)
 	StartUnit(unit string) error
+	// EnableUnit enables the unit's unit file (wraps Manager.EnableUnitFiles
+	// on live systemd, where the EnableUnit alias is gone).
 	EnableUnit(unit string) error
 }
 
@@ -75,22 +77,31 @@ type sessionConn struct {
 	bus *dbus.Conn
 }
 
-// unitPath encodes a unit name per systemd: each '.' becomes "_2d".
-func unitPath(unit string) dbus.ObjectPath {
-	return dbus.ObjectPath(sdObject + "/" + strings.ReplaceAll(unit, ".", "_2d"))
-}
-
 func (s *sessionConn) UnitActive(unit string) (string, error) {
+	var p dbus.ObjectPath
+	if err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
+		Call(sdService+".Manager.GetUnit", 0, unit).Store(&p); err != nil {
+		// Live systemd raises NoSuchUnit for units that are not loaded; older
+		// versions return an empty path. Either way the unit cannot be active.
+		var de *dbus.Error
+		if errors.As(err, &de) && de.Name == sdService+".NoSuchUnit" {
+			return "inactive", nil
+		}
+		return "", err
+	}
+	if p == "" {
+		return "inactive", nil
+	}
 	var state string
-	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
-		Call(sdService+".Manager.GetUnitActiveState", 0, unit).Store(&state)
+	err := s.bus.Object(propsIface, p).
+		Call(propsIface+".Get", 0, sdService+".Unit", "ActiveState").Store(&state)
 	return state, err
 }
 
 func (s *sessionConn) UnitFileState(unit string) (string, error) {
 	var state string
-	err := s.bus.Object(propsIface, unitPath(unit)).
-		Call(propsIface+".Get", 0, sdService+".Unit", "UnitFileState").Store(&state)
+	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
+		Call(sdService+".Manager.GetUnitFileState", 0, unit).Store(&state)
 	return state, err
 }
 
@@ -102,8 +113,9 @@ func (s *sessionConn) StartUnit(unit string) error {
 }
 
 func (s *sessionConn) EnableUnit(unit string) error {
-	var links []dbus.ObjectPath
-	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
-		Call(sdService+".Manager.EnableUnit", 0, []string{unit}, false).Store(&links)
-	return err
+	// Live systemd here exposes Manager.EnableUnitFiles(as bb) -> a(boss);
+	// the old EnableUnit alias and its a(bo) shape are gone, so the symlink
+	// result is dropped via Call.Err.
+	return s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
+		Call(sdService+".Manager.EnableUnitFiles", 0, []string{unit}, false, false).Err
 }

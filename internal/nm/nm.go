@@ -1,6 +1,9 @@
 // Package nm manages dom0 NetworkManager connections over D-Bus. Production
-// code dials the system bus directly; tests supply a fake Conn recording
-// the exact method calls.
+// code dials the system bus directly against the NM 1.56 API (verified live
+// on this dom0: the connection CRUD API moved to the
+// org.freedesktop.NetworkManager.Settings interface on
+// /org/freedesktop/NetworkManager/Settings); tests supply a fake Conn
+// recording the exact method calls.
 package nm
 
 import (
@@ -12,18 +15,24 @@ import (
 	"github.com/jcpowermac/qlvm/internal/config"
 )
 
-// NetworkManager D-Bus API constants.
+// NetworkManager 1.56 D-Bus API constants.
 const (
-	nmService  = "org.freedesktop.NetworkManager"
-	nmObject   = "/org/freedesktop/NetworkManager"
-	propsIface = "org.freedesktop.DBus.Properties"
+	nmService        = "org.freedesktop.NetworkManager"
+	nmObject         = "/org/freedesktop/NetworkManager"
+	nmSettingsIface  = nmService + ".Settings"
+	nmSettingsObject = nmObject + "/Settings"
+	nmConnIface      = nmService + ".Settings.Connection"
+	nmActiveIface    = nmService + ".Connection.Active"
+	propsIface       = "org.freedesktop.DBus.Properties"
 
 	// OVSBridge is the dom0 OVS bridge connection name.
 	OVSBridge = "br-ex"
 )
 
-// Conn is the narrow NetworkManager surface Manager uses. Method names
-// follow the NM D-Bus methods they wrap.
+// Conn is the narrow NetworkManager 1.56 surface Manager uses. Method names
+// follow the live D-Bus methods they wrap (Settings.ListConnections /
+// Settings.AddConnection / Settings.Connection.Update / ActivateConnection /
+// DeactivateConnection).
 type Conn interface {
 	ConNames() ([]string, error)
 	AddConnection(spec map[string]map[string]any) error
@@ -49,35 +58,32 @@ func NewSystem() (*Manager, error) {
 	return New(&systemConn{bus: bus}), nil
 }
 
-// ovsSpecs is the NM connection set for the OVS topology: br-ex
-// (ovs-bridge), br-ex-port, br-ex-iface (ovs-interface, ipv4 auto),
-// <nic>-port, and <nic>-ovs (ethernet slave).
+// ovsSpecs is the NM connection set for the OVS topology. The shape is the
+// one proven on this dom0 (observed via NM D-Bus, 2026-09-26): br-ex is a
+// plain ovs-bridge carrying the LAN IP (ipv4 auto), ports use the ovs-port
+// type as ovs-bridge slaves, and the leaves are ovs-interface — internal
+// for br-ex-iface, system (with an ethernet slave) for the NIC.
 func ovsSpecs(cfg *config.Config) []map[string]map[string]any {
 	nic := cfg.Network.NIC
 	return []map[string]map[string]any{
 		{
-			"connection": {"id": OVSBridge, "type": "bridge"},
-			"ipv4":       {"method": "link-local"},
-			"ipv6":       {"method": "ignore"},
-			"ovs-bridge": {},
-		},
-		{
-			"connection": {"id": OVSBridge + "-port", "type": "ovs-interface"},
-			"ipv4":       {"method": "link-local"},
-			"ipv6":       {"method": "ignore"},
-		},
-		{
-			"connection": {"id": OVSBridge + "-iface", "type": "ovs-interface"},
+			"connection": {"id": OVSBridge, "type": "ovs-bridge", "interface-name": OVSBridge},
 			"ipv4":       {"method": "auto"},
-			"ipv6":       {"method": "ignore"},
+			"ipv6":       {"method": "auto"},
 		},
 		{
-			"connection": {"id": nic + "-port", "type": "ovs-interface"},
-			"ipv4":       {"method": "link-local"},
-			"ipv6":       {"method": "ignore"},
+			"connection": {"id": OVSBridge + "-port", "type": "ovs-port", "slave-type": "ovs-bridge", "master": OVSBridge, "interface-name": OVSBridge + "-port"},
 		},
 		{
-			"connection": {"id": nic + "-ovs", "type": "ethernet", "master": OVSBridge, "slave-type": "ovs-interface"},
+			"connection":    {"id": OVSBridge + "-iface", "type": "ovs-interface", "slave-type": "ovs-port", "master": OVSBridge + "-port", "interface-name": OVSBridge + "-iface"},
+			"ovs-interface": {"type": "internal"},
+		},
+		{
+			"connection": {"id": nic + "-port", "type": "ovs-port", "slave-type": "ovs-bridge", "master": OVSBridge, "interface-name": nic + "-port"},
+		},
+		{
+			"connection":    {"id": nic + "-ovs", "type": "ethernet", "slave-type": "ovs-port", "master": nic + "-port", "interface-name": nic},
+			"ovs-interface": {"type": "system"},
 		},
 	}
 }
@@ -141,6 +147,10 @@ type systemConn struct {
 
 func (s *systemConn) root() dbus.BusObject { return s.bus.Object(nmService, dbus.ObjectPath(nmObject)) }
 
+func (s *systemConn) settings() dbus.BusObject {
+	return s.bus.Object(nmService, dbus.ObjectPath(nmSettingsObject))
+}
+
 func (s *systemConn) propGet(p dbus.ObjectPath, iface, name string, dest any) error {
 	return s.bus.Object(propsIface, p).Call(propsIface+".Get", 0, iface, name).Store(dest)
 }
@@ -148,12 +158,12 @@ func (s *systemConn) propGet(p dbus.ObjectPath, iface, name string, dest any) er
 // connPath resolves a con-name to its NMConnection object path.
 func (s *systemConn) connPath(conName string) (dbus.ObjectPath, error) {
 	var paths []dbus.ObjectPath
-	if err := s.root().Call(nmService+".ListConnections", 0).Store(&paths); err != nil {
+	if err := s.settings().Call(nmSettingsIface+".ListConnections", 0).Store(&paths); err != nil {
 		return "", err
 	}
 	for _, p := range paths {
-		var id string
-		if err := s.propGet(p, nmService+".Connection", "connection.id", &id); err != nil {
+		id, err := s.connID(p)
+		if err != nil {
 			return "", err
 		}
 		if id == conName {
@@ -163,33 +173,32 @@ func (s *systemConn) connPath(conName string) (dbus.ObjectPath, error) {
 	return "", fmt.Errorf("connection %q not found", conName)
 }
 
-// devicePath resolves a kernel device name to its NMDevice object path.
-func (s *systemConn) devicePath(dev string) (dbus.ObjectPath, error) {
-	var paths []dbus.ObjectPath
-	if err := s.root().Call(nmService+".GetDevices", 0).Store(&paths); err != nil {
+// connID reads the connection.id setting of a Settings.Connection object.
+func (s *systemConn) connID(p dbus.ObjectPath) (string, error) {
+	var settings map[string]map[string]dbus.Variant
+	if err := s.bus.Object(nmService, p).Call(nmConnIface+".GetSettings", 0).Store(&settings); err != nil {
 		return "", err
 	}
-	for _, p := range paths {
-		var iface string
-		if err := s.propGet(p, nmService+".Device", "Interface", &iface); err != nil {
-			return "", err
-		}
-		if iface == dev {
-			return p, nil
-		}
+	conn, ok := settings["connection"]
+	if !ok {
+		return "", fmt.Errorf("connection object %s has no connection setting", p)
 	}
-	return "", fmt.Errorf("device %q not found", dev)
+	id, ok := conn["id"].Value().(string)
+	if !ok {
+		return "", fmt.Errorf("connection object %s has no id", p)
+	}
+	return id, nil
 }
 
 func (s *systemConn) ConNames() ([]string, error) {
 	var paths []dbus.ObjectPath
-	if err := s.root().Call(nmService+".ListConnections", 0).Store(&paths); err != nil {
+	if err := s.settings().Call(nmSettingsIface+".ListConnections", 0).Store(&paths); err != nil {
 		return nil, err
 	}
 	names := make([]string, 0, len(paths))
 	for _, p := range paths {
-		var id string
-		if err := s.propGet(p, nmService+".Connection", "connection.id", &id); err != nil {
+		id, err := s.connID(p)
+		if err != nil {
 			return nil, err
 		}
 		names = append(names, id)
@@ -207,7 +216,7 @@ func (s *systemConn) AddConnection(spec map[string]map[string]any) error {
 		av[setting] = dbus.MakeVariant(d)
 	}
 	var p dbus.ObjectPath
-	return s.root().Call(nmService+".AddConnection", 0, av).Store(&p)
+	return s.settings().Call(nmSettingsIface+".AddConnection", 0, av).Store(&p)
 }
 
 func (s *systemConn) SetConnectionValue(conName, key, value string) error {
@@ -215,9 +224,12 @@ func (s *systemConn) SetConnectionValue(conName, key, value string) error {
 	if err != nil {
 		return err
 	}
-	update := map[string]dbus.Variant{key: dbus.MakeVariant(value)}
-	err = s.bus.Object(nmService, p).Call(nmService+".Connection.UpdateConnection", 0, update, true).Store()
-	return err
+	// NM's Update takes a{sa{sv}} keyed by setting name; zone is a property
+	// of the connection setting.
+	update := map[string]dbus.Variant{
+		"connection": dbus.MakeVariant(map[string]dbus.Variant{key: dbus.MakeVariant(value)}),
+	}
+	return s.bus.Object(nmService, p).Call(nmConnIface+".Update", 0, update).Store()
 }
 
 func (s *systemConn) Activate(conName, dev string) error {
@@ -225,8 +237,8 @@ func (s *systemConn) Activate(conName, dev string) error {
 	if err != nil {
 		return err
 	}
-	devP, err := s.devicePath(dev)
-	if err != nil {
+	var devP dbus.ObjectPath
+	if err := s.root().Call(nmService+".GetDeviceByIpIface", 0, dev).Store(&devP); err != nil {
 		return err
 	}
 	var p dbus.ObjectPath
@@ -239,18 +251,18 @@ func (s *systemConn) Deactivate(conName string) error {
 		return err
 	}
 	var actives []dbus.ObjectPath
-	if err := s.root().Call(nmService+".ListActiveConnections", 0).Store(&actives); err != nil {
+	if err := s.propGet(dbus.ObjectPath(nmObject), nmService, "ActiveConnections", &actives); err != nil {
 		return err
 	}
 	for _, a := range actives {
 		var activeConn dbus.ObjectPath
-		if err := s.propGet(a, nmService+".Connection.Active", "connection", &activeConn); err != nil {
+		if err := s.propGet(a, nmActiveIface, "Connection", &activeConn); err != nil {
 			return err
 		}
 		if activeConn != connP {
 			continue
 		}
-		return s.bus.Object(nmService, a).Call(nmService+".Connection.Active.Deactivate", 0).Store()
+		return s.root().Call(nmService+".DeactivateConnection", 0, a).Store()
 	}
 	return fmt.Errorf("connection %q is not active", conName)
 }

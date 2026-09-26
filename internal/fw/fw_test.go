@@ -3,6 +3,7 @@ package fw
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -10,78 +11,65 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeConn mimics firewalld server state so a second Ensure observes
-// what the first call created.
+// fakeConn mimics firewalld 2.4 config-manager state so a second Ensure
+// observes what the first call created.
 type fakeConn struct {
-	calls        []string
-	zoneExists   bool
-	sshAdded     bool
-	policyExists bool
-	rules        map[string]bool
+	calls    []string
+	zones    map[string]string // name -> object path
+	services map[string]bool   // zonePath+":"+svc
+	policies map[string]string // name -> object path
+	rules    map[string][]string
+}
+
+func newFake() *fakeConn {
+	return &fakeConn{
+		zones:    map[string]string{},
+		services: map[string]bool{},
+		policies: map[string]string{},
+		rules:    map[string][]string{},
+	}
 }
 
 func (f *fakeConn) log(name string) { f.calls = append(f.calls, name) }
 
-func (f *fakeConn) ZoneExists(zone string) (bool, error) {
-	f.log("ZoneExists:" + zone)
-	return f.zoneExists, nil
+func (f *fakeConn) ZoneByName(zone string) (string, error) {
+	f.log("ZoneByName:" + zone)
+	return f.zones[zone], nil
 }
-func (f *fakeConn) NewZone(zone string) error {
-	f.log("NewZone:" + zone)
-	f.zoneExists = true
+func (f *fakeConn) AddZone(zone string) (string, error) {
+	f.log("AddZone:" + zone)
+	f.zones[zone] = "zone:" + zone
+	return f.zones[zone], nil
+}
+func (f *fakeConn) ZoneQueryService(zonePath, svc string) (bool, error) {
+	f.log("ZoneQueryService:" + zonePath + ":" + svc)
+	return f.services[zonePath+":"+svc], nil
+}
+func (f *fakeConn) ZoneAddService(zonePath, svc string) error {
+	f.log("ZoneAddService:" + zonePath + ":" + svc)
+	f.services[zonePath+":"+svc] = true
 	return nil
 }
-func (f *fakeConn) ZoneHasService(zone, svc string) (bool, error) {
-	f.log("ZoneHasService:" + zone + ":" + svc)
-	return f.sshAdded, nil
+func (f *fakeConn) PolicyByName(name string) (string, error) {
+	f.log("PolicyByName:" + name)
+	return f.policies[name], nil
 }
-func (f *fakeConn) ZoneAddService(zone, svc string) error {
-	f.log("ZoneAddService:" + zone + ":" + svc)
-	f.sshAdded = true
+func (f *fakeConn) AddPolicy(name, target string, priority int32, ingressZones, egressZones []string) (string, error) {
+	f.log("AddPolicy:" + name + ":" + target + ":" + strconv.Itoa(int(priority)) + ":" +
+		strings.Join(ingressZones, ",") + ":" + strings.Join(egressZones, ","))
+	f.policies[name] = "policy:" + name
+	return f.policies[name], nil
+}
+func (f *fakeConn) PolicyRichRules(policyPath string) ([]string, error) {
+	f.log("PolicyRichRules:" + policyPath)
+	return f.rules[policyPath], nil
+}
+func (f *fakeConn) PolicySetRichRules(policyPath string, rules []string) error {
+	f.log("PolicySetRichRules:" + policyPath + ":" + strings.Join(rules, "|"))
+	f.rules[policyPath] = rules
 	return nil
 }
 func (f *fakeConn) Reload() error { f.log("Reload"); return nil }
-func (f *fakeConn) PolicyExists(name string) (bool, error) {
-	f.log("PolicyExists:" + name)
-	return f.policyExists, nil
-}
-func (f *fakeConn) NewPolicy(name string) error {
-	f.log("NewPolicy:" + name)
-	f.policyExists = true
-	return nil
-}
-func (f *fakeConn) PolicySetTarget(name, target string) error {
-	f.log("PolicySetTarget:" + name + ":" + target)
-	return nil
-}
-func (f *fakeConn) PolicySetPriority(name string, priority int32) error {
-	f.log("PolicySetPriority:" + name + ":" + strconv.Itoa(int(priority)))
-	return nil
-}
-func (f *fakeConn) PolicyAddIngressZone(name, zone string) error {
-	f.log("PolicyAddIngressZone:" + name + ":" + zone)
-	return nil
-}
-func (f *fakeConn) PolicyAddEgressZone(name, zone string) error {
-	f.log("PolicyAddEgressZone:" + name + ":" + zone)
-	return nil
-}
-func (f *fakeConn) PolicyAddRichRule(_, rule string) error {
-	f.log("PolicyAddRichRule:" + rule)
-	if f.rules == nil {
-		f.rules = map[string]bool{}
-	}
-	f.rules[rule] = true
-	return nil
-}
-func (f *fakeConn) PolicyRichRules(name string) ([]string, error) {
-	f.log("PolicyRichRules:" + name)
-	var out []string
-	for r := range f.rules {
-		out = append(out, r)
-	}
-	return out, nil
-}
 
 func testConfig() *config.Config {
 	return &config.Config{
@@ -122,38 +110,29 @@ func TestEgressRules(t *testing.T) {
 }
 
 func TestEnsureIdempotent(t *testing.T) {
-	f := &fakeConn{}
+	f := newFake()
 	m := New(f)
 	require.NoError(t, m.Ensure(context.Background(), testConfig()))
 	want := []string{
-		"ZoneExists:dom0",
-		"NewZone:dom0",
-		"ZoneHasService:dom0:ssh",
-		"ZoneAddService:dom0:ssh",
-		"PolicyExists:dom0-egress",
-		"NewPolicy:dom0-egress",
-		"PolicySetTarget:dom0-egress:DROP",
-		"PolicySetPriority:dom0-egress:100",
-		"PolicyAddIngressZone:dom0-egress:host",
-		"PolicyAddEgressZone:dom0-egress:any",
-		"PolicyRichRules:dom0-egress",
-		`PolicyAddRichRule:rule family="ipv4" port port="53" protocol="udp" accept`,
-		`PolicyAddRichRule:rule family="ipv4" port port="53" protocol="tcp" accept`,
-		`PolicyAddRichRule:rule family="ipv4" port port="443" protocol="tcp" accept`,
-		`PolicyAddRichRule:rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept`,
-		`PolicyAddRichRule:rule family="ipv4" protocol value="icmp" accept`,
-		`PolicyAddRichRule:rule family="ipv4" port port="8080" protocol="tcp" accept`,
+		"ZoneByName:dom0",
+		"AddZone:dom0",
+		"ZoneQueryService:zone:dom0:ssh",
+		"ZoneAddService:zone:dom0:ssh",
+		"PolicyByName:dom0-egress",
+		"AddPolicy:dom0-egress:DROP:100:host:any",
+		"PolicyRichRules:policy:dom0-egress",
+		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
 		"Reload",
 	}
 	assert.Equal(t, want, f.calls)
 
 	f.calls = nil
 	require.NoError(t, m.Ensure(context.Background(), testConfig()))
-	// Second Ensure: queries only, nothing created.
+	// Second Ensure: lookups only, nothing created, no reload.
 	assert.Equal(t, []string{
-		"ZoneExists:dom0",
-		"ZoneHasService:dom0:ssh",
-		"PolicyExists:dom0-egress",
-		"PolicyRichRules:dom0-egress",
+		"ZoneByName:dom0",
+		"ZoneQueryService:zone:dom0:ssh",
+		"PolicyByName:dom0-egress",
+		"PolicyRichRules:policy:dom0-egress",
 	}, f.calls)
 }
