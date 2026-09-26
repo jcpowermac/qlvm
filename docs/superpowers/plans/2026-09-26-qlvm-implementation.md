@@ -34,8 +34,10 @@
 ### Task 1: Module scaffold + `internal/config`
 
 **Files:**
-- Create: `go.mod`, `Makefile`, `.golangci.yml`, `README.md` (stub), `cmd/qlvm/main.go`
+- Create: `go.mod`, `Makefile`, `.golangci.yml`, `README.md` (stub), `cmd/qlvm/main.go`, `internal/cli/root.go`
 - Create: `internal/config/config.go`, `internal/config/config_test.go`, `internal/config/fixture.toml` (testdata)
+
+**Ruling (controller):** the cobra root lives in `internal/cli/root.go` as `func NewRootCmd() *cobra.Command` (name `qlvm`, short `Qubes-like VM isolation on dom0`); `cmd/qlvm/main.go` only calls it. Every later task's `internal/cli/*.go` file registers its command via `init() { NewRootCmd().AddCommand(...) }` — no later task edits root.go.
 
 **Interfaces:**
 - Produces:
@@ -230,7 +232,8 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Podman interface { Pull(ctx, ref string) (digest string, err error); InspectDigest(ctx, ref string) (string, error); RunImageBuilder(ctx, workdir, ref string, errStream io.Writer) error }`
   - `type Template struct { Dir, Image, Digest, KernelVer, RootDev, RootFlags, OstreePath string }` // RootDev e.g. `UUID=<uuid>`, RootFlags `subvol=root` for btrfs else "", OstreePath e.g. `/ostree/boot.1/<osid>/<commit>/0`
   - `func DirFor(root, slug, digest string) string` // `<root>/templates/<slug>-<digest>` (slug = image ref lowercased, `/`→`-`, registry host dropped)
-  - `func Ensure(ctx context.Context, p Podman, tplRoot, ref string, log io.Writer) (*Template, error)` // pull → digest → if `DirFor` exists with readable META → return; else run image-builder in `DirFor`, adopt `<dir>/*.raw` as `template.raw`; boot-asset extraction + baking is Task 8's `Bake` (Ensure calls `Bake` — inject via `EnsureOpts{ Bake func(dir string) error }` so this task's tests fake it)
+  - `type EnsureOpts struct { Root, Ref string; Log io.Writer; Bake func(dir string) error }`
+  - `func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error)` // pull → digest → if `DirFor` exists with readable META → return; else run image-builder in `DirFor`, adopt `<dir>/*.raw` as `template.raw`, then call `o.Bake(dir)` (inject so this task's tests fake Task 8)
   - `func LoadMeta(dir string) (*Template, error)` / `func (t *Template) SaveMeta(dir string) error` // `META` file, TOML
 
 - [ ] **Step 1: Write the failing tests**
@@ -259,7 +262,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 **Interfaces:**
 - Consumes: Task 7 `template.Template`.
 - Produces:
-  - `type FS interface { LoopAttach(path string) (loop string, err error); LoopDetach(dev string) error; Mount(dev, target string, ro bool) error; Umount(target string) error; Partitions(loop string) (names []string); FileExists(p string) bool; ReadDir(p string) ([]string, error); StatSize... }` — the narrow file/loop/mount surface used by surgery, default impl via `x/sys/unix` (loop ioctls `LOOP_CTL_GET_FREE`/`LOOP_SET_STATUS`, `unix.Mount/Unmount`, sysfs for partition UUID/type).
+  - `type FS interface { LoopAttach(path string) (loop string, err error); LoopDetach(dev string) error; Mount(dev, target string, ro bool) error; Umount(target string) error; Partitions(loop string) (names []string); ReadDir(p string) ([]string, error); CopyFile(src, dst string) (n int, err error) }` — the narrow file/loop/mount surface used by surgery, default impl via `x/sys/unix` (loop ioctls `LOOP_CTL_GET_FREE`/`LOOP_SET_STATUS`, `unix.Mount/Unmount`, sysfs for partition UUID/type).
   - `type Mounter func(dev, target string, ro bool) error` — injected so the dirty-log path is unit-testable.
   - `func BakeTemplate(ctx, fs FS, dir string) error` // ensureTemplate post-build: find ostree root part (dir containing `/ostree/repo`), find /boot part (contains `ostree/*/vmlinuz-*`), copy vmlinuz+initramfs to `dir/`, compute Template fields (KernelVer, RootDev from sysfs uuid, RootFlags, OstreePath = first `ostree/boot.*` sorted -V + osid + commit + `/0`), write identity+units into deployment tree (`<root>/ostree/deploy/<osid>/deploy/<commit>.0/etc/…`), SaveMeta.
   - `func BakeNetworkd(ctx, fs FS, diskPath, ip, gw, mac, dns string) error` // per-VM: loop-attach, mount root rw (via Mounter), write `<depTree>/etc/systemd/network/10-bolt.network` (golden content: `[Match] MACAddress`, `[Network] Address ip/24 Gateway DNS Domains=~.`), umount, detach.
@@ -296,7 +299,8 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Meta struct { Name, Type, Image, Digest, Domain, IP, MAC string; MemoryMB, VCPUs int; Mounts []Mount; Uuid string; Created time.Time }`
   - `type Mount struct { Host, Guest string }` // p9: Host path on dom0, Guest tag
   - `func LoadMeta(vmDir string) (*Meta, error)` / `func (m *Meta) Save(vmDir string) error` // `meta.toml`
-  - `type CreateDeps struct { OVN *ovn.Reconciler; Tpl *template.Template; FS ostree.FS; Mounter ostree.Mounter; Reflink func(dst, src string) error }`
+  - `type OVNPorter interface { AddLSPort(ctx context.Context, sw, name, mac, ip string) error; DelLSPort(ctx context.Context, name string) error }` // `*ovn.Reconciler` satisfies it
+  - `type CreateDeps struct { OVN OVNPorter; Tpl *template.Template; FS ostree.FS; Mounter ostree.Mounter; Reflink func(dst, src string) error }`
   - `func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*Meta, error)`
   - `type Spec struct { Name, Domain, Type, Image string; MemoryMB, VCPUs int; Mounts []Mount }` // zero MemoryMB/VCPUs → defaults from cfg per Type
   - `func DomainConfig(m *Meta, tpl *template.Template) *xenlight.DomainConfig` // **pure, golden-tested** (xenlight = `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight`, package `xenlight`): Type PVH, Name, Uuid (parsed from m), Kernel `tpl.Dir/vmlinuz`, Ramdisk `tpl.Dir/initramfs`, Extra `[root=<RootDev> <RootFlags> ostree=<OstreePath> systemd.default-target=multi-user.target console=hvc0]`, MaxVcpus, TargetMemkb, Disks [{PdevPath `<vmDir>/disk.img`, Vdev `xvda`, Format Raw, Readwrite 1}], Nics [{Mac, Script `vif-ovn`, Nictype Vif}], P9S [{Tag m, Guest…, Path mount.Host, SecurityModel `none`, Type Xen9Pfsd}]
@@ -316,7 +320,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 - [ ] **Step 3: Implement** (create ordering per spec §6; cleanup on failure = delete OVN port; `Uuid` = random, persisted in Meta).
 
-- [ ] **Step 4: Verify pass** — `go test ./internal/vm/... ./internal/mounts/...` — PASS.
+- [ ] **Step 4: Verify pass** — `go test ./internal/vm/... ./internal/mounts/...` — PASS. NOTE: `internal/vm` now imports xenlight (cgo) via `DomainConfig`; that file MUST be behind the `//go:build libxl` tag with a `//go:build !libxl` stub `DomainConfig` returning a clear error, so default `go test ./...` passes without libxl headers (controller ruling, Task 10 carries the real file + tag convention).
 
 - [ ] **Step 5: Commit** — `git commit -am "feat: vm create (meta, reflink, domain config, ssh config)"`
 
@@ -333,15 +337,16 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Xen interface { CreateDomain(*xenlight.DomainConfig) error; Destroy(name string) error; Shutdown(name string) error; List() ([]DomainInfo, error); Running(name string) (bool, error) }`
   - `type DomainInfo struct { Name string; ID uint32; MemMB uint64; VCPUs uint8; State string }`
   - Real impl wraps `xenlight.NewContext()` (one Context per process; `defer Close`).
-  - `func Start(ctx, x Xen, ovs *ovs.Reconciler, m *Meta, tpl *template.Template) error` // error if Running; `StaleVifPorts` → `DelVifPort` each; then CreateDomain(DomainConfig(m, tpl))
-  - `func Delete(ctx, x Xen, ovs *ovn.Reconciler, ovsOvs *ovs.Reconciler, home string, vmDir, name string) error` // Destroy-if-running → DelLSPort → stale port cleanup → rm vmDir → RemoveSSHConfig (app only, read meta first)
+  - `type VifPorter interface { AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac string) error; DelVifPort(ctx context.Context, dev string) error; StaleVifPorts(ctx context.Context, ifaceID string) ([]string, error) }` // defined in internal/ovs, `*ovs.Reconciler` satisfies it; Task 14's vif consumes it too
+  - `func Start(ctx, x Xen, vp ovs.VifPorter, m *vm.Meta, tpl *template.Template) error` // error if Running; `StaleVifPorts` → `DelVifPort` each; then CreateDomain(vm.DomainConfig(m, tpl))
+  - `func Delete(ctx, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home string, vmDir, name string) error` // Destroy-if-running → DelLSPort → stale port cleanup → rm vmDir → RemoveSSHConfig (app only, read meta first)
   - `internal/cli`: `start`, `stop`, `kill`, `delete`, `list` cmds. `list` output columns: `NAME  TYPE  STATE  MEM  VCPUS` — running from `x.List()`, stopped from `meta.toml` scan under an "available" section.
 
 - [ ] **Step 1: Write the failing tests**
 
 - Fake Xen + fake OVS. `TestStartRefusesRunning`; Review Focus 1: `TestStartCleansStalePort` (StaleVifPorts returns `["vif3.0"]` → DelVifPort called with it before CreateDomain; then create called); `TestDeleteOrdering` (records: Destroy, DelLSPort, DirRemoved, SSHRemoved only when type=app); `TestListRows` (2 running + 1 stopped meta → exact output lines incl. `disposable` type column).
 
-- [ ] **Step 2: Verify failure** — FAIL undefined. Add the dep: `go get xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<latest xen tag sha>` — pin a release tag, never floating `master`; record the pinned ref in the commit message. cgo requires libxl headers (`libxl-devel`) — `make build` surfaces a clear error if absent.
+- [ ] **Step 2: Verify failure** — FAIL undefined. Add the dep: `go get xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<latest xen tag sha>` — pin a release tag, never floating `master`; record the pinned ref in the commit message. **Controller ruling (no libxl on this atomic host):** real xenlight impl goes in `internal/xenctl/xenctl_libxl.go` behind `//go:build libxl`; `internal/xenctl/xenctl_stub.go` behind `//go:build !libxl` returns error `qlvm built without Xen support — rebuild with -tags libxl (libxl-devel required)`. `Makefile` (update here): `LIBXL := $(shell pkg-config --exists libxl 2>/dev/null && echo 1)`, `GO_TAGS := $(if $(LIBXL),libxl,)`, all build/test targets pass `-tags $(GO_TAGS)`. Default `go test ./...` (no tag) must pass without libxl.
 
 - [ ] **Step 3: Implement.**
 
