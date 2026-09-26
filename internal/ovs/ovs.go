@@ -269,8 +269,11 @@ func (r *Reconciler) externalIDOps(uuid string, want map[string]string) ([]ovsdb
 	if !changed {
 		return nil, nil
 	}
-	ovsModel := &OpenVSwitch{UUID: uuid}
-	return r.client.Where(ovsModel).Update(ovsModel, merged)
+	// Update with no field args updates every non-default field of the
+	// model; the merged map must live on the model (Update's field args
+	// are pointers into it, resolved via ColumnByPtr).
+	ovsModel := &OpenVSwitch{UUID: uuid, ExternalIDs: merged}
+	return r.client.Where(ovsModel).Update(ovsModel)
 }
 
 // attachExistingRefs builds mutate-insert ops so existing bridges, ports
@@ -289,7 +292,12 @@ func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]s
 			if err != nil {
 				return nil, err
 			}
-			ops, err = appendRefs(ops, r.client, &Bridge{UUID: uuid}, &cur.Ports, v.Ports, cur.Ports, resolve)
+			// The mutation field pointer must point into the model being
+			// mutated: libovsdb resolves the column as the offset from that
+			// model's base (ColumnByPtr), so a pointer into the cache copy
+			// errors.
+			target := &Bridge{UUID: uuid}
+			ops, err = appendRefs(ops, r.client, target, &target.Ports, v.Ports, cur.Ports, resolve)
 			if err != nil {
 				return nil, err
 			}
@@ -298,7 +306,8 @@ func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]s
 			if err != nil {
 				return nil, err
 			}
-			ops, err = appendRefs(ops, r.client, &Port{UUID: uuid}, &cur.Interfaces, v.Interfaces, cur.Interfaces, resolve)
+			target := &Port{UUID: uuid}
+			ops, err = appendRefs(ops, r.client, target, &target.Interfaces, v.Interfaces, cur.Interfaces, resolve)
 			if err != nil {
 				return nil, err
 			}
@@ -307,7 +316,8 @@ func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]s
 			if err != nil {
 				return nil, err
 			}
-			ops, err = appendRefs(ops, r.client, &OpenVSwitch{UUID: uuid}, &cur.Bridges, v.Bridges, cur.Bridges, resolve)
+			target := &OpenVSwitch{UUID: uuid}
+			ops, err = appendRefs(ops, r.client, target, &target.Bridges, v.Bridges, cur.Bridges, resolve)
 			if err != nil {
 				return nil, err
 			}

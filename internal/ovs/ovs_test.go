@@ -221,3 +221,76 @@ func TestStaleVifPortsDefaultNetdevExists(t *testing.T) {
 	require.False(t, r.NetdevExists("definitely-not-a-device-0.0"))
 	require.True(t, r.NetdevExists("lo"))
 }
+
+// seedOVSRow inserts an Open_vSwitch row directly, simulating the row a
+// real dom0 already has (created by ovs-vsctl / other tooling) before
+// qlvm's first Apply.
+func seedOVSRow(t *testing.T, c client.Client, extIDs map[string]string) {
+	t.Helper()
+	ops, err := c.Create(&OpenVSwitch{ExternalIDs: extIDs})
+	require.NoError(t, err)
+	reply, err := c.Transact(context.Background(), ops...)
+	require.NoError(t, err)
+	_, err = ovsdb.CheckOperationResults(reply, ops)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return len(list[OpenVSwitch](t, c)) == 1
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// TestApplyConvergesPreexistingOVS covers the first Apply on a real dom0:
+// the Open_vSwitch row already exists with foreign external-ids keys and
+// no bridges. Apply must merge the OVN external-ids (CRITICAL 2: the
+// update op) and attach the new bridges to the existing row (CRITICAL 1:
+// the mutate field must resolve against the mutated model).
+func TestApplyConvergesPreexistingOVS(t *testing.T) {
+	c, teardown := newTestEnv(t)
+	defer teardown()
+	r := New(c)
+
+	seedOVSRow(t, c, map[string]string{"hostname": "dom0"})
+	require.NoError(t, r.Apply(context.Background(), "eth0"))
+
+	ovss := list[OpenVSwitch](t, c)
+	require.Len(t, ovss, 1)
+	require.Equal(t, map[string]string{
+		"hostname":            "dom0",
+		"ovn-bridge":          "br-int",
+		"ovn-remote":          "unix:/run/ovn/ovnsb_db.sock",
+		"ovn-encap-type":      "geneve",
+		"ovn-encap-ip":        "127.0.0.1",
+		"ovn-bridge-mappings": "provider:br-ex",
+	}, ovss[0].ExternalIDs)
+
+	want := []string{findBridge(t, c, "br-int").UUID, findBridge(t, c, "br-ex").UUID}
+	require.ElementsMatch(t, want, ovss[0].Bridges)
+}
+
+// TestApplyChangesNIC covers a NIC change after Apply: the new port is
+// created and must be attached to the existing br-ex (CRITICAL 1 mutate
+// path). Apply is additive by design; migrating away from the old NIC port
+// is the install CLI's job, not the reconciler's.
+func TestApplyChangesNIC(t *testing.T) {
+	c, teardown := newTestEnv(t)
+	defer teardown()
+	r := New(c)
+
+	ctx := context.Background()
+	require.NoError(t, r.Apply(ctx, "eth0"))
+	require.NoError(t, r.Apply(ctx, "eth1"))
+
+	brEx := findBridge(t, c, "br-ex")
+	var ports []Port
+	require.NoError(t, c.List(ctx, &ports))
+	byUUID := map[string]Port{}
+	for _, p := range ports {
+		byUUID[p.UUID] = p
+	}
+	portNames := []string{}
+	for _, u := range brEx.Ports {
+		portNames = append(portNames, byUUID[u].Name)
+	}
+	require.Subset(t, portNames, []string{"br-ex-iface", "eth1"})
+
+	require.Equal(t, "eth1", ifacesOf(t, c, findPort(t, c, "eth1"))[0].Name)
+}
