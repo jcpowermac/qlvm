@@ -469,6 +469,11 @@ func (r *Reconciler) indexExisting(ctx context.Context) (map[string]string, erro
 		return nil, err
 	}
 	for _, v := range acls {
+		// ACL.name is 0..1 in the schema; un-named ACLs (the
+		// ovn-nbctl acl-add default) are not qlvm rows and are ignored.
+		if v.Name == nil {
+			continue
+		}
 		have[identity(&v)] = v.UUID
 	}
 	var nats []LogicalRouterNAT

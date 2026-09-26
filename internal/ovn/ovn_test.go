@@ -269,6 +269,33 @@ func TestApplyRepairsMissingLRP(t *testing.T) {
 	require.Equal(t, 3, c.Cache().Table("Logical_Router_Port").Len())
 }
 
+func TestApplyIgnoresUnNamedACLs(t *testing.T) {
+	c, closeFn := newTestEnv(t)
+	defer closeFn()
+
+	// Seed an un-named ACL (as ovn-nbctl acl-add creates by default) on its
+	// own switch. Both rows go in one transaction because the server drops
+	// inserts that are not referenced in the same transaction. ACL.name is
+	// 0..1 in the schema; the reconciler must not panic on the un-named row.
+	aclOps, err := c.Create(&ACL{UUID: "q-seed-acl", Priority: 100, Direction: "from-lport", MatchExpression: "ip4", Action: "drop"})
+	require.NoError(t, err)
+	swOps, err := c.Create(&LogicalSwitch{UUID: "q-seed-sw", Name: "seedsw", Acls: []string{"q-seed-acl"}})
+	require.NoError(t, err)
+	reply, err := c.Transact(context.Background(), append(aclOps, swOps...)...)
+	require.NoError(t, err)
+	_, err = ovsdb.CheckOperationResults(reply, append(aclOps, swOps...))
+	require.NoError(t, err)
+	require.Equal(t, 1, c.Cache().Table("ACL").Len())
+
+	require.NoError(t, New(c).Apply(context.Background(), fixtureConfig()))
+
+	// qlvm's 4 ACLs added alongside the foreign un-named one; un-named rows
+	// are left untouched.
+	require.Equal(t, 5, c.Cache().Table("ACL").Len())
+	require.Equal(t, 4, c.Cache().Table("Logical_Switch").Len())
+	require.Equal(t, 3, c.Cache().Table("Logical_Router_Port").Len())
+}
+
 func findLRPUUID(t *testing.T, c client.Client, name string) string {
 	t.Helper()
 	for _, p := range countBy[LogicalRouterPort](t, c) {
