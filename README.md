@@ -33,7 +33,7 @@ sudo qlvm create work-1 --domain work --image quay.io/fedora/fedora:44
 sudo qlvm start work-1
 qlvm run work-1 xterm               # GUI via waypipe (dom0 Wayland session required)
 
-# 5. Provision it (packages + dotfiles from the layered provision dir)
+# 5. Provision it (dotfiles from the layered provision dir)
 qlvm provision work-1
 ```
 
@@ -53,7 +53,7 @@ config block).
 | `qlvm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
 | `qlvm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
 | `qlvm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
-| `qlvm provision <vm>` | Install the layered `packages.txt` (rpm-token whitelist, run in the VM over ssh + sftp) and sync the layered `dotfiles/`. `--packages-only`, `--dotfiles-only`, `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers) |
+| `qlvm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
 | `qlvm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
@@ -171,13 +171,13 @@ qlvm/
 │   ├── template/               # template ensure: podman pull, ostree bake
 │   ├── ostree/                 # template bake: loop/mount, partition discovery
 │   ├── vm/                     # create/start/stop/kill/delete/list, meta.toml
-│   ├── provisioner/            # provisioning: ssh sudo dnf (rpm-token whitelist)
+│   ├── provisioner/            # dotfile sync over sftp (Runner seam)
 │   │                           #   + sftp dotfile upload (Runner seam)
 │   ├── sshx/                   # x/crypto/ssh client (auth, wait, run, fetch)
 │   ├── apps/                   # desktop-file cache + rofi menu
 │   ├── mounts/                 # FICLONE reflink + p9 mount specs
 │   └── itest/                  # real-plane integration tests (build tag: integration)
-├── provision/base/             # default provision dir: packages.txt, dotfiles/
+├── provision/base/             # default provision dir: dotfiles/
 ├── docs/                       # hardening.md, ovn-gateway-runbook.md
 └── .github/workflows/ci.yml
 ```

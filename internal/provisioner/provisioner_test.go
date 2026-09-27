@@ -30,26 +30,6 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestParsePackages(t *testing.T) {
-	base := t.TempDir()
-	vmDir := t.TempDir()
-	writeTestFile(t, filepath.Join(base, "packages.txt"), "# base layer\nvim\n\nhtop\nvim\n")
-	writeTestFile(t, filepath.Join(vmDir, "packages.txt"), "# vm layer\nhtop\ncurl\n")
-
-	got := ParsePackages(base, vmDir)
-	want := []string{"vim", "htop", "curl"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePackages = %q, want %q", got, want)
-	}
-
-	// missing layer is skipped, not an error
-	got = ParsePackages(filepath.Join(base, "nope"), vmDir)
-	want = []string{"htop", "curl"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParsePackages(missing base) = %q, want %q", got, want)
-	}
-}
-
 func TestDotfileList(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, filepath.Join(dir, ".bashrc"), "x")
@@ -75,8 +55,8 @@ func TestDotfileList(t *testing.T) {
 	}
 }
 
-// provisionFixture lays out base + per-vm layers plus an ssh config entry
-// for the "vma" alias.
+// provisionFixture lays out base + per-vm dotfile layers plus an ssh config
+// entry for the "vma" alias.
 func provisionFixture(t *testing.T, withVMDir bool) (home, provisionDir string) {
 	t.Helper()
 	home = t.TempDir()
@@ -85,70 +65,45 @@ func provisionFixture(t *testing.T, withVMDir bool) (home, provisionDir string) 
 
 	provisionDir = t.TempDir()
 	base := filepath.Join(provisionDir, "base")
-	writeTestFile(t, filepath.Join(base, "packages.txt"), "vim\n\n# comment\nhtop\n")
 	writeTestFile(t, filepath.Join(base, "dotfiles", ".gitkeep"), "")
 	writeTestFile(t, filepath.Join(base, "dotfiles", ".bashrc"), "base-bashrc\n")
 	writeTestFile(t, filepath.Join(base, "dotfiles", ".config", "starship.toml"), "base-starship\n")
 	if withVMDir {
 		vmDir := filepath.Join(provisionDir, "vma")
-		writeTestFile(t, filepath.Join(vmDir, "packages.txt"), "curl\nvim\n")
 		writeTestFile(t, filepath.Join(vmDir, "dotfiles", ".bashrc"), "vm-bashrc\n")
 	}
 	return home, provisionDir
 }
 
-func TestProvisionModes(t *testing.T) {
+func TestProvisionDotfiles(t *testing.T) {
 	ctx := context.Background()
 	home, provisionDir := provisionFixture(t, true)
 
-	wantPkgs := []Op{{Kind: KindPkg, Pkgs: []string{"vim", "htop", "curl"}}}
 	wantFiles := []Op{
 		{Kind: KindFile, Path: ".bashrc", Data: []byte("vm-bashrc\n")}, // vm layer wins
 		{Kind: KindFile, Path: ".config/starship.toml", Data: []byte("base-starship\n")},
 	}
 
-	t.Run("packages", func(t *testing.T) {
+	t.Run("vm layer overrides base", func(t *testing.T) {
 		f := &fakeRunner{}
-		if err := Provision(ctx, f, home, "vma", provisionDir, ModePackages); err != nil {
+		if err := Provision(ctx, f, home, "vma", provisionDir); err != nil {
 			t.Fatal(err)
 		}
 		if !f.ran || f.host != "192.168.1.50" {
 			t.Fatalf("ran=%v host=%q, want ran with 192.168.1.50", f.ran, f.host)
-		}
-		if !reflect.DeepEqual(f.ops, wantPkgs) {
-			t.Fatalf("ops = %#v, want %#v", f.ops, wantPkgs)
-		}
-	})
-
-	t.Run("dotfiles", func(t *testing.T) {
-		f := &fakeRunner{}
-		if err := Provision(ctx, f, home, "vma", provisionDir, ModeDotfiles); err != nil {
-			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(f.ops, wantFiles) {
 			t.Fatalf("ops = %#v, want %#v", f.ops, wantFiles)
 		}
 	})
 
-	t.Run("all", func(t *testing.T) {
-		f := &fakeRunner{}
-		if err := Provision(ctx, f, home, "vma", provisionDir, ModeAll); err != nil {
-			t.Fatal(err)
-		}
-		want := append(append([]Op{}, wantPkgs...), wantFiles...)
-		if !reflect.DeepEqual(f.ops, want) {
-			t.Fatalf("ops = %#v, want %#v", f.ops, want)
-		}
-	})
-
 	t.Run("missing vm dir is base only", func(t *testing.T) {
 		_, provisionDir := provisionFixture(t, false)
 		f := &fakeRunner{}
-		if err := Provision(ctx, f, home, "vma", provisionDir, ModeAll); err != nil {
+		if err := Provision(ctx, f, home, "vma", provisionDir); err != nil {
 			t.Fatal(err)
 		}
 		want := []Op{
-			{Kind: KindPkg, Pkgs: []string{"vim", "htop"}},
 			{Kind: KindFile, Path: ".bashrc", Data: []byte("base-bashrc\n")},
 			{Kind: KindFile, Path: ".config/starship.toml", Data: []byte("base-starship\n")},
 		}
@@ -159,7 +114,7 @@ func TestProvisionModes(t *testing.T) {
 
 	t.Run("nothing to do skips the runner", func(t *testing.T) {
 		f := &fakeRunner{}
-		if err := Provision(ctx, f, home, "vma", t.TempDir(), ModeAll); err != nil {
+		if err := Provision(ctx, f, home, "vma", t.TempDir()); err != nil {
 			t.Fatal(err)
 		}
 		if f.ran {

@@ -59,7 +59,7 @@ qlvm kill <name>
 qlvm delete <name>
 qlvm list                                 # columns: name, type, state, mem, vcpus
 qlvm run <name> <app> [args...]           # waypipe ssh
-qlvm provision <name> [--packages-only|--dotfiles-only]
+qlvm provision <name> [--dir PATH]
 qlvm sync-kernel <name>
 qlvm apps [sync [vm]]                     # rofi launcher + desktop-file cache
 ```
@@ -235,16 +235,20 @@ will (TDD: integration test runs it twice).
 
 ## 8. `provision`
 
-Uses a config-management runner over SSH (the original Go config-management dependency was dropped during implementation; the real runner is `sudo dnf install -y` + sftp upload over sshx, behind a fakeable `Runner` seam — see Task 12 ruling):
+Syncs dotfiles into the VM's home over sftp, behind a fakeable `Runner` seam
+(the original Go config-management dependency was dropped during
+implementation; the real runner is a pkg/sftp upload over sshx — see Task 12
+ruling).
 
-- `--packages-only`: install packages listed in
-  `provision/base/packages.txt` + `provision/<vm>/packages.txt` (dnf on the
-  remote — remote package installs run through the remote shell, which is
-  provisioning, not dom0 control plane).
-- `--dotfiles-only`: rsync-style sync of `provision/base/dotfiles/` +
-  `provision/<vm>/dotfiles/` into the VM's home.
-- default: both. Repo ships a `provision/base/` scaffold (empty packages.txt,
-  example dotfiles layout).
+- Syncs `provision/base/dotfiles/` + `provision/<vm>/dotfiles/` into the VM
+  user's home (per-vm layer wins), over sftp with the path confined to the
+  home dir (absolute and `..` paths rejected).
+- `--dir PATH` (default `/etc/qvm/provision`). Repo ships a
+  `provision/base/` scaffold (example dotfiles layout).
+- **System packages are NOT provisioned**: the VM root is an ostree
+  deployment built from the bootc container image, and dnf is disabled on it.
+  The container image is the package manifest; extra system packages are
+  added by extending the image, not by provisioning.
 
 ## 9. `apps`
 
@@ -282,7 +286,7 @@ Installed at `/etc/xen/scripts/vif-ovn`; invoked by libxl with
 | firewalld | D-Bus `org.fedoraproject.Firewalld1` (godbus) |
 | NetworkManager | D-Bus API (godbus) |
 | container pull/run (image-builder) | podman Go client (unix socket) |
-| VM provisioning | `Runner` seam (real: sshx `sudo dnf install -y` + sftp) |
+| VM provisioning | `Runner` seam (real: sftp dotfile upload over sshx; system packages live in the bootc container image) |
 | low-level SSH (sync-kernel, apps, wait-for-ssh) | `golang.org/x/crypto/ssh` |
 | loop devices / mounts | `golang.org/x/sys/unix` (loop ioctls, `unix.Mount/Unmount`); partition UUIDs/types from sysfs |
 | NIC link up/down | hand-rolled raw netlink `RTM_NEWLINK` (`x/sys/unix`), in `qlvm-vif` (verified live on this dom0) |
@@ -338,7 +342,7 @@ qlvm/
 │   ├── apps/                 # desktop cache + rofi mode
 │   ├── mounts/               # FICLONE reflink + p9 spec
 │   └── xenstore/             # text-protocol client
-├── provision/base/           # packages.txt, dotfiles/ scaffold
+├── provision/base/           # dotfiles/ scaffold (system packages live in the container image)
 ├── docs/                     # hardening.md, ovn-gateway-runbook.md (sanitized)
 ├── .golangci.yml
 ├── Makefile

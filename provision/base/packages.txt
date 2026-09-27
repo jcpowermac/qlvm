@@ -1,3 +1,0 @@
-# Base packages, installed (via dnf) on every VM by `qlvm provision <vm>`.
-# One package per line. Lines starting with # and blank lines are ignored;
-# a provision/<vm>/packages.txt layer extends this list per VM.
