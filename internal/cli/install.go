@@ -58,7 +58,9 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 	if err != nil {
 		return nil, err
 	}
-	sdMgr, err := systemd.NewSession()
+	// install drives SYSTEM units (openvswitch, ovn-northd, ovn-controller):
+	// the system manager, not the user manager that runs the qlvm units.
+	sdMgr, err := systemd.NewSystem()
 	if err != nil {
 		return nil, err
 	}

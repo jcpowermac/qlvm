@@ -45,7 +45,7 @@ One creation flow, generalized from the former "bolt" throwaway-VM tool:
 
 ## 3. CLI surface
 
-Single binary `qlvm` (cobra), 9 subcommands, plus one small helper binary:
+Single binary `qlvm` (cobra), 11 subcommands, plus one small helper binary:
 
 ```
 qlvm install                              # idempotent dom0 orchestration
@@ -192,8 +192,9 @@ will (TDD: integration test runs it twice).
      repair, no exec.
 2. **VM state** —
    - look up domain in config → subnet/gateway; next host number =
-     existing ports on the switch (excluding `*to-gw`) + 10 →
-     `IP = <subnet>.<n>`, `MAC = 02:00:00:00:<hi>:<lo>`.
+     the max of the existing host numbers on the switch (excluding `*to-gw`)
+     + 1 — the first VM is hostnum 10 (a count would collide after a
+     delete) → `IP = <subnet>.<n>`, `MAC = 02:00:00:00:<hi>:<lo>`.
    - OVN: logical switch port `<name>` with addresses + port-security
      (`libovsdb`).
    - `vms/<name>/disk.img` = reflink clone of `template.raw` (`FICLONE`);
@@ -275,8 +276,8 @@ Installed at `/etc/xen/scripts/vif-ovn`; invoked by libxl with
 | Concern | Mechanism |
 |---|---|
 | Xen domain lifecycle | `xen-project/xen` `tools/golang/xenlight` (cgo/libxl, in-process; verified API: `DomainCreateNew` w/ PVH + kernel/ramdisk/extra/vcpus/memory, `DeviceDisk`, `DeviceNic` (mac+script), `DeviceP9`, `DomainDestroy`, `DomainShutdown`, `ListDomain`, `NameToDomid`) |
-| OVN topology | `ovn-kubernetes/libovsdb`, custom `OVN_Northbound` models, unix socket `/run/ovn/ovnnb_db.sock` |
-| OVS (br-int/br-ex, ports, encap) | `libovsdb`, OVSDB models, `/var/run/openvswitch/db.sock` |
+| OVN topology | `ovn-kubernetes/libovsdb`, custom `OVN_Northbound` models, dial `tcp:127.0.0.1:6640` (the ovn-northd OVSDB API; verified live on this dom0) |
+| OVS (br-int/br-ex, ports, encap) | `libovsdb`, OVSDB models, dial `tcp:127.0.0.1:6641` (verified live on this dom0) |
 | systemd services | D-Bus `org.freedesktop.systemd1` (godbus) |
 | firewalld | D-Bus `org.fedoraproject.Firewalld1` (godbus) |
 | NetworkManager | D-Bus API (godbus) |
@@ -284,7 +285,7 @@ Installed at `/etc/xen/scripts/vif-ovn`; invoked by libxl with
 | VM provisioning | `Runner` seam (real: sshx `sudo dnf install -y` + sftp) |
 | low-level SSH (sync-kernel, apps, wait-for-ssh) | `golang.org/x/crypto/ssh` |
 | loop devices / mounts | `golang.org/x/sys/unix` (loop ioctls, `unix.Mount/Unmount`); partition UUIDs/types from sysfs |
-| NIC link up/down | `vishvananda/netlink` |
+| NIC link up/down | hand-rolled raw netlink `RTM_NEWLINK` (`x/sys/unix`), in `qlvm-vif` (verified live on this dom0) |
 | GUI forwarding | `waypipe` binary (local exec, unavoidable) |
 | vif hotplug data | xenstore text-protocol client (~50 lines) |
 

@@ -319,14 +319,34 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			}
 			assert.True(t, sawShadow, "shadow entry must be written")
 
-			var sawMask bool
-			for _, l := range f.links {
-				if l.path == "ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/systemd-resolved.service" {
-					assert.Equal(t, "/dev/null", l.target, "resolved mask must point at /dev/null")
-					sawMask = true
+			var sawRundir bool
+			for _, w := range f.wrote {
+				if strings.HasSuffix(w.path, "/etc/systemd/system/bolt-rundir.service") {
+					assert.Equal(t, rundirUnit, string(w.data))
+					assert.Equal(t, os.FileMode(0o644), w.mode)
+					sawRundir = true
 				}
 			}
-			assert.True(t, sawMask, "resolved mask symlink must exist in the deployment etc overlay")
+			assert.True(t, sawRundir, "bolt-rundir unit must be baked (spec §6.1)")
+
+			// Spec §6.1 headless bakes: resolved mask (kept), NetworkManager
+			// mask, and enables for bolt-rundir + systemd-networkd.
+			wantLinks := map[string]string{
+				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/systemd-resolved.service":                         "/dev/null",
+				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/NetworkManager.service":                           "/dev/null",
+				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/bolt-rundir.service":      "/etc/systemd/system/bolt-rundir.service",
+				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/systemd-networkd.service": "/usr/lib/systemd/system/systemd-networkd.service",
+			}
+			for path, want := range wantLinks {
+				var saw bool
+				for _, l := range f.links {
+					if l.path == path {
+						assert.Equal(t, want, l.target)
+						saw = true
+					}
+				}
+				require.True(t, saw, "spec §6.1 link missing: %s", path)
+			}
 
 			// probes are ro; the deployment-tree writes need exactly one rw
 			// remount of the root partition.
@@ -391,6 +411,51 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/network/10-bolt.network", f.wrote[0].path)
 	assert.Equal(t, NetworkdFile("10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1"), string(f.wrote[0].data))
 	assert.Equal(t, os.FileMode(0o644), f.wrote[0].mode)
+	assert.Equal(t, []string{"/dev/loop3"}, f.detached)
+	assert.Len(t, f.umounted, 1)
+}
+
+func TestSharedMountUnit(t *testing.T) {
+	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qvm/data\n_netdev=true\n"
+	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qvm/data\n"
+	want += "Type=9p\nOptions=trans=virtio\n\n[Install]\nWantedBy=multi-user.target\n"
+	assert.Equal(t, want,
+		SharedMountUnit(SharedMount{Where: "/var/lib/qvm/data", What: "vm1-0"}),
+		"9p unit: 9p type with trans=virtio (xen9pfsd), tag in What, guest path in Where")
+	assert.Equal(t, "var-lib-qvm-data-0", MountUnitName(SharedMount{Where: "/var/lib/qvm/data"}, 0))
+	assert.Equal(t, "data-1", MountUnitName(SharedMount{Where: "/data"}, 1))
+}
+
+func TestBakeMounts(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "disk.img")
+	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
+	f := networkdFS()
+	mounts := []SharedMount{
+		{Where: "/var/lib/qvm/data", What: "vm1-0"},
+		{Where: "/projects", What: "vm1-1"},
+	}
+	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs", mounts))
+
+	require.Len(t, f.wrote, 2)
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/var-lib-qvm-data-0.mount", f.wrote[0].path)
+	assert.Equal(t, SharedMountUnit(mounts[0]), string(f.wrote[0].data))
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/projects-1.mount", f.wrote[1].path)
+	assert.Equal(t, SharedMountUnit(mounts[1]), string(f.wrote[1].data))
+
+	wantLinks := map[string]string{
+		"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/var-lib-qvm-data-0.mount": "/etc/systemd/system/var-lib-qvm-data-0.mount",
+		"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/projects-1.mount":         "/etc/systemd/system/projects-1.mount",
+	}
+	for path, want := range wantLinks {
+		var saw bool
+		for _, l := range f.links {
+			if l.path == path {
+				assert.Equal(t, want, l.target, "wants symlink must enable the unit")
+				saw = true
+			}
+		}
+		require.True(t, saw, "wants symlink missing for %s", path)
+	}
 	assert.Equal(t, []string{"/dev/loop3"}, f.detached)
 	assert.Len(t, f.umounted, 1)
 }

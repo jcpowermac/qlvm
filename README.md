@@ -55,8 +55,21 @@ config block).
 | `qlvm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
 | `qlvm provision <vm>` | Install the layered `packages.txt` (rpm-token whitelist, run in the VM over ssh + sftp) and sync the layered `dotfiles/`. `--packages-only`, `--dotfiles-only`, `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers) |
 | `qlvm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
-| `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection |
+| `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
+
+## Shared mounts
+
+`create --mount host:guest` exports `host` into the guest as a 9p share (Xen
+`xen9pfsd`, `security_model=none`). Each share gets a unique 9p tag
+`<vm>-<i>` (0-based in `--mount` order). At create time qlvm bakes one
+systemd unit per share into the VM disk's deployment `/etc` overlay — named
+after the guest path with `/` runs collapsed and a `-<i>` suffix, e.g.
+`etc/systemd/system/var-lib-qvm-data-0.mount` — with `Type=9p`,
+`Options=trans=virtio`, `What=<tag>`, `Where=<guest path>` (a relative
+guest path is mounted at `/<guest>`), `_netdev`, and an enabling symlink in
+`multi-user.target.wants`, so the share is mounted at boot by systemd. There
+is no kernel-cmdline mechanism involved.
 
 ## Configuration
 

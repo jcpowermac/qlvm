@@ -33,10 +33,6 @@ func (f *fakePodman) Pull(_ context.Context, ref string) (string, error) {
 	return f.digest, nil
 }
 
-func (f *fakePodman) InspectDigest(_ context.Context, _ string) (string, error) {
-	return f.digest, nil
-}
-
 func (f *fakePodman) RunImageBuilder(_ context.Context, workdir, ref string, _ io.Writer) error {
 	f.builderCalls = append(f.builderCalls, builderCall{workdir: workdir, ref: ref})
 	if f.builderErr != nil {

@@ -230,27 +230,6 @@ func TestAddDelLSPort(t *testing.T) {
 	require.False(t, gone, "vm1 should be deleted")
 }
 
-func TestCountLSPorts(t *testing.T) {
-	c, closeFn := newTestEnv(t)
-	defer closeFn()
-
-	cfg := fixtureConfig()
-	r := New(c)
-	require.NoError(t, r.Apply(context.Background(), cfg))
-
-	// Apply creates work-to-gw on the work switch, which must be excluded.
-	n, err := r.CountLSPorts(context.Background(), "work")
-	require.NoError(t, err)
-	require.Equal(t, 0, n)
-
-	for i, ip := range []string{"10.100.1.11", "10.100.1.12", "10.100.1.13"} {
-		require.NoError(t, r.AddLSPort(context.Background(), "work", "vm"+string(rune('1'+i)), "aa:bb:cc:dd:ee:0"+string(rune('0'+i)), ip))
-	}
-	n, err = r.CountLSPorts(context.Background(), "work")
-	require.NoError(t, err)
-	require.Equal(t, 3, n)
-}
-
 func TestApplyRepairsMissingLRP(t *testing.T) {
 	c, closeFn := newTestEnv(t)
 	defer closeFn()

@@ -33,7 +33,7 @@ const desktopGlob = "/usr/share/applications/*.desktop"
 func appsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apps",
-		Short: "Desktop app launcher: serve a rofi menu of the cached VM desktops",
+		Short: "Desktop app launcher: serve a rofi menu of the cached VM desktops (run rofi with -field 4, so ROFI_INFO carries the selected <vm>|<exec>)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			switch os.Getenv("ROFI_RETV") {

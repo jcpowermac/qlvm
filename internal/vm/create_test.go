@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,8 +63,11 @@ func (f *recBakeFS) ReadDir(p string) ([]string, error) {
 func (f *recBakeFS) ReadFile(_ string) ([]byte, error) { return nil, os.ErrNotExist }
 
 func (f *recBakeFS) WriteFile(p string, data []byte, _ os.FileMode) error {
-	if strings.HasSuffix(p, "10-bolt.network") {
+	switch {
+	case strings.HasSuffix(p, "10-bolt.network"):
 		*f.events = append(*f.events, "bake:"+string(data))
+	case strings.HasSuffix(p, ".mount"):
+		*f.events = append(*f.events, "mountbake:"+path.Base(p)+":"+string(data))
 	}
 	return nil
 }
@@ -164,6 +168,56 @@ func TestCreateHappyPath(t *testing.T) {
 		m2, err := Create(context.Background(), d, cfg, Spec{Name: "second", Domain: "work", Type: "app"})
 		require.NoError(t, err)
 		require.Equal(t, "10.100.1.11", m2.IP)
+	})
+
+	t.Run("delete-then-create does not reuse a live hostnum", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		d := testDeps(t, root, new([]string), nil)
+		for _, name := range []string{"a", "b", "c"} {
+			if _, err := Create(context.Background(), d, testCfg(),
+				Spec{Name: name, Domain: "work", Type: "disposable"}); err != nil {
+				t.Fatalf("create %s: %v", name, err)
+			}
+		}
+		// Delete b (.11); the live VMs are .10 and .12, so max hostnum is 12.
+		require.NoError(t, os.RemoveAll(filepath.Join(root, "vms", "b")))
+		m, err := Create(context.Background(), d, testCfg(),
+			Spec{Name: "d", Domain: "work", Type: "disposable"})
+		require.NoError(t, err)
+		require.Equal(t, "10.100.1.13", m.IP, "next hostnum is max+1, never a live VM's .12")
+	})
+
+	t.Run("mounts bake per-mount units with unique tags", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		var events []string
+		d := testDeps(t, root, &events, nil)
+		_, err := Create(context.Background(), d, testCfg(), Spec{
+			Name: "vm1", Domain: "work", Type: "disposable",
+			Mounts: []Mount{{Host: "/srv/data", Guest: "data"}, {Host: "/home/user/projects", Guest: "/var/lib/qvm/projects"}},
+		})
+		require.NoError(t, err)
+		var unit0, unit1 bool
+		for _, e := range events {
+			switch {
+			case strings.HasPrefix(e, "mountbake:data-0.mount:"):
+				require.Contains(t, e, "What=vm1-0", "unit 0 must carry the unique 9p tag")
+				require.Contains(t, e, "Where=/data", "relative guest path mounts at /<guest>")
+				require.Contains(t, e, "Type=9p")
+				require.Contains(t, e, "WantedBy=multi-user.target")
+				unit0 = true
+			case strings.HasPrefix(e, "mountbake:var-lib-qvm-projects-1.mount:"):
+				require.Contains(t, e, "What=vm1-1", "unit 1 must carry the unique 9p tag")
+				require.Contains(t, e, "Where=/var/lib/qvm/projects", "absolute guest path used verbatim")
+				unit1 = true
+			}
+		}
+		require.True(t, unit0, "first mount unit must be baked")
+		require.True(t, unit1, "second mount unit must be baked")
+		for _, e := range events {
+			require.NotContains(t, e, "9pstore", "no fabricated kernel options")
+		}
 	})
 
 	t.Run("orphan dir without meta does not fail create", func(t *testing.T) {
@@ -277,17 +331,16 @@ func TestDomainConfigGolden(t *testing.T) {
 	require.Equal(t, "/var/lib/qvm/templates/os-abc/initramfs", got.Ramdisk)
 	require.Equal(t,
 		"root=UUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
-			"systemd.default-target=multi-user.target console=hvc0 "+
-			"9pstore=vm1 data 9pstore=vm1 projects",
-		strings.Join(got.Extra, " "), "extra string byte-exact")
+			"systemd.default-target=multi-user.target console=hvc0",
+		strings.Join(got.Extra, " "), "extra string byte-exact, no 9pstore kernel options")
 	require.Equal(t, 2, got.MaxVcpus)
 	require.Equal(t, 2048*1024, got.TargetMemkb)
 	require.Equal(t, []DomainDisk{{PdevPath: vmDir + "/disk.img", Vdev: "xvda", Format: "raw", Readwrite: 1}}, got.Disks)
 	require.Equal(t, []DomainNic{{Mac: "02:00:00:00:00:0a", Script: "vif-ovn", Nictype: "vif"}}, got.Nics)
 	require.Equal(t, []DomainP9{
-		{Tag: "vm1", Guest: "data", Path: "/srv/data", SecurityModel: "none", Type: "xen9pfsd"},
-		{Tag: "vm1", Guest: "projects", Path: "/home/user/projects", SecurityModel: "none", Type: "xen9pfsd"},
-	}, got.P9S)
+		{Tag: "vm1-0", Guest: "data", Path: "/srv/data", SecurityModel: "none", Type: "xen9pfsd"},
+		{Tag: "vm1-1", Guest: "projects", Path: "/home/user/projects", SecurityModel: "none", Type: "xen9pfsd"},
+	}, got.P9S, "tags must be unique per mount")
 
 	t.Run("btrfs root flags land between root= and ostree=", func(t *testing.T) {
 		tpl := *goldenTpl
@@ -295,8 +348,7 @@ func TestDomainConfigGolden(t *testing.T) {
 		got := DomainConfig(vmDir, goldenMeta, &tpl)
 		require.Equal(t,
 			"root=UUID=1234abcd-0000-0000-0000-000000000001 subvol=root ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
-				"systemd.default-target=multi-user.target console=hvc0 "+
-				"9pstore=vm1 data 9pstore=vm1 projects",
+				"systemd.default-target=multi-user.target console=hvc0",
 			strings.Join(got.Extra, " "))
 	})
 }

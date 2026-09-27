@@ -1,7 +1,8 @@
 // Package ostree bakes bootc ostree templates (Task 8): loop-attach the
 // adopted raw image, locate the ostree root and /boot partitions, copy the
-// boot kernel + initramfs, write the VM identity and unit mask into the
-// deployment /etc overlay, and persist the enriched template META.
+// boot kernel + initramfs, write the VM identity and the spec §6.1 headless
+// units into the deployment /etc overlay, and persist the enriched template
+// META. BakeMounts adds the per-VM 9p .mount units on a template copy.
 package ostree
 
 import (
@@ -287,20 +288,102 @@ func writeLine(fs FS, path, line string, mode os.FileMode) error {
 	return fs.WriteFile(path, append(old, []byte(line+"\n")...), mode)
 }
 
-// maskResolvedUnit masks systemd-resolved in the deployment /etc overlay —
-// the one "unit" the brief leaves unnamed (supervisor ruling 2026-09-26):
-// the per-VM 10-bolt.network owns the static address and DNS. etc is under a
-// real loop-mount mountpoint, so direct os use is intentional: the FS seam
-// carries the loop/mount surface and overlay file writes, but there is no
-// approved Symlink method (supervisor: no other FS methods).
-func maskResolvedUnit(etc string) error {
+// maskUnit masks a unit in the deployment /etc/systemd/system overlay: a
+// symlink to /dev/null. etcDir is under a real loop-mount mountpoint, so
+// direct os use is intentional: the FS seam carries the loop/mount surface
+// and overlay file writes, but there is no approved Symlink method
+// (supervisor: no other FS methods).
+func maskUnit(etcDir, unit string) error {
+	link := filepath.Join(etcDir, unit)
+	_ = os.Remove(link)
+	return os.Symlink("/dev/null", link)
+}
+
+// rundirUnit is the spec §6.1 headless unit that creates /run/user/1000 at
+// boot: the VM user has no logind session, so the runtime dir must exist
+// before anything runs as the user.
+const rundirUnit = "[Unit]\n" +
+	"Description=Create /run/user/1000 for the VM user\n" +
+	"DefaultDependencies=no\n" +
+	"After=local-fs.target\n" +
+	"Before=multi-user.target\n" +
+	"\n" +
+	"[Service]\n" +
+	"Type=oneshot\n" +
+	"ExecStart=/usr/bin/mkdir -m 0700 -p /run/user/1000\n" +
+	"ExecStart=/usr/bin/chown 1000:1000 /run/user/1000\n" +
+	"RemainAfterExit=yes\n" +
+	"\n" +
+	"[Install]\n" +
+	"WantedBy=multi-user.target\n"
+
+// bakeHeadlessUnits bakes the spec §6.1 headless units into the deployment
+// /etc overlay: the bolt-rundir unit, a NetworkManager mask, and enables for
+// bolt-rundir + systemd-networkd. On stock bootc images NetworkManager is
+// enabled and would own the NIC before the baked 10-bolt.network could
+// apply, so networkd must be the unit that is enabled. (The resolved mask is
+// kept separately: networkd owns DNS.)
+func bakeHeadlessUnits(fs FS, etc string) error {
 	dir := filepath.Join(etc, "systemd", "system")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	link := filepath.Join(dir, "systemd-resolved.service")
-	_ = os.Remove(link)
-	return os.Symlink("/dev/null", link)
+	unit := filepath.Join(dir, "bolt-rundir.service")
+	if err := fs.WriteFile(unit, []byte(rundirUnit), 0o644); err != nil {
+		return err
+	}
+	// Enables: the wants symlinks systemd `enable` creates for units that
+	// live under /etc (networkd's unit file is vendor-provided).
+	wants := filepath.Join(dir, "multi-user.target.wants")
+	if err := os.MkdirAll(wants, 0o750); err != nil {
+		return err
+	}
+	for src, name := range map[string]string{
+		"/etc/systemd/system/bolt-rundir.service":          "bolt-rundir.service",
+		"/usr/lib/systemd/system/systemd-networkd.service": "systemd-networkd.service",
+	} {
+		link := filepath.Join(wants, name)
+		_ = os.Remove(link)
+		if err := os.Symlink(src, link); err != nil {
+			return err
+		}
+	}
+	return maskUnit(dir, "NetworkManager.service")
+}
+
+// SharedMount is one 9p share to bake into the VM guest as a systemd .mount
+// unit: Where is the guest mount point (absolute), What is the 9p tag
+// (libxl mrtag) the domain exports.
+type SharedMount struct {
+	Where string
+	What  string
+}
+
+// MountUnitName derives the .mount unit basename (no suffix) for the i-th
+// SharedMount from its guest path, systemd-style: /var/lib/qvm/data ->
+// var-lib-qvm-data-0.
+func MountUnitName(m SharedMount, i int) string {
+	name := strings.TrimPrefix(m.Where, "/")
+	return strings.ReplaceAll(name, "/", "-") + "-" + strconv.Itoa(i)
+}
+
+// SharedMountUnit renders the .mount unit for a SharedMount: 9p with
+// trans=virtio (the xen9pfsd backend), gated on the network (_netdev) since
+// the share is reachable only through the VM's own NIC.
+func SharedMountUnit(m SharedMount) string {
+	return "[Unit]\n" +
+		"Description=qlvm shared mount " + m.Where + "\n" +
+		"_netdev=true\n" +
+		"After=systemd-networkd.service\n" +
+		"\n" +
+		"[Mount]\n" +
+		"What=" + m.What + "\n" +
+		"Where=" + m.Where + "\n" +
+		"Type=9p\n" +
+		"Options=trans=virtio\n" +
+		"\n" +
+		"[Install]\n" +
+		"WantedBy=multi-user.target\n"
 }
 
 // dirDigest recovers the image digest from the DirFor dir-name layout
@@ -346,8 +429,9 @@ func saveMeta(dir, kernelVer, rootDev, rootFlags, opath string) error {
 // BakeTemplate prepares the adopted template raw image in dir (Task 7
 // EnsureOpts.Bake): loop-attach, probe the partitions read-only to find the
 // ostree root and /boot, copy vmlinuz+initramfs into dir, remount the root
-// partition rw for the deployment-tree writes (VM identity +
-// systemd-resolved mask), and persist the enriched template META. fstype is
+// partition rw for the deployment-tree writes (VM identity + resolved mask
+// + spec §6.1 headless units), and persist the enriched template META.
+// fstype is
 // supplied by the wiring layer (image-builder's --bootc-default-fs). Every
 // loop device and mount is released on every exit path.
 func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
@@ -421,7 +505,16 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 	if err := writeIdentity(fs, etc); err != nil {
 		return err
 	}
-	if err := maskResolvedUnit(etc); err != nil {
+	systemdDir := filepath.Join(etc, "systemd", "system")
+	if err := os.MkdirAll(systemdDir, 0o750); err != nil {
+		return err
+	}
+	// The per-VM 10-bolt.network owns the static address and DNS, so
+	// resolved stays masked.
+	if err := maskUnit(systemdDir, "systemd-resolved.service"); err != nil {
+		return err
+	}
+	if err := bakeHeadlessUnits(fs, etc); err != nil {
 		return err
 	}
 	return saveMeta(dir, ver, "UUID="+strings.TrimSpace(string(uuid)), rootFlags, opath)
@@ -466,4 +559,57 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 		return err
 	}
 	return fs.WriteFile(filepath.Join(dir, "10-bolt.network"), []byte(NetworkdFile(ip, gw, mac, dns)), 0o644)
+}
+
+// BakeMounts bakes one per-share systemd .mount unit (plus its enablement
+// symlink) into the deployment /etc overlay of a template copy at diskPath:
+// loop-attach, mount the root partition rw (via the FS mounter, fstype from
+// the wiring layer), write the units, umount, detach. The units are the
+// guest-side contract for the 9p shares DomainConfig exports.
+func BakeMounts(ctx context.Context, fs FS, diskPath, fstype string, mounts []SharedMount) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if fstype == "" {
+		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
+	}
+	loop, err := fs.LoopAttach(diskPath)
+	if err != nil {
+		return fmt.Errorf("attach %s: %w", diskPath, err)
+	}
+	defer func() { _ = fs.LoopDetach(loop) }()
+
+	root, _, _, _, err := findParts(ctx, fs, loop, false, false, fstype,
+		"mount rw (if the filesystem is damaged run xfs_repair -L on a copy of the image and retry)")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = fs.Umount(root.target)
+		root.cleanup()
+	}()
+
+	_, osid, commit, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
+	if err != nil {
+		return err
+	}
+	systemdDir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", commit+".0", "etc", "systemd", "system")
+	wants := filepath.Join(systemdDir, "multi-user.target.wants")
+	// root.target is a real loop-mount mountpoint: direct os use is
+	// intentional (no FS seam method for dirs/symlinks, as in BakeNetworkd).
+	if err := os.MkdirAll(wants, 0o750); err != nil {
+		return err
+	}
+	for i, m := range mounts {
+		unit := MountUnitName(m, i) + ".mount"
+		if err := fs.WriteFile(filepath.Join(systemdDir, unit), []byte(SharedMountUnit(m)), 0o644); err != nil {
+			return err
+		}
+		link := filepath.Join(wants, unit)
+		_ = os.Remove(link)
+		if err := os.Symlink("/etc/systemd/system/"+unit, link); err != nil {
+			return err
+		}
+	}
+	return nil
 }

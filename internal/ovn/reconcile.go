@@ -3,7 +3,6 @@ package ovn
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
@@ -593,43 +592,7 @@ func (r *Reconciler) DelLSPort(ctx context.Context, name string) error {
 	})
 }
 
-// CountLSPorts counts VM ports attached to switch sw, excluding the
-// management ports (names ending in "-to-gw").
-func (r *Reconciler) CountLSPorts(ctx context.Context, sw string) (int, error) {
-	swUUID, err := r.switchUUIDByName(ctx, sw)
-	if err != nil {
-		return 0, err
-	}
-	var switches []LogicalSwitch
-	if err := r.client.List(ctx, &switches); err != nil {
-		return 0, err
-	}
-	var ports []string
-	for _, s := range switches {
-		if s.UUID == swUUID {
-			ports = s.Ports
-			break
-		}
-	}
-	count := 0
-	for _, p := range ports {
-		row := r.client.Cache().Table("Logical_Switch_Port").Row(p)
-		if row == nil {
-			continue
-		}
-		lsp, ok := row.(*LogicalSwitchPort)
-		if !ok {
-			continue
-		}
-		if strings.HasSuffix(lsp.Name, "-to-gw") {
-			continue
-		}
-		count++
-	}
-	return count, nil
-}
-
-// SetGatewayChassis pins lrp to chassisID via an NB HA chassis group:
+// SetGatewayChassis pins lrp to chassisID via a NB HA chassis group:
 // one HA_Chassis row per chassis, one HA_Chassis_Group per router port,
 // with the router port's ha_chassis_group pointing at the group.
 func (r *Reconciler) SetGatewayChassis(ctx context.Context, lrpName, chassisID string) error {

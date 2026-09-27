@@ -29,7 +29,6 @@ const imageBuilderImage = "ghcr.io/osbuild/image-builder-cli:latest"
 // template operations. Tests substitute a recording fake.
 type Podman interface {
 	Pull(ctx context.Context, ref string) (digest string, err error)
-	InspectDigest(ctx context.Context, ref string) (string, error)
 	RunImageBuilder(ctx context.Context, workdir, ref string, errStream io.Writer) error
 }
 
@@ -195,20 +194,6 @@ func (p *podmanClient) Pull(ctx context.Context, ref string) (string, error) {
 	return "", fmt.Errorf("pull %s: no digest in response", ref)
 }
 
-func (p *podmanClient) InspectDigest(ctx context.Context, ref string) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	img, err := images.GetImage(p.ctx, ref, nil)
-	if err != nil {
-		return "", fmt.Errorf("inspect image %s: %w", ref, err)
-	}
-	if img.Digest == "" {
-		return "", fmt.Errorf("image %s: empty digest", ref)
-	}
-	return img.Digest.String(), nil
-}
-
 func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string, errStream io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -245,8 +230,16 @@ func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string,
 		defer close(errCh)
 		_ = containers.Logs(p.ctx, id, &containers.LogOptions{Stdout: boolPtr(true), Stderr: boolPtr(true)}, outCh, errCh)
 	}()
-	go func() { for l := range outCh { _, _ = fmt.Fprint(errStream, l) } }()
-	go func() { for l := range errCh { _, _ = fmt.Fprint(errStream, l) } }()
+	go func() {
+		for l := range outCh {
+			_, _ = fmt.Fprint(errStream, l)
+		}
+	}()
+	go func() {
+		for l := range errCh {
+			_, _ = fmt.Fprint(errStream, l)
+		}
+	}()
 	code, werr := containers.Wait(p.ctx, id, nil)
 	if werr != nil {
 		return fmt.Errorf("wait image-builder: %w", werr)

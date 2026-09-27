@@ -32,6 +32,16 @@ func (f *fakeConn) EnableUnit(unit string) error {
 	return nil
 }
 
+// TestBusConstructors: NewSession (user manager, qlvm's own units) and
+// NewSystem (system units like openvswitch.service, which install drives)
+// must both exist. The real bus dial is not unit-testable; the bus choice
+// is the contract — install must not ask the user manager about system
+// units (it cannot see them).
+func TestBusConstructors(t *testing.T) {
+	assert.NotNil(t, NewSession, "session-bus constructor")
+	assert.NotNil(t, NewSystem, "system-bus constructor")
+}
+
 func TestEnableStartSkipsActive(t *testing.T) {
 	f := &fakeConn{active: "active", fileState: "enabled"}
 	m := New(f)

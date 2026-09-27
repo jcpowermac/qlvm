@@ -2,6 +2,7 @@ package vm
 
 import (
 	"path/filepath"
+	"strconv"
 
 	"github.com/jcpowermac/qlvm/internal/template"
 )
@@ -50,6 +51,13 @@ type DomainP9 struct {
 	Type          string
 }
 
+// P9Tag is the unique 9p tag (libxl mrtag) of a VM's i-th --mount
+// (0-based in Meta.Mounts order): duplicate mrtags make shares
+// indistinguishable to the guest, so one mount per VM name is not enough.
+func P9Tag(vmName string, i int) string {
+	return vmName + "-" + strconv.Itoa(i)
+}
+
 // DomainConfig renders the libxl domain configuration for a prepared VM.
 // vmDir is the VM state dir holding disk.img (ruling 2026-09-26: added as a
 // parameter rather than a Meta field).
@@ -63,18 +71,18 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 		"systemd.default-target=multi-user.target",
 		"console=hvc0",
 	)
+	// The guest mount point is not a libxl/kernel field: each share is
+	// mounted by a systemd .mount unit baked into the VM disk at create
+	// time (ostree.BakeMounts), matching What= to the tag below.
 	p9s := make([]DomainP9, 0, len(m.Mounts))
-	for _, mt := range m.Mounts {
+	for i, mt := range m.Mounts {
 		p9s = append(p9s, DomainP9{
-			Tag:           m.Name,
+			Tag:           P9Tag(m.Name, i),
 			Guest:         mt.Guest,
 			Path:          mt.Host,
 			SecurityModel: "none",
 			Type:          "xen9pfsd",
 		})
-		// libxl's p9 device has no guest-path field: the guest mount
-		// point is a 9p client kernel option, one per share.
-		extra = append(extra, "9pstore="+m.Name+" "+mt.Guest)
 	}
 	return &DomainSpec{
 		Type:        "PVH",

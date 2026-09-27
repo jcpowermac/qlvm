@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -49,7 +51,7 @@ type Spec struct {
 var sshConfigFn = AddSSHConfig
 
 // Create prepares a VM (spec §6): OVN port -> reflink disk -> per-VM networkd
-// bake -> meta.toml -> ssh-config (app only). Any failure after the port is
+// bake -> per-mount 9p .mount units -> meta.toml -> ssh-config (app only). Any failure after the port is
 // added deletes the port and the half-built VM dir, leaving no orphan port.
 func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*Meta, error) {
 	dom, ok := cfg.Domain(spec.Domain)
@@ -79,11 +81,11 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	if _, err := LoadMeta(vmDir); err == nil {
 		return nil, fmt.Errorf("%s: VM already exists", spec.Name)
 	}
-	existing, err := countDomainVMs(d.Root, spec.Domain)
+	maxHostnum, err := maxDomainHostnum(d.Root, spec.Domain)
 	if err != nil {
 		return nil, err
 	}
-	ip, mac := HostIPMAC(dom, existing)
+	ip, mac := HostIPMAC(dom, maxHostnum)
 
 	fail := func(err error) (*Meta, error) {
 		_ = d.OVN.DelLSPort(ctx, spec.Name)
@@ -106,6 +108,19 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	}
 	if err := ostree.BakeNetworkd(ctx, d.FS, disk, d.FSType, ip, dom.Gateway, mac, dns); err != nil {
 		return fail(fmt.Errorf("networkd bake: %w", err))
+	}
+	if len(spec.Mounts) > 0 {
+		shares := make([]ostree.SharedMount, 0, len(spec.Mounts))
+		for i, mt := range spec.Mounts {
+			where := mt.Guest
+			if !strings.HasPrefix(where, "/") {
+				where = "/" + where
+			}
+			shares = append(shares, ostree.SharedMount{Where: where, What: P9Tag(spec.Name, i)})
+		}
+		if err := ostree.BakeMounts(ctx, d.FS, disk, d.FSType, shares); err != nil {
+			return fail(fmt.Errorf("mount units bake: %w", err))
+		}
 	}
 	m := &Meta{
 		Name:     spec.Name,
@@ -136,10 +151,12 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	return m, nil
 }
 
-// countDomainVMs counts persisted VMs of the domain under Root/vms — the
-// self-contained stand-in for "existing ports on the switch" (ruling
-// 2026-09-26): a failed Create deletes its port, so metas and ports agree.
-func countDomainVMs(root, domain string) (int, error) {
+// maxDomainHostnum returns the highest host number assigned to a domain's
+// persisted VMs under Root/vms (0 when none) — the self-contained stand-in
+// for "existing ports on the switch" (ruling 2026-09-26): a failed Create
+// deletes its port, so metas and ports agree. A count would collide after a
+// delete, so the max is used instead.
+func maxDomainHostnum(root, domain string) (int, error) {
 	entries, err := os.ReadDir(filepath.Join(root, "vms"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -147,7 +164,7 @@ func countDomainVMs(root, domain string) (int, error) {
 		}
 		return 0, err
 	}
-	n := 0
+	maxH := 0
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -158,11 +175,23 @@ func countDomainVMs(root, domain string) (int, error) {
 			// poison later creates: unreadable meta = not counted.
 			continue
 		}
-		if m.Domain == domain {
-			n++
+		if m.Domain != domain {
+			continue
+		}
+		// IP is <subnet>.<hostnum>: the last octet is the host number.
+		dot := strings.LastIndexByte(m.IP, '.')
+		if dot < 0 {
+			continue
+		}
+		n, err := strconv.Atoi(m.IP[dot+1:])
+		if err != nil || n <= 0 {
+			continue
+		}
+		if n > maxH {
+			maxH = n
 		}
 	}
-	return n, nil
+	return maxH, nil
 }
 
 // newUUID returns a random RFC 4122 v4 UUID string (persisted in Meta so the

@@ -1,6 +1,6 @@
 // Package systemd manages dom0 units over D-Bus. Production code dials the
-// session bus directly (the user manager starts the qlvm units); tests
-// supply a fake Conn recording the exact method calls.
+// live bus through NewSession (user manager) or NewSystem (system units);
+// tests supply a fake Conn recording the exact method calls.
 package systemd
 
 import (
@@ -39,13 +39,26 @@ type Manager struct {
 // New wraps a systemd Conn.
 func New(c Conn) *Manager { return &Manager{conn: c} }
 
-// NewSession wires Manager to the live systemd session bus.
+// NewSession wires Manager to the live systemd session bus (user manager:
+// the plane that starts the qlvm user units).
 func NewSession() (*Manager, error) {
 	bus, err := dbus.SessionBus()
 	if err != nil {
 		return nil, err
 	}
-	return New(&sessionConn{bus: bus}), nil
+	return New(&busConn{bus: bus}), nil
+}
+
+// NewSystem wires Manager to the live systemd system bus — the plane for
+// system units such as openvswitch.service, ovn-northd.service and
+// ovn-controller.service (install drives these). The user manager from
+// NewSession cannot see system units.
+func NewSystem() (*Manager, error) {
+	bus, err := dbus.SystemBus()
+	if err != nil {
+		return nil, err
+	}
+	return New(&busConn{bus: bus}), nil
 }
 
 // EnableStart starts the unit if not active and enables it if not enabled.
@@ -72,12 +85,12 @@ func (m *Manager) EnableStart(ctx context.Context, unit string) error {
 	return nil
 }
 
-// sessionConn is the godbus-backed Conn for the live session bus.
-type sessionConn struct {
+// busConn is the godbus-backed Conn for a live bus (session or system).
+type busConn struct {
 	bus *dbus.Conn
 }
 
-func (s *sessionConn) UnitActive(unit string) (string, error) {
+func (s *busConn) UnitActive(unit string) (string, error) {
 	var p dbus.ObjectPath
 	if err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
 		Call(sdService+".Manager.GetUnit", 0, unit).Store(&p); err != nil {
@@ -98,21 +111,21 @@ func (s *sessionConn) UnitActive(unit string) (string, error) {
 	return state, err
 }
 
-func (s *sessionConn) UnitFileState(unit string) (string, error) {
+func (s *busConn) UnitFileState(unit string) (string, error) {
 	var state string
 	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
 		Call(sdService+".Manager.GetUnitFileState", 0, unit).Store(&state)
 	return state, err
 }
 
-func (s *sessionConn) StartUnit(unit string) error {
+func (s *busConn) StartUnit(unit string) error {
 	var p dbus.ObjectPath
 	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
 		Call(sdService+".Manager.StartUnit", 0, unit, "replace").Store(&p)
 	return err
 }
 
-func (s *sessionConn) EnableUnit(unit string) error {
+func (s *busConn) EnableUnit(unit string) error {
 	// Live systemd here exposes Manager.EnableUnitFiles(as bb) -> a(boss);
 	// the old EnableUnit alias and its a(bo) shape are gone, so the symlink
 	// result is dropped via Call.Err.
