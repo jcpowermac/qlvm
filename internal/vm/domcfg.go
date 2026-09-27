@@ -72,6 +72,9 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 			SecurityModel: "none",
 			Type:          "xen9pfsd",
 		})
+		// libxl's p9 device has no guest-path field: the guest mount
+		// point is a 9p client kernel option, one per share.
+		extra = append(extra, "9pstore="+m.Name+" "+mt.Guest)
 	}
 	return &DomainSpec{
 		Type:        "PVH",

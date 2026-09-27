@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/template"
@@ -79,7 +80,10 @@ func Delete(ctx context.Context, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home,
 			return fmt.Errorf("delete %s: destroy domain: %w", name, err)
 		}
 	}
-	if err := op.DelLSPort(ctx, name); err != nil {
+	// Retry idempotency: a delete interrupted after dropping the port
+	// must still finish, so OVN "not found" is treated as done.
+	// ponytail: string match; the OVNPorter interface has no not-found sentinel.
+	if err := op.DelLSPort(ctx, name); err != nil && !strings.Contains(err.Error(), "not found") {
 		return fmt.Errorf("delete %s: remove OVN port: %w", name, err)
 	}
 	stale, err := vp.StaleVifPorts(ctx, name)

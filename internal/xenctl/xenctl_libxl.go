@@ -121,6 +121,11 @@ func toDomainConfig(spec *vm.DomainSpec) (*xenlight.DomainConfig, error) {
 	cfg.CInfo.Type = xenlight.DomainTypePvh
 	cfg.CInfo.Name = spec.Name
 	cfg.CInfo.Uuid = uuid
+	// b_info.type must match c_info.type and carry a non-nil union
+	// (libxl_domain_config_init leaves it INVALID; toC fails on a nil
+	// union). qlvm is PVH-only: add other variants if HVM/PV ever lands.
+	cfg.BInfo.Type = xenlight.DomainTypePvh
+	cfg.BInfo.TypeUnion = &xenlight.DomainBuildInfoTypeUnionPvh{}
 	cfg.BInfo.MaxVcpus = spec.MaxVcpus
 	cfg.BInfo.TargetMemkb = uint64(spec.TargetMemkb)
 	cfg.BInfo.Kernel = spec.Kernel
@@ -160,8 +165,11 @@ func toDomainConfig(spec *vm.DomainSpec) (*xenlight.DomainConfig, error) {
 // parser in the generated API; the type is [16]byte).
 func parseUUID(s string) (xenlight.Uuid, error) {
 	b, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
-	if err != nil || len(b) != 16 {
+	if err != nil {
 		return xenlight.Uuid{}, fmt.Errorf("uuid %q: %v", s, err)
+	}
+	if len(b) != 16 {
+		return xenlight.Uuid{}, fmt.Errorf("uuid %q: wrong length", s)
 	}
 	var u xenlight.Uuid
 	copy(u[:], b)
@@ -171,8 +179,11 @@ func parseUUID(s string) (xenlight.Uuid, error) {
 // parseMAC parses a colon-separated MAC into xenlight.Mac ([6]byte).
 func parseMAC(s string) (xenlight.Mac, error) {
 	b, err := hex.DecodeString(strings.ReplaceAll(s, ":", ""))
-	if err != nil || len(b) != 6 {
+	if err != nil {
 		return xenlight.Mac{}, fmt.Errorf("mac %q: %v", s, err)
+	}
+	if len(b) != 6 {
+		return xenlight.Mac{}, fmt.Errorf("mac %q: wrong length", s)
 	}
 	var m xenlight.Mac
 	copy(m[:], b)

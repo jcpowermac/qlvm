@@ -2,6 +2,7 @@ package xenctl
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,7 +120,7 @@ func TestDeleteOrdering(t *testing.T) {
 	home := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".ssh"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".ssh", "config"),
-		[]byte("Host other\n  HostName 1.2.3.4\n\nHost vm1\n  HostName 10.100.1.11\n  User user\n"), 0o600))
+		[]byte("Host other\n  HostName 10.100.1.99\n\nHost vm1\n  HostName 10.100.1.11\n  User user\n"), 0o600))
 
 	x := &fakeXen{running: map[string]bool{"vm1": true}, events: &events}
 	vif := &fakeVif{stale: []string{"vif7.0"}, events: &events}
@@ -133,7 +134,7 @@ func TestDeleteOrdering(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(home, ".ssh", "config")) // #nosec G304 -- test fixture
 	require.NoError(t, err)
-	require.Equal(t, "Host other\n  HostName 1.2.3.4\n", string(data),
+	require.Equal(t, "Host other\n  HostName 10.100.1.99\n", string(data),
 		"app type: the VM's ssh block is removed, others untouched")
 }
 
@@ -157,6 +158,25 @@ func TestDeleteSkipsSSHForDisposable(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(home, ".ssh", "config")) // #nosec G304 -- test fixture
 	require.NoError(t, err)
 	require.Equal(t, pre, data, "disposable type: ssh config untouched")
+}
+
+// errOVN always fails DelLSPort with a fixed error.
+type errOVN struct{ err error }
+
+func (e *errOVN) AddLSPort(_ context.Context, _, _, _, _ string) error { return nil }
+func (e *errOVN) DelLSPort(_ context.Context, _ string) error          { return e.err }
+
+func TestDeleteToleratesMissingLSPort(t *testing.T) {
+	vmDir := t.TempDir()
+	testMeta(t, vmDir, "disposable")
+	x := &fakeXen{running: map[string]bool{}, events: &[]string{}}
+	vif := &fakeVif{events: &[]string{}}
+	ovn := &errOVN{err: errors.New(`switch port "vm1" not found`)}
+
+	require.NoError(t, Delete(context.Background(), x, ovn, vif, t.TempDir(), vmDir, "vm1"),
+		"a retry after an interrupted delete must not strand the vmDir")
+	_, statErr := os.Stat(vmDir)
+	require.True(t, os.IsNotExist(statErr), "vmDir removed despite missing port")
 }
 
 func TestDeleteStopsRunningVM(t *testing.T) {

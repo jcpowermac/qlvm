@@ -277,7 +277,8 @@ func TestDomainConfigGolden(t *testing.T) {
 	require.Equal(t, "/var/lib/qvm/templates/os-abc/initramfs", got.Ramdisk)
 	require.Equal(t,
 		"root=UUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
-			"systemd.default-target=multi-user.target console=hvc0",
+			"systemd.default-target=multi-user.target console=hvc0 "+
+			"9pstore=vm1 data 9pstore=vm1 projects",
 		strings.Join(got.Extra, " "), "extra string byte-exact")
 	require.Equal(t, 2, got.MaxVcpus)
 	require.Equal(t, 2048*1024, got.TargetMemkb)
@@ -294,7 +295,8 @@ func TestDomainConfigGolden(t *testing.T) {
 		got := DomainConfig(vmDir, goldenMeta, &tpl)
 		require.Equal(t,
 			"root=UUID=1234abcd-0000-0000-0000-000000000001 subvol=root ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
-				"systemd.default-target=multi-user.target console=hvc0",
+				"systemd.default-target=multi-user.target console=hvc0 "+
+				"9pstore=vm1 data 9pstore=vm1 projects",
 			strings.Join(got.Extra, " "))
 	})
 }
