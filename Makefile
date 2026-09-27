@@ -24,7 +24,12 @@ build:
 test:
 	go test -tags '$(GO_TAGS)' ./...
 
+# Real-plane integration tests: they run install against the live
+# OVN/OVS/firewalld/NetworkManager planes and Xen on this dom0.
+test-integration:
+	go test -v -tags '$(GO_TAGS) integration' ./internal/itest/
+
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --build-tags '$(GO_TAGS)'
 
-.PHONY: build test lint
+.PHONY: build test test-integration lint
