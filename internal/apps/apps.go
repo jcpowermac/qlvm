@@ -75,22 +75,16 @@ func cacheName(name string) string {
 
 // WriteCache replaces the VM's desktop cache at <cacheDir>/<vm> with
 // entries — one <name>.desktop per entry — and returns the count written.
+// The new set is built in a temp sibling dir and swapped in whole, so a
+// mid-write failure leaves the previous cache (if any) intact.
 func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	dir := filepath.Join(cacheDir, vm)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	tmp := dir + ".tmp"
+	if err := os.RemoveAll(tmp); err != nil { // a crash may leave a stale temp dir
 		return 0, err
 	}
-	old, err := os.ReadDir(dir)
-	if err != nil {
+	if err := os.MkdirAll(tmp, 0o750); err != nil {
 		return 0, err
-	}
-	for _, e := range old {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
-			return 0, err
-		}
 	}
 	names := make([]string, 0, len(entries))
 	for name := range entries {
@@ -98,10 +92,19 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		path := filepath.Join(dir, cacheName(name)+".desktop")
+		path := filepath.Join(tmp, cacheName(name)+".desktop")
 		if err := os.WriteFile(path, []byte(entries[name]), 0o600); err != nil {
+			_ = os.RemoveAll(tmp)
 			return 0, err
 		}
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		_ = os.RemoveAll(tmp)
+		return 0, err
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		_ = os.RemoveAll(tmp)
+		return 0, err
 	}
 	return len(entries), nil
 }
@@ -164,7 +167,7 @@ func EmitRofi(cacheDir string) (string, error) {
 // the app is run; a running VM goes straight to runApp.
 func Launch(rofiInfo, cacheDir string, running func(vm string) bool, start func(vm string) error, waitSSH func(vm string) error, runApp func(vm, exec string) error) error { //nolint:revive // cacheDir is part of the Launch contract (Task 13); unused for now
 	vmName, exec, ok := strings.Cut(rofiInfo, "|")
-	if !ok || vmName == "" {
+	if !ok || vmName == "" || exec == "" {
 		return fmt.Errorf("bad rofi info %q: want <vm>|<exec>", rofiInfo)
 	}
 	if !running(vmName) {

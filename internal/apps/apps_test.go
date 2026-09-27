@@ -70,6 +70,19 @@ func TestWriteCache(t *testing.T) {
 	_, err = os.Stat(filepath.Join(cache, "web", "Firefox.desktop"))
 	assert.True(t, os.IsNotExist(err))
 	require.Equal(t, "c2b", readCache(t, filepath.Join(cache, "web", "Code.desktop")))
+
+	// A failed write (unwritable cache dir) leaves the previous set intact
+	// and no temp dir behind.
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission bits")
+	}
+	require.NoError(t, os.Chmod(cache, 0o500)) // #nosec G302 -- t.TempDir fixture, restored below
+	t.Cleanup(func() { _ = os.Chmod(cache, 0o700) }) //nolint:gosec // t.TempDir fixture restore
+	_, err = WriteCache(cache, "web", map[string]string{"Code": "c3"})
+	require.Error(t, err)
+	require.Equal(t, "c2b", readCache(t, filepath.Join(cache, "web", "Code.desktop")))
+	_, serr := os.Stat(filepath.Join(cache, "web.tmp"))
+	assert.True(t, os.IsNotExist(serr), "failed write must not leave a temp dir")
 }
 
 func readCache(t *testing.T, path string) string {
@@ -105,6 +118,17 @@ func TestLaunchStartsStoppedVM(t *testing.T) {
 	// Malformed info (no vm|exec split) is an error, no callbacks.
 	calls = nil
 	err = Launch("no-pipe", t.TempDir(),
+		func(_ string) bool { return true },
+		func(_ string) error { return nil },
+		func(_ string) error { return nil },
+		func(_, _ string) error { calls = append(calls, "run"); return nil },
+	)
+	require.Error(t, err)
+	assert.Empty(t, calls)
+
+	// Empty exec ("web|") is rejected the same way: no waypipe with no app.
+	calls = nil
+	err = Launch("web|", t.TempDir(),
 		func(_ string) bool { return true },
 		func(_ string) error { return nil },
 		func(_ string) error { return nil },
