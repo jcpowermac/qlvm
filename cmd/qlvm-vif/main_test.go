@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/stretchr/testify/assert"
@@ -75,6 +78,54 @@ func TestVifSkipsEmu(t *testing.T) {
 	assert.Empty(t, ov.adds)
 	assert.Empty(t, ov.dels)
 	assert.Empty(t, links.ups)
+
+	// run-level: an -emu dev exits 0 without ever wiring the planes
+	// (OVS may be down during an HVM bring-up).
+	oldWire := wire
+	t.Cleanup(func() { wire = oldWire })
+	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
+		return nil, nil, nil, errors.New("ovs down")
+	}
+	assert.Equal(t, 0, run([]string{"add", "vif0.0-emu", "0", "aa:bb:cc:dd:ee:01", "0"}))
+}
+
+// TestRunTeardownWithDeadControlPlane pins bash do_without_error parity:
+// remove|offline exits 0 when the control plane cannot even be wired
+// (plausible teardown: OVS restarted after the VM started), while
+// bring-up paths still exit 1.
+func TestRunTeardownWithDeadControlPlane(t *testing.T) {
+	oldWire := wire
+	t.Cleanup(func() { wire = oldWire })
+	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
+		return nil, nil, nil, errors.New("ovsdb down")
+	}
+	assert.Equal(t, 0, run([]string{"remove", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	assert.Equal(t, 0, run([]string{"offline", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	assert.Equal(t, 1, run([]string{"add", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+}
+
+// TestNewlinkRequestLayout pins the wire bytes of the RTM_NEWLINK
+// request: nlmsghdr, ifinfomsg, and the IFLA_IFNAME attribute header.
+func TestNewlinkRequestLayout(t *testing.T) {
+	msg := newlinkRequest(7, "vif1.0")
+
+	// nlmsghdr: len 16+12+20=48, type RTM_NEWLINK, REQUEST|ACK, seq 1.
+	assert.Equal(t, uint32(48), binary.LittleEndian.Uint32(msg[0:4]))
+	assert.Equal(t, uint16(unix.RTM_NEWLINK), binary.LittleEndian.Uint16(msg[4:6]))
+	assert.Equal(t, uint16(unix.NLM_F_REQUEST|unix.NLM_F_ACK), binary.LittleEndian.Uint16(msg[6:8]))
+	assert.Equal(t, uint32(1), binary.LittleEndian.Uint32(msg[8:12]))
+
+	// ifinfomsg: family AF_UNSPEC, index 7, flags IFF_UP.
+	assert.Equal(t, byte(unix.AF_UNSPEC), msg[16])
+	assert.Equal(t, uint32(7), binary.LittleEndian.Uint32(msg[20:24]))
+	assert.Equal(t, uint32(unix.IFF_UP), binary.LittleEndian.Uint32(msg[24:28]))
+
+	// IFLA_IFNAME attr: 4-byte header (nla_len=20, nla_type=IFLA_IFNAME)
+	// then the NUL-padded name.
+	assert.Equal(t, uint16(20), binary.LittleEndian.Uint16(msg[28:30]))
+	assert.Equal(t, uint16(unix.IFLA_IFNAME), binary.LittleEndian.Uint16(msg[30:32]))
+	assert.Equal(t, []byte("vif1.0"), msg[32:38])
+	assert.Equal(t, byte(0), msg[38])
 }
 
 func TestVifAddHappyPath(t *testing.T) {

@@ -120,9 +120,20 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: qlvm-vif <command> <dev> <domid> <mac> <port>")
 		return 1
 	}
+	// -emu (HVM guard) is a no-op and must not require a live control
+	// plane, so it exits before wiring.
+	if strings.HasSuffix(args[1], "-emu") {
+		return 0
+	}
 	xs, vif, linkUp, err := wire()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "qlvm-vif:", err)
+		// bash parity (do_without_error): teardown of a dying domain
+		// must not fail when the control plane is unreachable (e.g. OVS
+		// restarted after the VM started).
+		if args[0] == "remove" || args[0] == "offline" {
+			return 0
+		}
 		return 1
 	}
 	if err := VifHandle(args[0], args[1], xs, vif, linkUp); err != nil {
@@ -134,6 +145,33 @@ func run(args []string) int {
 
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+// newlinkRequest builds the RTM_NEWLINK request (nlmsghdr + ifinfomsg +
+// IFLA_IFNAME attribute) that sets IFF_UP on the interface with the given
+// index. The ifname attribute carries a proper 4-byte netlink attribute
+// header (nla_len, nla_type) and a NUL-padded name.
+func newlinkRequest(idx int, dev string) []byte {
+	name := make([]byte, 16)
+	copy(name, dev)
+	attr := make([]byte, 4+len(name))
+	binary.LittleEndian.PutUint16(attr, uint16(4+len(name))) // #nosec G115 -- fixed 16-byte ifname, len 20
+	binary.LittleEndian.PutUint16(attr[2:], unix.IFLA_IFNAME)
+	copy(attr[4:], name)
+
+	payload := make([]byte, 12+len(attr))
+	payload[0] = unix.AF_UNSPEC
+	// #nosec G115 -- IfInfomsg.Index is 32-bit; idx is range-guarded by the caller.
+	binary.LittleEndian.PutUint32(payload[4:8], uint32(idx))
+	binary.LittleEndian.PutUint32(payload[8:12], uint32(unix.IFF_UP))
+	copy(payload[12:], attr)
+
+	hdr := make([]byte, 16)
+	binary.LittleEndian.PutUint32(hdr, uint32(16+len(payload))) // #nosec G115 -- fixed-size message (48)
+	binary.LittleEndian.PutUint16(hdr[4:], unix.RTM_NEWLINK)
+	binary.LittleEndian.PutUint16(hdr[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
+	binary.LittleEndian.PutUint32(hdr[8:], 1) // seq
+	return append(hdr, payload...)
 }
 
 // netlinkSetUp brings an OVS internal netdev up with a raw RTM_NEWLINK
@@ -166,21 +204,7 @@ func netlinkSetUp(dev string) error {
 		return err
 	}
 
-	name := make([]byte, 16)
-	copy(name, dev)
-	payload := make([]byte, 12+len(name))
-	payload[0] = unix.AF_UNSPEC
-	binary.LittleEndian.PutUint32(payload[4:8], uint32(idx)) // IfInfomsg.Index (guarded above) // #nosec G115
-	binary.LittleEndian.PutUint32(payload[8:12], uint32(unix.IFF_UP))
-	copy(payload[12:], name)
-
-	hdr := make([]byte, 16)
-	binary.LittleEndian.PutUint32(hdr, 16+uint32(len(payload))) // #nosec G115 -- constant-size message
-	binary.LittleEndian.PutUint16(hdr[4:], unix.RTM_NEWLINK)
-	binary.LittleEndian.PutUint16(hdr[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
-	binary.LittleEndian.PutUint32(hdr[8:], 1) // seq
-
-	if err := unix.Sendto(fd, append(hdr, payload...), 0, nil); err != nil {
+	if err := unix.Sendto(fd, newlinkRequest(idx, dev), 0, nil); err != nil {
 		return err
 	}
 	// With NLM_F_ACK the kernel answers exactly one NLMSG_ERROR.

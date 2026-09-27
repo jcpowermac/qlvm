@@ -23,7 +23,9 @@ func InstallVifScript(dst, src string) error {
 	}
 	// #nosec G302,G304 -- vif-ovn must carry the exec bit: libxl (root)
 	// execs it as the Xen vif hotplug script, nothing else needs access.
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	// 0750: consumed only by the Xen toolstack as root; deliberately not
+	// world-executable.
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o750)
 	if err != nil {
 		return err
 	}
@@ -35,6 +37,6 @@ func InstallVifScript(dst, src string) error {
 		return cerr
 	}
 	// umask may have stripped the exec bit from the OpenFile mode.
-	// #nosec G302 -- consumed only by the Xen toolstack as root.
-	return os.Chmod(dst, 0o755)
+	// #nosec G302 -- 0750: consumed only by the Xen toolstack as root.
+	return os.Chmod(dst, 0o750)
 }

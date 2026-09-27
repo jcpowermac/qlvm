@@ -20,7 +20,7 @@ func TestInstallVifScript(t *testing.T) {
 	assert.Equal(t, []byte("vifbin"), b)
 	fi, err := os.Stat(dst) // #nosec G304 -- test fixture path
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o755), fi.Mode().Perm())
+	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm())
 
 	// re-run overwrites in place
 	require.NoError(t, os.WriteFile(src, []byte("vifbin2"), 0o600))
