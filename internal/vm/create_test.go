@@ -166,6 +166,18 @@ func TestCreateHappyPath(t *testing.T) {
 		require.Equal(t, "10.100.1.11", m2.IP)
 	})
 
+	t.Run("orphan dir without meta does not fail create", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		var events []string
+		d := testDeps(t, root, &events, nil)
+		// Simulate a create that crashed between MkdirAll and meta save.
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "vms", "crashed"), 0o750))
+		m, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
+		require.NoError(t, err)
+		require.Equal(t, "10.100.1.10", m.IP, "orphan dir must not count as an existing VM")
+	})
+
 	t.Run("existing VM is refused", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()

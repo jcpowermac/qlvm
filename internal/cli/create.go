@@ -16,6 +16,10 @@ import (
 
 const podmanSocket = "unix:///run/podman/podman.sock"
 
+// fstype is the filesystem for both the template bake and the VM disk
+// (ruling 4: the CLI passes it explicitly; one spelling so the two can't drift).
+const fstype = "xfs"
+
 func createCmd() *cobra.Command {
 	var domain, typ, image string
 	var memory, vcpus int
@@ -43,7 +47,7 @@ func createCmd() *cobra.Command {
 				Ref:  image,
 				Log:  cmd.OutOrStdout(),
 				Bake: func(dir string) error {
-					return ostree.BakeTemplate(cmd.Context(), ostree.NewFS(nil), dir, "xfs")
+					return ostree.BakeTemplate(cmd.Context(), ostree.NewFS(nil), dir, fstype)
 				},
 			})
 			if err != nil {
@@ -67,7 +71,7 @@ func createCmd() *cobra.Command {
 				FS:      ostree.NewFS(nil),
 				Reflink: mounts.Reflink,
 				Root:    installRoot,
-				FSType:  "xfs",
+				FSType:  fstype,
 			}, cfg, vm.Spec{
 				Name:     name,
 				Domain:   domain,

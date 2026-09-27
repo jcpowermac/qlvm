@@ -154,7 +154,9 @@ func countDomainVMs(root, domain string) (int, error) {
 		}
 		m, err := LoadMeta(filepath.Join(root, "vms", e.Name()))
 		if err != nil {
-			return 0, err
+			// A dir left by a crash between MkdirAll and meta save must not
+			// poison later creates: unreadable meta = not counted.
+			continue
 		}
 		if m.Domain == domain {
 			n++
