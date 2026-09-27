@@ -4,9 +4,9 @@
 
 **Goal:** Build `qlvm`, a Go rewrite of the bash qvm toolset: unified container-based VM creation (app/disposable) on Xen PVH with OVN network isolation, 9-subcommand CLI + vif hotplug binary, native control planes only.
 
-**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, mgmt, x/crypto/ssh.
+**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, x/crypto/ssh (+ sftp for provisioning; the original Go config-management dependency was dropped — see Task 12 ruling).
 
-**Tech Stack:** Go (latest stable), cobra, ovn-kubernetes/libovsdb, xen-project xenlight (cgo/libxl), godbus, containers/podman client API, purpleidea/mgmt, golang.org/x/crypto/ssh, golang.org/x/sys/unix, vishvananda/netlink, BurntSushi/toml, golangci-lint.
+**Tech Stack:** Go (latest stable), cobra, ovn-kubernetes/libovsdb, xen-project xenlight (cgo/libxl), godbus, containers/podman client API, pkg/sftp, golang.org/x/crypto/ssh, golang.org/x/sys/unix, vishvananda/netlink, BurntSushi/toml, golangci-lint.
 
 **Spec:** `docs/superpowers/specs/2026-09-26-qlvm-design.md`
 
@@ -385,7 +385,9 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 ---
 
-### Task 12: `provision` (mgmt)
+### Task 12: `provision` (config-management runner)
+
+> **Ruling (applied during execution):** the Go config-management dependency was dropped — the pinned driver API no longer exists, engine resources apply dom0-local (wrong target), the only remote mode is a daemon-in-VM (incompatible + GPL-3.0). The real `Runner` is sshx `sudo dnf install -y` (rpm-token whitelist) + pkg/sftp upload; the `Runner` interface seam is preserved for a future backend.
 
 **Files:**
 - Create: `internal/provisioner/provisioner.go`, `internal/provisioner/provisioner_test.go`, `internal/cli/provision.go`, `provision/base/packages.txt`, `provision/base/dotfiles/.gitkeep`
@@ -395,7 +397,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 - Produces:
   - `func ParsePackages(dirs ...string) []string` // union, file order preserved, `#` comments + blank lines dropped, de-duplicated
   - `func DotfileList(dir string) ([]string, error)` // files under dir, relative paths, `.gitkeep` excluded
-  - `type Runner interface { Run(ctx, host string, ops []Op) error }` // wraps mgmt (real: mgmt batch with SSH transport, host from sshx.Resolve; `_sudo` for package install)
+  - `type Runner interface { Run(ctx, host string, ops []Op) error }` // wraps the provisioning backend (real: sshx `sudo dnf install -y` + sftp upload, host from sshx.Resolve)
   - `func Provision(ctx, r Runner, home, vm, provisionDir string, mode Mode) error` // `Mode` ∈ all/packages/dotfiles; layers `base` then `<vm>` (missing dir = skip)
   - `internal/cli`: `provision` cmd with flags `--packages-only`, `--dotfiles-only` (default: both). The bash `setup.sh`/`--profile` concepts are gone — custom commands run via `qlvm run`.
   - Repo scaffold: `provision/base/packages.txt` (comment-only), `provision/base/dotfiles/.gitkeep`.
@@ -404,13 +406,13 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 - `TestParsePackages` (two dirs, overlap, comments, blanks → exact slice); `TestDotfileList` (nested `.config/` file included, `.gitkeep` excluded, relative paths); `TestProvisionModes` (fake Runner: packages mode → only pkg op with union list; dotfiles → file ops with exact paths; all → both; missing per-vm dir → base only, no error).
 
-- [ ] **Step 2: Verify failure** — FAIL undefined (after `go get github.com/purpleidea/mgmt`).
+- [ ] **Step 2: Verify failure** — FAIL undefined.
 
-- [ ] **Step 3: Implement** (mgmt real Runner: `mgmt.New` with ssh transport + `mgmt.Batch` of `mgmt.NewOperation`… follow mgmt's API for `pkg`/`file` ops; keep the translation inside `Runner`).
+- [ ] **Step 3: Implement** (real Runner per ruling: sshx `sudo dnf install -y` with rpm-token whitelist + sftp upload; keep the translation inside `Runner`).
 
 - [ ] **Step 4: Verify pass** — `go test ./internal/provisioner/...` — PASS.
 
-- [ ] **Step 5: Commit** — `git commit -am "feat: provision via mgmt"`
+- [ ] **Step 5: Commit** — `git commit -am "feat: provision packages+dotfiles over sshx"`
 
 ---
 
@@ -503,5 +505,5 @@ git add -A && git commit -m "chore: CI, README, sanitized docs, integration scaf
 ## Execution notes
 
 - Tasks are ordered by dependency; Tasks 3–5 are mutually independent (parallelizable after Task 1).
-- `go get` pins: libovsdb `main`, podman client `v5`, mgmt `master`, godbus `v5`, xenlight `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<release-tag>` (record the pinned ref in the commit message).
+- `go get` pins: libovsdb `main`, podman client `v5`, godbus `v5`, xenlight `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<release-tag>` (record the pinned ref in the commit message).
 - Every task ends green (`go test ./...` + `make lint`) before the next starts.
