@@ -12,10 +12,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # libxl headers so the real xenlight cgo binding compiles
-      # (Makefile auto-detects via pkg-config --exists libxl).
-      - name: Install libxl headers
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libxl-dev
+      # Xen dev packages so the real xenlight cgo binding compiles
+      # (Makefile auto-detects via pkg-config module libxl or xenlight;
+      # Ubuntu names the package libxen-dev, Fedora's libxl-devel).
+      - name: Install Xen dev packages
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libxen-dev
       - name: make build
         run: make build
       - name: go test

@@ -6,11 +6,14 @@ BIN := bin
 # REST socket, so those drivers and gpgme are excluded at compile time.
 # On a machine with the dev headers installed, plain `go build ./...`
 # works without these tags.
-# libxl is auto-detected: with libxl-devel installed the real xenlight
-# binding compiles in (internal/xenctl/xenctl_libxl.go); without it the
-# stub keeps the build cgo-free and lifecycle commands fail with a rebuild
-# hint at runtime.
-LIBXL := $(shell pkg-config --exists libxl 2>/dev/null && echo 1)
+# libxl is auto-detected: with the Xen dev packages installed the real
+# xenlight binding compiles in (internal/xenctl/xenctl_libxl.go); without
+# them the stub keeps the build cgo-free and lifecycle commands fail with a
+# rebuild hint at runtime. Fedora ships pkg-config module `libxl`
+# (libxl-devel); Debian/Ubuntu ship `xenlight` (libxen-dev) — either one
+# provides the headers (libxl.h) and link targets (libxenlight) the cgo
+# build needs.
+LIBXL := $(shell (pkg-config --exists libxl 2>/dev/null || pkg-config --exists xenlight 2>/dev/null) && echo 1)
 GO_TAGS := $(strip exclude_graphdriver_btrfs exclude_graphdriver_zfs containers_image_openpgp $(if $(LIBXL),libxl,))
 
 

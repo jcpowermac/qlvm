@@ -337,7 +337,7 @@ qlvm/
 │   ├── template/             # ensureTemplate: podman, image-builder, ostree surgery
 │   ├── ostree/               # loop/mount helpers, partition discovery, dep-tree paths
 │   ├── vm/                   # create/start/stop/kill/delete/list, meta.toml
-│   ├── provisioner/          # provisioning (Runner seam; real: sshx dnf + sftp)
+│   ├── provisioner/          # dotfile sync (Runner seam; real: sftp over sshx)
 │   ├── sshx/                 # x/crypto/ssh helpers (sync-kernel, apps, wait)
 │   ├── apps/                 # desktop cache + rofi mode
 │   ├── mounts/               # FICLONE reflink + p9 spec

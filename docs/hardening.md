@@ -8,17 +8,24 @@ deliberate, manual, and destructive.
 > packages. Do it from a console or a session that survives the removal —
 > not from the desktop you are removing. Keep a known-good recovery path
 > (a live USB or a second session) before you start.
+>
+> The dom0 is an ostree (atomic) system: dnf is disabled on it. Package
+> changes go through `rpm-ostree`, which *stages* a new deployment that
+> becomes active at the next boot. If you manage the dom0 image from a
+> recipe, the durable home for these changes is the recipe itself (removals
+> drop out of the recipe's package set, installs are added to it) and a
+> rebuilt image — `rpm-ostree` here is the manual equivalent.
 
 ## Package removal
 
 The dom0 image ships with a GNOME desktop, QEMU/libvirt, and printing
 stacks that a Xen-only dom0 never uses. Removing them cuts the attack
 surface (and the update surface) substantially. Xen packages are protected
-by default; the usual invocation is a single transaction that removes the
-GNOME session, QEMU/libvirt, and the printing stack:
+by default; the usual invocation is a single staged transaction that
+removes the GNOME session, QEMU/libvirt, and the printing stack:
 
 ```sh
-sudo dnf remove -y \
+sudo rpm-ostree remove \
     gnome-shell gnome-session gdm mutter gnome-control-center gnome-settings-daemon \
     gnome-initial-setup gnome-software gnome-system-monitor gnome-text-editor \
     nautilus baobab gnome-calculator gnome-calendar gnome-contacts gnome-disks \
@@ -30,10 +37,11 @@ sudo dnf remove -y \
 ```
 
 Tune the list to what you actually run: if a package is installed by a
-package you still need, dnf's dependency solver will keep or pull it back —
-review the transaction summary it prints before confirming. If you use
-QEMU/libvirt alongside Xen (you should not, on a dom0), skip those
-packages.
+package you still need, the dependency solver will keep or pull it back —
+review the transaction summary it prints before it stages. Reboot to make
+the removal active (`rpm-ostree status` shows the staged deployment until
+then). If you use QEMU/libvirt alongside Xen (you should not, on a dom0),
+skip those packages.
 
 Also check for and repair broken Xen shims afterwards, e.g. a dangling
 `/usr/libexec/xen/bin/qemu-system-*` symlink left behind by the QEMU
@@ -53,9 +61,12 @@ requires a Wayland session), replace GDM with the tiny `greetd` login
 service plus a compositor of your choice:
 
 ```sh
-sudo dnf install -y greetd greetd-selinux
+sudo rpm-ostree install greetd greetd-selinux
 sudo systemctl enable greetd
 ```
+
+The install stages a new deployment — reboot to activate it (enablement
+persists across the switch).
 
 Minimal `/etc/greetd/config.toml` (Wayland greeter on VT1):
 
@@ -86,6 +97,6 @@ Adjust the compositor/greeter combination to what you installed. Reboot
 - The `[firewall.egress]` section of `qlvm.toml` is the dom0 *egress*
   policy; this document covers *host* hardening (what runs on dom0 at
   all). Both apply, independently.
-- Review `dnf remove` output and your SELinux context for the greeter
-  before rebooting; a broken login on the only console is your own fault,
-  not the solver's.
+- Review `rpm-ostree` transaction output and your SELinux context for the
+  greeter before rebooting; a broken login on the only console is your own
+  fault, not the solver's.
