@@ -92,7 +92,7 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 			return nil
 		},
 		VifScript: func() error {
-			return installVifScript(filepath.Dir(exe), "/etc/xen/scripts")
+			return InstallVifScript("/etc/xen/scripts/vif-ovn", filepath.Join(filepath.Dir(exe), "qlvm-vif"))
 		},
 		SaveCfg: func() error {
 			if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {

@@ -19,6 +19,7 @@ build:
 	@test -n "$(LIBXL)" || \
 	echo "note: libxl not found (pkg-config --exists libxl); lifecycle commands will report 'built without Xen support' until you install libxl-devel and rebuild" >&2
 	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm ./cmd/qlvm
+	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm-vif ./cmd/qlvm-vif
 
 test:
 	go test -tags '$(GO_TAGS)' ./...
