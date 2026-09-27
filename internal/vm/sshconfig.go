@@ -1,19 +1,22 @@
 package vm
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// SSH config block format (supervisor ruling 2026-09-26; the "spec §6.5" the
-// brief cites is not in this repo): app VMs get a Host block, disposable do
-// not. No known-hosts directives: Task 11's Go SSH uses
-// InsecureClientHostKeyCallback and waypipe ssh inherits this file.
-const sshUser = "user"
+// SSHUser is the fixed user baked into every VM's image by the ostree bake
+// (Task 8); ssh-config blocks and direct VM connections both use it.
+const SSHUser = "user"
 
+// sshBlock renders one ssh config block (supervisor ruling 2026-09-26; the
+// "spec §6.5" the brief cites is not in this repo): app VMs get a Host
+// block, disposable do not. No known-hosts directives: sshx's Go SSH uses
+// InsecureIgnoreHostKey and waypipe ssh inherits this file.
 func sshBlock(name, ip string) string {
-	return "Host " + name + "\n  HostName " + ip + "\n  User " + sshUser
+	return "Host " + name + "\n  HostName " + ip + "\n  User " + SSHUser
 }
 
 func sshConfigPath(home string) string {
@@ -59,6 +62,44 @@ func writeConfig(path string, blocks []string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(strings.Join(blocks, "\n\n")+"\n"), 0o600)
+}
+
+// SSHEntry returns the HostName and User for host in home's ~/.ssh/config
+// (User is "" when the block has no User line). Error when the file or
+// block is missing.
+func SSHEntry(home, host string) (string, string, error) {
+	path := sshConfigPath(home)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is the caller-provided ssh config directory
+	if err != nil {
+		return "", "", err
+	}
+	for _, b := range parseBlocks(string(data)) {
+		name, ok := blockName(b)
+		if !ok || name != host {
+			continue
+		}
+		hostname, user := blockEntry(b)
+		return hostname, user, nil
+	}
+	return "", "", fmt.Errorf("no Host %s block in %s", host, path)
+}
+
+// blockEntry picks the HostName/User fields out of one ssh config block.
+func blockEntry(block string) (string, string) {
+	var hostname, user string
+	for _, line := range strings.Split(block, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.ToLower(fields[0]) {
+		case "hostname":
+			hostname = fields[1]
+		case "user":
+			user = fields[1]
+		}
+	}
+	return hostname, user
 }
 
 // AddSSHConfig idempotently adds (or replaces, in place) the Host block for m.
