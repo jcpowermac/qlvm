@@ -431,3 +431,5 @@ sigs.k8s.io/yaml v1.6.0 h1:G8fkbMSAFqgEFgh4b1wmtzDnioxFCUgTZhlbj5P9QYs=
 sigs.k8s.io/yaml v1.6.0/go.mod h1:796bPqUfzR/0jLAl6XjHl3Ck7MiyVv8dbTdyT3/pMf4=
 tags.cncf.io/container-device-interface v1.0.1 h1:KqQDr4vIlxwfYh0Ed/uJGVgX+CHAkahrgabg6Q8GYxc=
 tags.cncf.io/container-device-interface v1.0.1/go.mod h1:JojJIOeW3hNbcnOH2q0NrWNha/JuHoDZcmYxAZwb2i0=
+xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight v0.0.0-20260729185928-d45d5687f144 h1:V2pVD/OjFKxIDV9kZ8vT3ZJz9ZCkXk6TZD1Zst1vPgY=
+xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight v0.0.0-20260729185928-d45d5687f144/go.mod h1:tbZ4iMnk8RWkXPxTiCGdAw3hCOa3feShlf3sBh50uIc=

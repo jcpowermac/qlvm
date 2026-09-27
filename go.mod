@@ -12,6 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sys v0.47.0
+	xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight v0.0.0-20260729185928-d45d5687f144
 )
 
 require (

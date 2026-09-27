@@ -133,6 +133,13 @@ func adoptRaw(dir string) error {
 	return os.Rename(matches[0], filepath.Join(dir, "template.raw"))
 }
 
+// LoadByRef returns the template under root for ref+digest without
+// talking to podman (start/delete resolve the VM's kernel/initramfs dir
+// from persisted meta).
+func LoadByRef(root, ref, digest string) (*Template, error) {
+	return LoadMeta(DirFor(root, slugFromRef(ref), digest))
+}
+
 // LoadMeta reads a template's META file.
 func LoadMeta(dir string) (*Template, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "META")) // #nosec G304 -- dir is an internal template path under the qlvm root

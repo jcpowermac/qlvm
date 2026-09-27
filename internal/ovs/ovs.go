@@ -413,6 +413,17 @@ func (r *Reconciler) indexExisting(ctx context.Context) (map[string]string, erro
 	return have, nil
 }
 
+// VifPorter is the vif-port surface the VM lifecycle needs (stale-port
+// cleanup in start/delete); *Reconciler satisfies it. Task 14's vif
+// hotplug consumes it too.
+type VifPorter interface {
+	AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac string) error
+	DelVifPort(ctx context.Context, dev string) error
+	StaleVifPorts(ctx context.Context, ifaceID string) ([]string, error)
+}
+
+var _ VifPorter = (*Reconciler)(nil)
+
 // AddVifPort adds a vif port named dev to br-int: the port carries an
 // internal-type interface whose external-ids carry the OVN iface-id, the
 // Xen VM UUID and the attached MAC. An existing port named dev is removed
