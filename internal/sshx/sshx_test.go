@@ -3,6 +3,7 @@ package sshx
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,6 +51,38 @@ func TestKernelVersion(t *testing.T) {
 
 	_, err = KernelVersion("")
 	require.Error(t, err)
+}
+
+func TestNormalizeHostPort(t *testing.T) {
+	assert.Equal(t, "10.100.1.10:22", normalizeHostPort("10.100.1.10"))
+	assert.Equal(t, "[::1]:22", normalizeHostPort("[::1]"))
+	assert.Equal(t, "10.100.1.10:2222", normalizeHostPort("10.100.1.10:2222"))
+	assert.Equal(t, "10.100.1.10:22", normalizeHostPort("10.100.1.10:22"))
+}
+
+func TestFetchReadSecondReadAfterEOF(t *testing.T) {
+	pr, pw := io.Pipe()
+	waitCh := make(chan error, 1)
+	waitCh <- nil
+	close(waitCh)
+	f := &fetchRead{pr: pr, wait: waitCh}
+	_ = pw.Close()
+
+	n, err := f.Read(make([]byte, 8))
+	assert.Zero(t, n)
+	assert.ErrorIs(t, err, io.EOF)
+
+	// A second Read after EOF must return io.EOF, not block on the
+	// consumed wait channel.
+	done := make(chan struct{})
+	var err2 error
+	go func() { _, err2 = f.Read(make([]byte, 8)); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Read blocked past EOF")
+	}
+	assert.ErrorIs(t, err2, io.EOF)
 }
 
 func TestWaitForSSH(t *testing.T) {

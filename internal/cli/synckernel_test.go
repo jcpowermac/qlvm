@@ -34,6 +34,30 @@ func (f *fakeKernelHost) FetchFile(_ context.Context, path string) (io.ReadClose
 	return io.NopCloser(bytes.NewReader(body)), nil
 }
 
+func TestSyncKernelFetchFailureWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	require.NoError(t, (&template.Template{Dir: dir, Digest: digest, Image: "os-bolt"}).SaveMeta(dir))
+
+	// Kernel fetch succeeds, initramfs fetch fails mid-flow.
+	host := &fakeKernelHost{files: map[string][]byte{
+		"/boot/vmlinuz-6.11.9-300.fc44": []byte("KERNEL"),
+	}}
+
+	_, err := syncKernel(context.Background(), host, dir)
+	require.Error(t, err)
+
+	// No partial copy: not a single boot file may exist after a failure.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotEqual(t, "vmlinuz", e.Name())
+		assert.NotEqual(t, "vmlinuz-6.11.9-300.fc44", e.Name())
+		assert.NotEqual(t, "initramfs", e.Name())
+		assert.NotEqual(t, "initramfs-6.11.9-300.fc44.img", e.Name())
+	}
+}
+
 func readAll(t *testing.T, path string) []byte {
 	t.Helper()
 	body, err := os.ReadFile(path) // #nosec G304 -- test fixture path

@@ -50,6 +50,10 @@ func syncKernel(ctx context.Context, host kernelSyncer, dir string) (string, err
 		{"/boot/vmlinuz-" + ver, "vmlinuz-" + ver, "vmlinuz"},
 		{"/boot/initramfs-" + ver + ".img", "initramfs-" + ver + ".img", "initramfs"},
 	}
+	// Fetch everything before writing anything: a partial copy (new
+	// vmlinuz beside the old initramfs) would leave the template
+	// unbootable on restart.
+	var bodies [][]byte
 	for _, f := range files {
 		rc, err := host.FetchFile(ctx, f.remote)
 		if err != nil {
@@ -63,8 +67,11 @@ func syncKernel(ctx context.Context, host kernelSyncer, dir string) (string, err
 		if cerr != nil {
 			return "", fmt.Errorf("fetch %s: %w", f.remote, cerr)
 		}
+		bodies = append(bodies, body)
+	}
+	for i, f := range files {
 		for _, name := range []string{f.local, f.alias} {
-			if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, name), bodies[i], 0o600); err != nil {
 				return "", err
 			}
 		}

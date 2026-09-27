@@ -51,7 +51,8 @@ func Connect(ctx context.Context, home, host, user string) (*ssh.Client, error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	c, err := ssh.Dial("tcp", host, &ssh.ClientConfig{
+	addr := normalizeHostPort(host)
+	c, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
 		User:            user,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signers...)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // #nosec G106 -- VMs are auto-provisioned with a fresh key; equivalent of StrictHostKeyChecking no
@@ -61,6 +62,19 @@ func Connect(ctx context.Context, home, host, user string) (*ssh.Client, error) 
 		return nil, fmt.Errorf("ssh %s@%s: %w", user, host, err)
 	}
 	return c, nil
+}
+
+// normalizeHostPort appends the default SSH port 22 when host has none:
+// net.Dialers do not supply a default port, so a bare HostName/IP from
+// ssh config or VM meta would otherwise fail with "missing port in address".
+func normalizeHostPort(host string) string {
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		// JoinHostPort re-brackets any host containing a colon, so drop
+		// existing IPv6 brackets before joining.
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		return net.JoinHostPort(host, "22")
+	}
+	return host
 }
 
 // signersFor collects ssh-agent signers (if SSH_AUTH_SOCK is set) followed
@@ -158,6 +172,7 @@ func FetchFile(ctx context.Context, c *ssh.Client, path string) (io.ReadCloser, 
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- s.Wait()
+		close(waitCh) // Read may consume the result once, then must see a closed empty channel
 		_ = pw.Close()
 	}()
 	return &fetchRead{pr: pr, wait: waitCh, sess: s}, nil
@@ -172,7 +187,9 @@ type fetchRead struct {
 func (f *fetchRead) Read(p []byte) (int, error) {
 	n, err := f.pr.Read(p)
 	if err == io.EOF {
-		if werr := <-f.wait; werr != nil {
+		// wait is closed after the single send: a re-read past EOF sees
+		// ok=false instead of blocking on the empty channel.
+		if werr, ok := <-f.wait; ok && werr != nil {
 			err = fmt.Errorf("remote cat: %w", werr)
 		}
 	}
