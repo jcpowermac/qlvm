@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,33 +28,37 @@ func startCmd() *cobra.Command {
 		Short: "Boot a prepared VM (cleans stale OVS vif ports first)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			name := args[0]
-			dir := vmDirOf(name)
-			m, err := vm.LoadMeta(dir)
-			if err != nil {
-				return fmt.Errorf("start %s: %w", name, err)
+			if err := startVM(cmd.Context(), args[0]); err != nil {
+				return fmt.Errorf("start %s: %w", args[0], err)
 			}
-			tpl, err := template.LoadByRef(installRoot, m.Image, m.Digest)
-			if err != nil {
-				return fmt.Errorf("start %s: template: %w", name, err)
-			}
-			x, err := xenctl.New()
-			if err != nil {
-				return err
-			}
-			defer func() { _ = x.Close() }()
-			br, err := ovs.NewLive(ctx)
-			if err != nil {
-				return err
-			}
-			if err := xenctl.Start(ctx, x, br, m, dir, tpl); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "started %s\n", name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "started %s\n", args[0])
 			return nil
 		},
 	}
+}
+
+// startVM boots a prepared VM (the qlvm start body); shared with apps'
+// auto-start of a stopped VM.
+func startVM(ctx context.Context, name string) error {
+	dir := vmDirOf(name)
+	m, err := vm.LoadMeta(dir)
+	if err != nil {
+		return err
+	}
+	tpl, err := template.LoadByRef(installRoot, m.Image, m.Digest)
+	if err != nil {
+		return fmt.Errorf("template: %w", err)
+	}
+	x, err := xenctl.New()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = x.Close() }()
+	br, err := ovs.NewLive(ctx)
+	if err != nil {
+		return err
+	}
+	return xenctl.Start(ctx, x, br, m, dir, tpl)
 }
 
 func stopCmd() *cobra.Command {
