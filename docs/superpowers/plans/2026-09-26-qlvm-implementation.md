@@ -4,9 +4,9 @@
 
 **Goal:** Build `qlvm`, a Go rewrite of the bash qvm toolset: unified container-based VM creation (app/disposable) on Xen PVH with OVN network isolation, 9-subcommand CLI + vif hotplug binary, native control planes only.
 
-**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, mgmt, x/crypto/ssh.
+**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, x/crypto/ssh (+ sftp for provisioning; the original Go config-management dependency was dropped — see Task 12 ruling).
 
-**Tech Stack:** Go (latest stable), cobra, ovn-kubernetes/libovsdb, xen-project xenlight (cgo/libxl), godbus, containers/podman client API, purpleidea/mgmt, golang.org/x/crypto/ssh, golang.org/x/sys/unix, vishvananda/netlink, BurntSushi/toml, golangci-lint.
+**Tech Stack:** Go (latest stable), cobra, ovn-kubernetes/libovsdb, xen-project xenlight (cgo/libxl), godbus, containers/podman client API, pkg/sftp, golang.org/x/crypto/ssh, golang.org/x/sys/unix, vishvananda/netlink, BurntSushi/toml, golangci-lint.
 
 **Spec:** `docs/superpowers/specs/2026-09-26-qlvm-design.md`
 
@@ -34,8 +34,10 @@
 ### Task 1: Module scaffold + `internal/config`
 
 **Files:**
-- Create: `go.mod`, `Makefile`, `.golangci.yml`, `README.md` (stub), `cmd/qlvm/main.go`
+- Create: `go.mod`, `Makefile`, `.golangci.yml`, `README.md` (stub), `cmd/qlvm/main.go`, `internal/cli/root.go`
 - Create: `internal/config/config.go`, `internal/config/config_test.go`, `internal/config/fixture.toml` (testdata)
+
+**Ruling (controller):** the cobra root lives in `internal/cli/root.go` as `func NewRootCmd() *cobra.Command` (name `qlvm`, short `Qubes-like VM isolation on dom0`); `cmd/qlvm/main.go` only calls it. Every later task's `internal/cli/*.go` file registers its command via `init() { NewRootCmd().AddCommand(...) }` — no later task edits root.go.
 
 **Interfaces:**
 - Produces:
@@ -86,7 +88,7 @@ git add -A && git commit -m "feat: module scaffold + config package"
 
 - [ ] **Step 1: Write the failing test**
 
-`TestHostIPMAC`: work domain (`10.100.1`), existing=0 → `10.100.1.10`, `02:00:00:00:00:0a`; existing=9 → `.19`/`...:00:13`; existing=205 → hostnum 215 → `10.100.1.215`, `02:00:00:00:01:07`.
+`TestHostIPMAC`: work domain (`10.100.1`), existing=0 → `10.100.1.10`, `02:00:00:00:00:0a`; existing=9 → `.19`/`...:00:13`; existing=205 → hostnum 215 → `10.100.1.215`, `02:00:00:00:00:d7`. (Ruling 2026-09-26: original `01:07` vector was an arithmetic typo; formula authoritative.)
 
 - [ ] **Step 2: Verify failure** — `go test ./internal/vm/ -run TestHostIPMAC` — FAIL undefined.
 
@@ -230,7 +232,8 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Podman interface { Pull(ctx, ref string) (digest string, err error); InspectDigest(ctx, ref string) (string, error); RunImageBuilder(ctx, workdir, ref string, errStream io.Writer) error }`
   - `type Template struct { Dir, Image, Digest, KernelVer, RootDev, RootFlags, OstreePath string }` // RootDev e.g. `UUID=<uuid>`, RootFlags `subvol=root` for btrfs else "", OstreePath e.g. `/ostree/boot.1/<osid>/<commit>/0`
   - `func DirFor(root, slug, digest string) string` // `<root>/templates/<slug>-<digest>` (slug = image ref lowercased, `/`→`-`, registry host dropped)
-  - `func Ensure(ctx context.Context, p Podman, tplRoot, ref string, log io.Writer) (*Template, error)` // pull → digest → if `DirFor` exists with readable META → return; else run image-builder in `DirFor`, adopt `<dir>/*.raw` as `template.raw`; boot-asset extraction + baking is Task 8's `Bake` (Ensure calls `Bake` — inject via `EnsureOpts{ Bake func(dir string) error }` so this task's tests fake it)
+  - `type EnsureOpts struct { Root, Ref string; Log io.Writer; Bake func(dir string) error }`
+  - `func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error)` // pull → digest → if `DirFor` exists with readable META → return; else run image-builder in `DirFor`, adopt `<dir>/*.raw` as `template.raw`, then call `o.Bake(dir)` (inject so this task's tests fake Task 8)
   - `func LoadMeta(dir string) (*Template, error)` / `func (t *Template) SaveMeta(dir string) error` // `META` file, TOML
 
 - [ ] **Step 1: Write the failing tests**
@@ -259,7 +262,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 **Interfaces:**
 - Consumes: Task 7 `template.Template`.
 - Produces:
-  - `type FS interface { LoopAttach(path string) (loop string, err error); LoopDetach(dev string) error; Mount(dev, target string, ro bool) error; Umount(target string) error; Partitions(loop string) (names []string); FileExists(p string) bool; ReadDir(p string) ([]string, error); StatSize... }` — the narrow file/loop/mount surface used by surgery, default impl via `x/sys/unix` (loop ioctls `LOOP_CTL_GET_FREE`/`LOOP_SET_STATUS`, `unix.Mount/Unmount`, sysfs for partition UUID/type).
+  - `type FS interface { LoopAttach(path string) (loop string, err error); LoopDetach(dev string) error; Mount(dev, target string, ro bool) error; Umount(target string) error; Partitions(loop string) (names []string); ReadDir(p string) ([]string, error); CopyFile(src, dst string) (n int, err error) }` — the narrow file/loop/mount surface used by surgery, default impl via `x/sys/unix` (loop ioctls `LOOP_CTL_GET_FREE`/`LOOP_SET_STATUS`, `unix.Mount/Unmount`, sysfs for partition UUID/type).
   - `type Mounter func(dev, target string, ro bool) error` — injected so the dirty-log path is unit-testable.
   - `func BakeTemplate(ctx, fs FS, dir string) error` // ensureTemplate post-build: find ostree root part (dir containing `/ostree/repo`), find /boot part (contains `ostree/*/vmlinuz-*`), copy vmlinuz+initramfs to `dir/`, compute Template fields (KernelVer, RootDev from sysfs uuid, RootFlags, OstreePath = first `ostree/boot.*` sorted -V + osid + commit + `/0`), write identity+units into deployment tree (`<root>/ostree/deploy/<osid>/deploy/<commit>.0/etc/…`), SaveMeta.
   - `func BakeNetworkd(ctx, fs FS, diskPath, ip, gw, mac, dns string) error` // per-VM: loop-attach, mount root rw (via Mounter), write `<depTree>/etc/systemd/network/10-bolt.network` (golden content: `[Match] MACAddress`, `[Network] Address ip/24 Gateway DNS Domains=~.`), umount, detach.
@@ -296,7 +299,8 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Meta struct { Name, Type, Image, Digest, Domain, IP, MAC string; MemoryMB, VCPUs int; Mounts []Mount; Uuid string; Created time.Time }`
   - `type Mount struct { Host, Guest string }` // p9: Host path on dom0, Guest tag
   - `func LoadMeta(vmDir string) (*Meta, error)` / `func (m *Meta) Save(vmDir string) error` // `meta.toml`
-  - `type CreateDeps struct { OVN *ovn.Reconciler; Tpl *template.Template; FS ostree.FS; Mounter ostree.Mounter; Reflink func(dst, src string) error }`
+  - `type OVNPorter interface { AddLSPort(ctx context.Context, sw, name, mac, ip string) error; DelLSPort(ctx context.Context, name string) error }` // `*ovn.Reconciler` satisfies it
+  - `type CreateDeps struct { OVN OVNPorter; Tpl *template.Template; FS ostree.FS; Mounter ostree.Mounter; Reflink func(dst, src string) error }`
   - `func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*Meta, error)`
   - `type Spec struct { Name, Domain, Type, Image string; MemoryMB, VCPUs int; Mounts []Mount }` // zero MemoryMB/VCPUs → defaults from cfg per Type
   - `func DomainConfig(m *Meta, tpl *template.Template) *xenlight.DomainConfig` // **pure, golden-tested** (xenlight = `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight`, package `xenlight`): Type PVH, Name, Uuid (parsed from m), Kernel `tpl.Dir/vmlinuz`, Ramdisk `tpl.Dir/initramfs`, Extra `[root=<RootDev> <RootFlags> ostree=<OstreePath> systemd.default-target=multi-user.target console=hvc0]`, MaxVcpus, TargetMemkb, Disks [{PdevPath `<vmDir>/disk.img`, Vdev `xvda`, Format Raw, Readwrite 1}], Nics [{Mac, Script `vif-ovn`, Nictype Vif}], P9S [{Tag m, Guest…, Path mount.Host, SecurityModel `none`, Type Xen9Pfsd}]
@@ -316,7 +320,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 - [ ] **Step 3: Implement** (create ordering per spec §6; cleanup on failure = delete OVN port; `Uuid` = random, persisted in Meta).
 
-- [ ] **Step 4: Verify pass** — `go test ./internal/vm/... ./internal/mounts/...` — PASS.
+- [ ] **Step 4: Verify pass** — `go test ./internal/vm/... ./internal/mounts/...` — PASS. NOTE: `internal/vm` now imports xenlight (cgo) via `DomainConfig`; that file MUST be behind the `//go:build libxl` tag with a `//go:build !libxl` stub `DomainConfig` returning a clear error, so default `go test ./...` passes without libxl headers (controller ruling, Task 10 carries the real file + tag convention).
 
 - [ ] **Step 5: Commit** — `git commit -am "feat: vm create (meta, reflink, domain config, ssh config)"`
 
@@ -333,15 +337,16 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `type Xen interface { CreateDomain(*xenlight.DomainConfig) error; Destroy(name string) error; Shutdown(name string) error; List() ([]DomainInfo, error); Running(name string) (bool, error) }`
   - `type DomainInfo struct { Name string; ID uint32; MemMB uint64; VCPUs uint8; State string }`
   - Real impl wraps `xenlight.NewContext()` (one Context per process; `defer Close`).
-  - `func Start(ctx, x Xen, ovs *ovs.Reconciler, m *Meta, tpl *template.Template) error` // error if Running; `StaleVifPorts` → `DelVifPort` each; then CreateDomain(DomainConfig(m, tpl))
-  - `func Delete(ctx, x Xen, ovs *ovn.Reconciler, ovsOvs *ovs.Reconciler, home string, vmDir, name string) error` // Destroy-if-running → DelLSPort → stale port cleanup → rm vmDir → RemoveSSHConfig (app only, read meta first)
+  - `type VifPorter interface { AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac string) error; DelVifPort(ctx context.Context, dev string) error; StaleVifPorts(ctx context.Context, ifaceID string) ([]string, error) }` // defined in internal/ovs, `*ovs.Reconciler` satisfies it; Task 14's vif consumes it too
+  - `func Start(ctx, x Xen, vp ovs.VifPorter, m *vm.Meta, tpl *template.Template) error` // error if Running; `StaleVifPorts` → `DelVifPort` each; then CreateDomain(vm.DomainConfig(m, tpl))
+  - `func Delete(ctx, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home string, vmDir, name string) error` // Destroy-if-running → DelLSPort → stale port cleanup → rm vmDir → RemoveSSHConfig (app only, read meta first)
   - `internal/cli`: `start`, `stop`, `kill`, `delete`, `list` cmds. `list` output columns: `NAME  TYPE  STATE  MEM  VCPUS` — running from `x.List()`, stopped from `meta.toml` scan under an "available" section.
 
 - [ ] **Step 1: Write the failing tests**
 
 - Fake Xen + fake OVS. `TestStartRefusesRunning`; Review Focus 1: `TestStartCleansStalePort` (StaleVifPorts returns `["vif3.0"]` → DelVifPort called with it before CreateDomain; then create called); `TestDeleteOrdering` (records: Destroy, DelLSPort, DirRemoved, SSHRemoved only when type=app); `TestListRows` (2 running + 1 stopped meta → exact output lines incl. `disposable` type column).
 
-- [ ] **Step 2: Verify failure** — FAIL undefined. Add the dep: `go get xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<latest xen tag sha>` — pin a release tag, never floating `master`; record the pinned ref in the commit message. cgo requires libxl headers (`libxl-devel`) — `make build` surfaces a clear error if absent.
+- [ ] **Step 2: Verify failure** — FAIL undefined. Add the dep: `go get xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<latest xen tag sha>` — pin a release tag, never floating `master`; record the pinned ref in the commit message. **Controller ruling (no libxl on this atomic host):** real xenlight impl goes in `internal/xenctl/xenctl_libxl.go` behind `//go:build libxl`; `internal/xenctl/xenctl_stub.go` behind `//go:build !libxl` returns error `qlvm built without Xen support — rebuild with -tags libxl (libxl-devel required)`. `Makefile` (update here): `LIBXL := $(shell pkg-config --exists libxl 2>/dev/null && echo 1)`, `GO_TAGS := $(if $(LIBXL),libxl,)`, all build/test targets pass `-tags $(GO_TAGS)`. Default `go test ./...` (no tag) must pass without libxl.
 
 - [ ] **Step 3: Implement.**
 
@@ -380,7 +385,9 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 ---
 
-### Task 12: `provision` (mgmt)
+### Task 12: `provision` (config-management runner)
+
+> **Ruling (applied during execution):** the Go config-management dependency was dropped — the pinned driver API no longer exists, engine resources apply dom0-local (wrong target), the only remote mode is a daemon-in-VM (incompatible + GPL-3.0). The real `Runner` is sshx `sudo dnf install -y` (rpm-token whitelist) + pkg/sftp upload; the `Runner` interface seam is preserved for a future backend.
 
 **Files:**
 - Create: `internal/provisioner/provisioner.go`, `internal/provisioner/provisioner_test.go`, `internal/cli/provision.go`, `provision/base/packages.txt`, `provision/base/dotfiles/.gitkeep`
@@ -390,7 +397,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 - Produces:
   - `func ParsePackages(dirs ...string) []string` // union, file order preserved, `#` comments + blank lines dropped, de-duplicated
   - `func DotfileList(dir string) ([]string, error)` // files under dir, relative paths, `.gitkeep` excluded
-  - `type Runner interface { Run(ctx, host string, ops []Op) error }` // wraps mgmt (real: mgmt batch with SSH transport, host from sshx.Resolve; `_sudo` for package install)
+  - `type Runner interface { Run(ctx, host string, ops []Op) error }` // wraps the provisioning backend (real: sshx `sudo dnf install -y` + sftp upload, host from sshx.Resolve)
   - `func Provision(ctx, r Runner, home, vm, provisionDir string, mode Mode) error` // `Mode` ∈ all/packages/dotfiles; layers `base` then `<vm>` (missing dir = skip)
   - `internal/cli`: `provision` cmd with flags `--packages-only`, `--dotfiles-only` (default: both). The bash `setup.sh`/`--profile` concepts are gone — custom commands run via `qlvm run`.
   - Repo scaffold: `provision/base/packages.txt` (comment-only), `provision/base/dotfiles/.gitkeep`.
@@ -399,13 +406,13 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
 
 - `TestParsePackages` (two dirs, overlap, comments, blanks → exact slice); `TestDotfileList` (nested `.config/` file included, `.gitkeep` excluded, relative paths); `TestProvisionModes` (fake Runner: packages mode → only pkg op with union list; dotfiles → file ops with exact paths; all → both; missing per-vm dir → base only, no error).
 
-- [ ] **Step 2: Verify failure** — FAIL undefined (after `go get github.com/purpleidea/mgmt`).
+- [ ] **Step 2: Verify failure** — FAIL undefined.
 
-- [ ] **Step 3: Implement** (mgmt real Runner: `mgmt.New` with ssh transport + `mgmt.Batch` of `mgmt.NewOperation`… follow mgmt's API for `pkg`/`file` ops; keep the translation inside `Runner`).
+- [ ] **Step 3: Implement** (real Runner per ruling: sshx `sudo dnf install -y` with rpm-token whitelist + sftp upload; keep the translation inside `Runner`).
 
 - [ ] **Step 4: Verify pass** — `go test ./internal/provisioner/...` — PASS.
 
-- [ ] **Step 5: Commit** — `git commit -am "feat: provision via mgmt"`
+- [ ] **Step 5: Commit** — `git commit -am "feat: provision packages+dotfiles over sshx"`
 
 ---
 
@@ -498,5 +505,5 @@ git add -A && git commit -m "chore: CI, README, sanitized docs, integration scaf
 ## Execution notes
 
 - Tasks are ordered by dependency; Tasks 3–5 are mutually independent (parallelizable after Task 1).
-- `go get` pins: libovsdb `main`, podman client `v5`, mgmt `master`, godbus `v5`, xenlight `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<release-tag>` (record the pinned ref in the commit message).
+- `go get` pins: libovsdb `main`, podman client `v5`, godbus `v5`, xenlight `xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight@<release-tag>` (record the pinned ref in the commit message).
 - Every task ends green (`go test ./...` + `make lint`) before the next starts.
