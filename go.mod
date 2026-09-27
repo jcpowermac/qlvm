@@ -14,7 +14,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/crypto v0.56.0
 	golang.org/x/sys v0.47.0
-	xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight v0.0.0-20260729185928-d45d5687f144
+	xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight v0.0.0-20260729144642-78c2a59f9edb
 )
 
 require (

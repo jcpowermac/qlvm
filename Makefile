@@ -1,4 +1,6 @@
-BIN := bin
+# BIN: output dir for the built binaries. container-build overrides it to a
+# host-mounted writable dir (the dom0 root is ostree-immutable).
+BIN ?= bin
 
 # The podman pkg/bindings dependency pulls go.podman.io/storage graph drivers
 # and the gpgme signature mechanism, which need cgo headers (btrfs, zfs,
@@ -31,6 +33,37 @@ test:
 # OVN/OVS/firewalld/NetworkManager planes and Xen on this dom0.
 test-integration:
 	go test -v -tags '$(GO_TAGS) integration' ./internal/itest/
+
+# Container build: compiles with the real xenlight cgo binding inside a
+# Fedora container (a plain rpm root, so dnf works where the ostree dom0
+# forbids it). The container's xen-devel must be at or below the dom0's
+# Xen runtime version — the produced binary loads the dom0's
+# libxenlight.so.* at runtime. OUT is a writable host dir the binaries are
+# written to (e.g. ~/bin, on PATH). The host needs only podman + a go-aware
+# network egress (module + toolchain downloads happen in the container).
+# Build image, built once and cached (rebuild only when the Dockerfile or
+# the pinned Xen version changes).
+BUILDER ?= localhost/qlvm-builder:local
+
+container-builder:
+	podman build -t $(BUILDER) -f Dockerfile.builder .
+
+# OUT ?= $(HOME)/bin
+# :z = SELinux shared labels (required on the dom0).
+# /gc = persistent Go cache (toolchain + module downloads happen once).
+# yajl is runtime-bundled: the binary carries an $ORIGIN rpath and the
+# build copies libyajl.so.2 into OUT, so the dom0 needs no new packages.
+container-build: container-builder
+	@mkdir -p $(HOME)/.cache/qlvm-build $(OUT)
+	podman run --rm \
+		-v $(CURDIR):/src:z \
+		-v $(OUT):/out:z \
+		-v $(HOME)/.cache/qlvm-build:/gc:z \
+		-e GOPATH=/gc -e GOCACHE=/gc/cache -e GOMODCACHE=/gc/pkg/mod \
+		-e 'CGO_LDFLAGS=-Wl,-rpath,$$ORIGIN' \
+		$(BUILDER) \
+		/bin/sh -c 'cd /src && GOTOOLCHAIN=auto GOFLAGS=-buildvcs=false make build BIN=/out \
+		&& cp -L /usr/lib64/libyajl.so.2 /out/'
 
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --build-tags '$(GO_TAGS)'

@@ -15,9 +15,9 @@ management CLI. The only local process it launches is `waypipe` (for
 ## Quick start
 
 ```sh
-# 1. Build (installs bin/qlvm and bin/qlvm-vif)
-make build                          # note: install libxl-devel for cgo Xen support
-sudo install bin/qlvm bin/qlvm-vif /usr/local/bin/
+# 1. Build (dom0: containerized cgo build, no dev packages on the host;
+#    writes qlvm + qlvm-vif + bundled libyajl.so.2 to ~/bin, which is on PATH)
+make container-build
 
 # 2. First install: writes /etc/qvm/qlvm.toml and drives the dom0
 #    (OVS bridges, OVN router/switches, firewall, NetworkManager,
@@ -195,10 +195,21 @@ make test-integration  # real-plane tests; touch the live dom0 (see internal/ite
   exclude_graphdriver_zfs containers_image_openpgp` — the podman
   `pkg/bindings` dependency pulls storage graph drivers and gpgme that need
   cgo headers absent on a bare dom0; qlvm only talks to podman over its
-  REST socket. With `libxl-devel` installed the Makefile also adds the
-  `libxl` tag so the real xenlight binding compiles; without it a stub
+  REST socket. Where the Xen dev packages exist the Makefile also adds the
+  `libxl` tag so the real xenlight binding compiles; without them a stub
   builds cgo-free and lifecycle commands fail at runtime with a rebuild
   hint.
+- Container build (the dom0 path): `make container-build [OUT=~/bin]`
+  compiles the real cgo binding inside a cached Fedora 44 container
+  (`Dockerfile.builder`; dnf works in a plain container root where the
+  ostree dom0 forbids it) and writes the binaries plus a bundled
+  `libyajl.so.2` (loaded via an `$ORIGIN` rpath, so the dom0 gains no
+  packages) to `OUT`. The container's Xen headers must be at or below the
+  dom0's Xen runtime — the produced binary loads the dom0's
+  `libxenlight.so.*` — so rebuild the builder image
+  (`make container-builder`) after either side upgrades Xen. The Go
+  toolchain and module cache persist in `~/.cache/qlvm-build`; repeat
+  builds take seconds.
 - TDD: every internal package has table-driven unit tests alongside the
   implementation; control planes are injected as interfaces.
 - Integration tests (`internal/itest`, build tag `integration`) run
