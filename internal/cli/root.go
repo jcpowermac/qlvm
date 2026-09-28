@@ -4,23 +4,17 @@
 // registrations reach the command executed by main.
 package cli
 
-import (
-	"fmt"
-
-	"github.com/spf13/cobra"
-)
+import "github.com/spf13/cobra"
 
 var rootCmd *cobra.Command
 
 // NewRootCmd returns the shared qlvm root command.
 func NewRootCmd() *cobra.Command {
 	if rootCmd == nil {
+		// No Run: bare `qlvm` prints help (cobra default).
 		rootCmd = &cobra.Command{
 			Use:   "qlvm",
 			Short: "Qubes-like VM isolation on dom0",
-			Run: func(cmd *cobra.Command, _ []string) {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "no subcommand yet")
-			},
 		}
 	}
 	return rootCmd
