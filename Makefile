@@ -48,7 +48,10 @@ BUILDER ?= localhost/qlvm-builder:local
 container-builder:
 	podman build -t $(BUILDER) -f Dockerfile.builder .
 
-OUT ?= $(HOME)/bin
+# /usr/local is writable on the ostree dom0 (it is /var/usrlocal) and on
+# PATH; running the target as root (sudo make container-build) is required
+# to write there.
+OUT ?= /usr/local/bin
 # :z = SELinux shared labels (required on the dom0).
 # /gc = persistent Go cache (toolchain + module downloads happen once).
 # yajl is runtime-bundled: the binary carries an $ORIGIN rpath and the

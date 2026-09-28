@@ -16,8 +16,8 @@ management CLI. The only local process it launches is `waypipe` (for
 
 ```sh
 # 1. Build (dom0: containerized cgo build, no dev packages on the host;
-#    writes qlvm + qlvm-vif + bundled libyajl.so.2 to ~/bin, which is on PATH)
-make container-build
+#    writes qlvm + qlvm-vif + bundled libyajl.so.2 to /usr/local/bin)
+sudo make container-build
 
 # 2. First install: writes /etc/qvm/qlvm.toml and drives the dom0
 #    (OVS bridges, OVN router/switches, firewall, NetworkManager,
@@ -199,7 +199,8 @@ make test-integration  # real-plane tests; touch the live dom0 (see internal/ite
   `libxl` tag so the real xenlight binding compiles; without them a stub
   builds cgo-free and lifecycle commands fail at runtime with a rebuild
   hint.
-- Container build (the dom0 path): `make container-build [OUT=~/bin]`
+- Container build (the dom0 path): `sudo make container-build
+  [OUT=/usr/local/bin]`
   compiles the real cgo binding inside a cached Fedora 44 container
   (`Dockerfile.builder`; dnf works in a plain container root where the
   ostree dom0 forbids it) and writes the binaries plus a bundled
