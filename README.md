@@ -10,7 +10,7 @@ configured through a single TOML file.
 control plane through libraries — OVN/OVS via libovsdb, firewalld and
 NetworkManager over D-Bus, Xen via xenlight — and never shells out to a
 management CLI. The only local process it launches is `waypipe` (for
-`qlvm run` GUI sessions).
+`qlvm vm run` GUI sessions).
 
 ## Quick start
 
@@ -28,42 +28,49 @@ sudo qlvm install
 $EDITOR /etc/qvm/qlvm.toml
 sudo qlvm install                   # reconciliation: edit + re-run is the change path
 
-# 4. Create a VM from a bootc image and boot it
-sudo qlvm create work-1 --domain work --image quay.io/fedora/fedora:44
-sudo qlvm start work-1
-qlvm run work-1 xterm               # GUI via waypipe (dom0 Wayland session required)
+# 4. Bake a template once: pull the image + ostree bake (~5 min).
+#    A bake is deliberate and user-triggered; VMs never trigger one.
+sudo qlvm template create quay.io/fedora/fedora:44
 
-# 5. Provision it (dotfiles from the layered provision dir)
-qlvm provision work-1
+# 5. Create a VM by REFERENCE (dir name or unique prefix — no pull, no
+#    bake), and boot it
+sudo qlvm vm create work-1 --domain work --template fedora
+sudo qlvm vm start work-1
+qlvm vm run work-1 xterm            # GUI via waypipe (dom0 Wayland session required)
+
+# 6. Provision it (dotfiles from the layered provision dir)
+qlvm vm provision work-1
 ```
 
-`qlvm list` shows VMs (name, type, state, mem, vcpus); `qlvm delete work-1`
-tears the VM down completely (Xen domain, OVN/OVS ports, state dir, ssh
-config block).
+If the upstream image changes, the existing template dir keeps its digest —
+a VM is a reference to a bake you already made; re-bake deliberately with
+`qlvm template create <ref> --force`. `qlvm vm list` shows VMs (name, type,
+state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
+(Xen domain, OVN/OVS ports, state dir, ssh config block).
 
 ## Subcommands
 
 | Command | What it does |
 |---|---|
 | `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, NetworkManager, systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
-| `qlvm create <name> --domain <d> --image <ref>` | Ensure the template (podman pull → ostree bake), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml`. `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB`, `--vcpus N`, `--config PATH` |
-| `qlvm start <name>` | Boot a prepared VM (cleans stale OVS vif ports first) |
-| `qlvm stop <name>` | Graceful shutdown |
-| `qlvm kill <name>` | Force destroy |
-| `qlvm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
-| `qlvm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
-| `qlvm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
-| `qlvm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
-| `qlvm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
+| `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB`, `--vcpus N`, `--config PATH` |
+| `qlvm vm start <name>` | Boot a prepared VM (cleans stale OVS vif ports first) |
+| `qlvm vm stop <name>` | Graceful shutdown |
+| `qlvm vm kill <name>` | Force destroy |
+| `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
+| `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
+| `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
+| `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
+| `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
 | `qlvm template [list]` | List baked templates (dir, image, kernel, size, which VMs reference each); warns on incomplete dirs |
-| `qlvm template rebuild --image <ref>` | Force a fresh pull + bake of an image's template (~5 min). Refuses if any VM references it. First reaps a killed bake's residue: stale loop devices, leftover `/tmp/qlvm-ostree-*` mounts, exited image-builder containers |
-| `qlvm template clean [--force]` | Remove template dirs no VM references (the next `create` re-bakes). `--force` also removes incomplete dirs (no META) |
+| `qlvm template create <ref> [--force]` | Pull + bake an image's template (~5 min) into `templates/<slug>-<digest>/`. Refuses if the dir already exists; `--force` is the re-bake: flat refusal while any VM references the dir, otherwise remove + bake. Reaps a killed bake's residue before baking on both paths: stale loop devices, leftover `/tmp/qlvm-ostree-*` mounts, exited image-builder containers |
+| `qlvm template clean [--force]` | Remove template dirs no VM references (a `vm create` that wants one fails until `qlvm template create <ref>` re-bakes it). `--force` also removes incomplete dirs (no META) |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
 
 ## Shared mounts
 
-`create --mount host:guest` exports `host` into the guest as a 9p share (Xen
+`vm create --mount host:guest` exports `host` into the guest as a 9p share (Xen
 `xen9pfsd`, `security_model=none`). Each share gets a unique 9p tag
 `<vm>-<i>` (0-based in `--mount` order). At create time qlvm bakes one
 systemd unit per share into the VM disk's deployment `/etc` overlay — named
@@ -142,7 +149,7 @@ Storage layout:
                                  br-ex --> enp1s0 --> LAN (192.168.1.0/24)
 
  dom0 egress: firewalld rich rules generated from [firewall.egress]
- GUI:         qlvm run <vm> <app> -- waypipe ssh <vm> (dom0 Wayland session)
+ GUI:         qlvm vm run <vm> <app> -- waypipe ssh <vm> (dom0 Wayland session)
  hotplug:     libxl invokes /etc/xen/scripts/vif-ovn (qlvm-vif), which reads
               xenstore and programs the OVS vif port via libovsdb
 ```

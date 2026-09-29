@@ -157,13 +157,13 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   loop-attach p4 (root), and read `/var/log/journal` + whatever a one-shot
   dump unit wrote. Guest netfront interface is `enX0` (renamed from eth0);
   networkd matches by MAC so the name is irrelevant.
-- **Loop hygiene before `qlvm create`**: a loop device left attached to a
+- **Loop hygiene before `qlvm vm create`**: a loop device left attached to a
   *deleted* disk.img keeps stale partition nodes and can make the template
   attach fail ("has no ostree root (and /boot) partition pair ... EINVAL").
   `sudo losetup -a`, detach strays, then create.
 
-### Guest SSH / qlvm run
-- **`qlvm run` is a user-session command** (waypipe needs the desktop's
+### Guest SSH / qlvm vm run
+- **`qlvm vm run` is a user-session command** (waypipe needs the desktop's
   WAYLAND_DISPLAY; sudo strips it and the guard says so). Therefore
   `vms/<name>/` is 0755 and `meta.toml` 0644 (LoadMeta as the user);
   `disk.img` stays 0600. Run connects `user@<meta.IP>` directly —
@@ -191,8 +191,9 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   applied yet no file appears). `BakeNetworkd` therefore writes a real
   `/etc/resolv.conf` (`nameserver <dns>`); networkd sees "foreign" and
   leaves it alone.
-- **Full template re-bake costs ~5 minutes**: give `qlvm create` a
-  `timeout 600`+ when the template dir is absent (killing it early leaves
+- **A bake costs ~5 minutes** and only `qlvm template create` runs one
+  (`vm create` only references): give `template create` a `timeout 600`+
+  (killing it early leaves
   the image-builder podman container RUNNING as root — `podman ps -a` —
   and a template dir without `template.raw`). The dir name carries the
   digest from the build that created it — `ls templates/` before
@@ -213,7 +214,7 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
 
 ### Podman (pkg/bindings REST)
 - `podman.socket` must be running: `sudo systemctl enable --now podman.socket`
-  (legacy dom0s do not enable it by default; `qlvm create` needs it).
+  (legacy dom0s do not enable it by default; `qlvm template create` needs it).
 - **Never build a zero-value `specgen.SpecGenerator` literal**: its
   `HealthLogDestination` stays `""`, and libpod's create path
   (`pkg/specgen/generate/container_create.go`) *unconditionally* runs it
@@ -239,18 +240,25 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   --with-manifest` alongside.
 
 ### Templates (qlvm template)
-- `template list` / `clean` never touch podman; `rebuild` pulls first, then
-  refuses **flat** if any VM's `vms/<n>/meta.toml` (Image+Digest) resolves
-  to the target dir — no `--force` override; delete the VM first.
-- `clean` removes complete unreferenced dirs (the next `create` re-bakes,
-  ~5 min); `--force` adds incomplete dirs (no META, e.g. leftovers from a
-  killed bake or by-hand dirs like the old `boot`/`cloud-init`).
-- `rebuild` reaps a killed bake's residue first: loop devices whose backing
-  file under `/var/lib/qvm` is gone (a force-killed VM leaves one attached
-  to `(deleted)` — `losetup -a` shows the suffix, parsers must allow it),
-  leftover `/tmp/qlvm-ostree-*` mounts (`unix.Unmount`; std has no
-  `os.Unmount`), and exited image-builder containers (Podman REST
-  `ancestor` filter + `Exited`).
+- `vm create` only references: `--template` resolves (exact dir name or
+  unique prefix, pure filesystem) and the VM's Image+Digest come from the
+  template META — it never pulls or bakes. Baking is `template create
+  <ref>`, a deliberate user action.
+- `template list` / `clean` never touch podman. `create <ref>` pulls
+  first, then: dir absent → reap + bake (~5 min); dir exists → refuse
+  unless `--force`; `--force` is the re-bake: flat refusal (no override
+  flag) if any VM's `vms/<n>/meta.toml` (Image+Digest) resolves to the
+  target dir — delete the VM first — then reap, remove, bake.
+- `clean` removes complete unreferenced dirs (a `vm create` that wants one
+  then fails until `template create <ref>` re-bakes); `--force` adds
+  incomplete dirs (no META, e.g. leftovers from a killed bake or by-hand
+  dirs like the old `boot`/`cloud-init`).
+- `create` reaps a killed bake's residue on both paths, before baking: loop
+  devices whose backing file under `/var/lib/qvm` is gone (a force-killed
+  VM leaves one attached to `(deleted)` — `losetup -a` shows the suffix,
+  parsers must allow it), leftover `/tmp/qlvm-ostree-*` mounts
+  (`unix.Unmount`; std has no `os.Unmount`), and exited image-builder
+  containers (Podman REST `ancestor` filter + `Exited`).
 - Legacy META files can have `image = ""` (pre-`o.Ref` builds); `Ensure`
   backfills it from the ref and re-saves — `template list`'s IMAGE column
-  is empty only until the next ensure/rebuild touches the dir.
+  is empty only until the next ensure/create touches the dir.

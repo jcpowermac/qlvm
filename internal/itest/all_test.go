@@ -287,12 +287,15 @@ func TestCreateStartSSHDelete(t *testing.T) {
 	slug := template.SlugFromRef(image)
 	root.SetArgs([]string{"template", "create", image})
 	if err := root.ExecuteContext(ctx); err != nil {
-		if !hasBakedDir(stateRoot, slug) {
+		if _, ok := bakedDir(stateRoot, slug); !ok {
 			t.Fatalf("template create: %v (and no baked dir for %s)", err, slug)
 		}
 	}
-
-	root.SetArgs([]string{"vm", "create", name, "--domain", domain, "--type", "disposable", "--template", slug})
+	tplDir, ok := bakedDir(stateRoot, slug)
+	if !ok {
+		t.Fatalf("no baked template dir for %s", slug)
+	}
+	root.SetArgs([]string{"vm", "create", name, "--domain", domain, "--type", "disposable", "--template", tplDir})
 	if err := root.ExecuteContext(ctx); err != nil {
 		t.Fatalf("vm create: %v", err)
 	}
@@ -332,18 +335,27 @@ func TestCreateStartSSHDelete(t *testing.T) {
 	}
 }
 
-// hasBakedDir reports whether root/templates holds a baked dir for slug:
+// bakedDir returns the full baked dir name for slug (vm create resolves a
+// full name unambiguously even when several digests of the same ref exist):
 // the dir name is <slug>-<digest> and the digest is only known post-pull.
-func hasBakedDir(root, slug string) bool {
+// Prefers a dir holding template.raw.
+func bakedDir(root, slug string) (string, bool) {
 	entries, err := os.ReadDir(filepath.Join(root, "templates"))
 	if err != nil {
-		return false
+		return "", false
 	}
 	prefix := slug + "-"
+	var fallback string
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
-			return true
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, "templates", e.Name(), "template.raw")); err == nil {
+			return e.Name(), true
+		}
+		if fallback == "" {
+			fallback = e.Name()
 		}
 	}
-	return false
+	return fallback, fallback != ""
 }
