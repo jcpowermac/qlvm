@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/jcpowermac/qlvm/internal/template"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -121,6 +122,29 @@ func mountTarget() (string, func(), error) {
 		return "", nil, err
 	}
 	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// chownForUser hands a baked path to the VM user. Unprivileged unit tests
+// cannot chown (EPERM); the real bake always runs as root via sudo qlvm.
+func chownForUser(path string, uid int) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	return os.Chown(path, uid, uid) // #nosec G306 -- fixed uid for an internal path
+}
+
+// setSELinuxContext stamps security.selinux on a baked path. dom0 creates
+// these files with no LSM in play, so the guest's enforcing policy sees
+// them as unlabeled — sshd in particular will not read an unlabeled
+// authorized_keys ("key is not allowed", no AVC visible when kauditd
+// coalesces). Values mirror the Fedora policy for the standard paths. The
+// Lstat guard no-ops for virtual FS fakes (paths only exist on real
+// loop-mounted trees).
+func setSELinuxContext(path, ctx string) error {
+	if _, err := os.Lstat(path); err != nil {
+		return nil
+	}
+	return unix.Lsetxattr(path, "security.selinux", append([]byte(ctx), 0), 0)
 }
 
 // probePart classifies a mounted partition: "root" holds ostree/repo, "boot"
@@ -378,6 +402,8 @@ func bakeHeadlessUnits(fs FS, etc string) error {
 	for src, name := range map[string]string{
 		"/etc/systemd/system/bolt-rundir.service":          "bolt-rundir.service",
 		"/usr/lib/systemd/system/systemd-networkd.service": "systemd-networkd.service",
+		// qlvm run execs `waypipe ssh`: the guest needs a server.
+		"/usr/lib/systemd/system/sshd.service": "sshd.service",
 	} {
 		link := filepath.Join(wants, name)
 		_ = os.Remove(link)
@@ -467,16 +493,20 @@ func saveMeta(dir, kernelVer, rootDev, rootFlags, opath string) error {
 // EnsureOpts.Bake): loop-attach, probe the partitions read-only to find the
 // ostree root and /boot, copy vmlinuz+initramfs into dir, remount the root
 // partition rw for the deployment-tree writes (VM identity + resolved mask
-// + spec §6.1 headless units), and persist the enriched template META.
-// fstype is
-// supplied by the wiring layer (image-builder's --bootc-default-fs). Every
-// loop device and mount is released on every exit path.
-func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
+// + spec §6.1 headless units + SSH authorized_keys), and persist the
+// enriched template META. fstype and sshAuthKeys (concatenated public keys,
+// sshd(8) authorized_keys format) are supplied by the wiring layer
+// (image-builder's --bootc-default-fs; the caller's ssh identities).
+// Every loop device and mount is released on every exit path.
+func BakeTemplate(ctx context.Context, fs FS, dir, fstype, sshAuthKeys string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if fstype == "" {
 		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
+	}
+	if sshAuthKeys == "" {
+		return fmt.Errorf("sshAuthKeys required: a VM without SSH identities is unrunnable (qlvm run)")
 	}
 	disk := filepath.Join(dir, "template.raw")
 	loop, err := fs.LoopAttach(disk)
@@ -561,6 +591,38 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 	if err := bakeHeadlessUnits(fs, etc); err != nil {
 		return err
 	}
+	// SSH identity for `qlvm run` (waypipe ssh) and sshx: authorized_keys in
+	// the VM user's home. The writable /var is the osid-level shared var
+	// (bootc layout: <root>/ostree/deploy/<osid>/var carries the deployment
+	// var/), so home lives there and survives into every reflinked VM.
+	// Root-owned 0755/0644 passes sshd StrictModes (owner user-or-root, no
+	// group/other write) without a chown on the loop-mounted tree.
+	home := filepath.Join(rwTarget, "ostree", "deploy", osid, "var", "home", defaultVMUser)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return err
+	}
+	authKeys := filepath.Join(sshDir, "authorized_keys")
+	if err := fs.WriteFile(authKeys, []byte(sshAuthKeys), 0o600); err != nil {
+		return err
+	}
+	// The guest user must own its home chain: sshd StrictModes accepts
+	// root-owned, but GUI apps write profiles under ~/. sshd reads
+	// authorized_keys as root (the privsep monitor), so 0600-user is fine.
+	for _, p := range []string{home, sshDir, authKeys} {
+		if err := chownForUser(p, defaultVMUID); err != nil {
+			return err
+		}
+	}
+	for path, ctx := range map[string]string{
+		home:     "system_u:object_r:user_home_dir_t:s0",
+		sshDir:   "system_u:object_r:ssh_home_t:s0",
+		authKeys: "system_u:object_r:ssh_home_t:s0",
+	} {
+		if err := setSELinuxContext(path, ctx); err != nil {
+			return err
+		}
+	}
 	// PARTUUID (not the fs UUID): the value is the GPT partition GUID,
 	// which the kernel resolves via /dev/disk/by-partuuid only under the
 	// PARTUUID= prefix; root=UUID= looks in by-uuid (fs UUIDs) and the
@@ -610,7 +672,19 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	return fs.WriteFile(filepath.Join(dir, "10-bolt.network"), []byte(NetworkdFile(ip, gw, mac, dns)), 0o644)
+	if err := fs.WriteFile(filepath.Join(dir, "10-bolt.network"), []byte(NetworkdFile(ip, gw, mac, dns)), 0o644); err != nil {
+		return err
+	}
+	// DNS: the distro /etc/resolv.conf is a dangling symlink to the
+	// systemd-resolved stub (resolved is masked), and this systemd's
+	// networkd defers resolv.conf writes to /run/systemd/resolve.hook
+	// instead of managing the symlink — so bake a real file. networkd
+	// sees a regular file ("foreign") and leaves it alone; the DNS= in
+	// the .network unit stays as documentation for LLMNR-less setups.
+	etcDir := filepath.Dir(filepath.Dir(dir)) // .../etc (dir is .../etc/systemd/network)
+	resolv := filepath.Join(etcDir, "resolv.conf")
+	_ = os.Remove(resolv) // replace the dangling symlink (ENOENT ok on fakes)
+	return fs.WriteFile(resolv, []byte("nameserver "+dns+"\n"), 0o644)
 }
 
 // BakeMounts bakes one per-share systemd .mount unit (plus its enablement

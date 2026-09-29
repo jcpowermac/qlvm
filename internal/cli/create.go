@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -50,7 +53,11 @@ func createCmd() *cobra.Command {
 				Ref:  image,
 				Log:  cmd.OutOrStdout(),
 				Bake: func(dir string) error {
-					return ostree.BakeTemplate(cmd.Context(), ostree.NewFS(nil), dir, fstype)
+					keys, err := sshAuthKeys()
+					if err != nil {
+						return err
+					}
+					return ostree.BakeTemplate(cmd.Context(), ostree.NewFS(nil), dir, fstype, keys)
 				},
 			})
 			if err != nil {
@@ -117,4 +124,40 @@ func mountSuffix(ms []vm.Mount) string {
 
 func init() {
 	NewRootCmd().AddCommand(createCmd())
+}
+
+// sshAuthKeys collects the id_*.pub identities (the same names sshx offers:
+// ed25519, ecdsa, rsa) of the calling user — root under `sudo qlvm create`
+// — and of SUDO_USER, the desktop user who will run `qlvm run` without
+// sudo. Baked into every VM's authorized_keys; empty result is a hard
+// error: a VM without SSH identities is unrunnable.
+func sshAuthKeys() (string, error) {
+	var homes []string
+	if h, err := os.UserHomeDir(); err == nil {
+		homes = append(homes, h)
+	}
+	if su := os.Getenv("SUDO_USER"); su != "" && su != "root" {
+		if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+			homes = append(homes, u.HomeDir)
+		}
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, h := range homes {
+		for _, n := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"} {
+			b, err := os.ReadFile(filepath.Join(h, ".ssh", n)) // #nosec G304 G703 -- homes from $HOME/passwd, fixed file names
+			if err != nil {
+				continue
+			}
+			k := strings.TrimSpace(string(b))
+			if k != "" && !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("no ssh identity: run `ssh-keygen -t ed25519` as your desktop user before create (qlvm run sshes into VMs with it)")
+	}
+	return strings.Join(keys, "\n") + "\n", nil
 }

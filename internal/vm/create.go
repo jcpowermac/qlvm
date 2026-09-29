@@ -92,7 +92,9 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		_ = os.RemoveAll(vmDir)
 		return nil, err
 	}
-	if err := os.MkdirAll(vmDir, 0o750); err != nil {
+	// 0755 + world-readable meta.toml: `qlvm run` is a user-session command
+	// and must LoadMeta without root (disk.img itself stays 0600).
+	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: user-session read is the design
 		return nil, fmt.Errorf("create %s: %w", spec.Name, err)
 	}
 	if err := d.OVN.AddLSPort(ctx, spec.Domain, spec.Name, mac, ip); err != nil {

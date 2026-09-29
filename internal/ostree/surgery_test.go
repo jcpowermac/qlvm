@@ -300,7 +300,8 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			require.NoError(t, os.MkdirAll(dir, 0o750))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
 			f := bakeFS()
-			require.NoError(t, BakeTemplate(context.Background(), f, dir, tc.fstype))
+			keys := "ssh-ed25519 AAAAC3NzaC1lZTEST desktop@dom0\n"
+			require.NoError(t, BakeTemplate(context.Background(), f, dir, tc.fstype, keys))
 
 			tpl, err := template.LoadMeta(dir)
 			require.NoError(t, err)
@@ -330,6 +331,11 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 					assert.Equal(t, "user:!:19000:0:99999:7:::\n", string(w.data))
 					assert.Equal(t, os.FileMode(0o600), w.mode)
 					sawShadow = true
+				case strings.HasSuffix(w.path, "/var/home/user/.ssh/authorized_keys"):
+					// home is in the osid-level shared var (bootc layout), not
+					// the deployment tree, and is chowned to the VM user.
+					assert.Equal(t, keys, string(w.data))
+					assert.Equal(t, os.FileMode(0o600), w.mode)
 				}
 			}
 			assert.True(t, sawShadow, "shadow entry must be written")
@@ -388,7 +394,7 @@ func TestBakeTemplateCleanupOnFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
 	f := bakeFS()
 	f.copyErr = errors.New("no space left on device")
-	err := BakeTemplate(context.Background(), f, dir, "xfs")
+	err := BakeTemplate(context.Background(), f, dir, "xfs", "ssh-ed25519 AAAA\n")
 	require.Error(t, err)
 	assert.Equal(t, []string{"/dev/loop0"}, f.detached, "loop must be detached on failure")
 	assert.Equal(t, len(f.mounts), len(f.umounted), "every mount must be umounted on failure")
@@ -425,10 +431,13 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Equal(t, "/dev/loop3p1", f.mounts[0].dev)
 	assert.Equal(t, "xfs", f.mounts[0].fstype, "mount must carry the fstype")
 	assert.False(t, f.mounts[0].ro, "networkd bake mounts the root rw")
-	require.Len(t, f.wrote, 1)
+	require.Len(t, f.wrote, 2)
 	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/network/10-bolt.network", f.wrote[0].path)
 	assert.Equal(t, NetworkdFile("10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1"), string(f.wrote[0].data))
 	assert.Equal(t, os.FileMode(0o644), f.wrote[0].mode)
+	// resolved is masked: the bake also writes a real /etc/resolv.conf.
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/resolv.conf", f.wrote[1].path)
+	assert.Equal(t, "nameserver 1.1.1.1\n", string(f.wrote[1].data))
 	assert.Equal(t, []string{"/dev/loop3"}, f.detached)
 	assert.Len(t, f.umounted, 1)
 }
@@ -508,8 +517,14 @@ func TestBakeTemplateSkipsUnmountablePartitions(t *testing.T) {
 	// p0 is the EFI (vfat) partition: it cannot mount as xfs and must be
 	// skipped, not fatal (the legacy probe behaved the same way).
 	f.mountErrFor = map[string]error{"/dev/loop0p0": &os.SyscallError{Syscall: "mount", Err: unix.EINVAL}}
-	require.NoError(t, BakeTemplate(context.Background(), f, dir, "xfs"))
+	require.NoError(t, BakeTemplate(context.Background(), f, dir, "xfs", "ssh-ed25519 AAAA\n"))
 	assert.True(t, len(f.mounts) >= 3, "EFI partition must be attempted before the valid ones")
+}
+
+func TestBakeTemplateRequiresSSHKeys(t *testing.T) {
+	err := BakeTemplate(context.Background(), bakeFS(), "dir", "xfs", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sshAuthKeys")
 }
 
 func TestBootKernelImgSuffix(t *testing.T) {
