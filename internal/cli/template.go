@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -29,7 +30,8 @@ const podmanSocket = "unix:///run/podman/podman.sock"
 const fstype = "xfs"
 
 // ensureTemplate pulls+bakes (if needed) the template for image and returns
-// it. Shared by `create` and `template rebuild`.
+// it. The bake path: `template rebuild` (vm create only references baked
+// templates, it never bakes).
 func ensureTemplate(ctx context.Context, out io.Writer, image string) (*template.Template, error) {
 	pod, err := template.NewPodman(ctx, podmanSocket)
 	if err != nil {
@@ -351,4 +353,40 @@ func leftoverBakeMounts(out io.Writer) {
 
 func init() {
 	NewRootCmd().AddCommand(templateCmd())
+}
+
+// sshAuthKeys collects the id_*.pub identities (the same names sshx offers:
+// ed25519, ecdsa, rsa) of the calling user — root under `sudo qlvm template
+// rebuild` — and of SUDO_USER, the desktop user who will run `qlvm vm run`
+// without sudo. Baked into every VM's authorized_keys; empty result is a
+// hard error: a VM without SSH identities is unrunnable.
+func sshAuthKeys() (string, error) {
+	var homes []string
+	if h, err := os.UserHomeDir(); err == nil {
+		homes = append(homes, h)
+	}
+	if su := os.Getenv("SUDO_USER"); su != "" && su != "root" {
+		if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+			homes = append(homes, u.HomeDir)
+		}
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, h := range homes {
+		for _, n := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"} {
+			b, err := os.ReadFile(filepath.Join(h, ".ssh", n)) // #nosec G304 G703 -- homes from $HOME/passwd, fixed file names
+			if err != nil {
+				continue
+			}
+			k := strings.TrimSpace(string(b))
+			if k != "" && !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("no ssh identity: run `ssh-keygen -t ed25519` as your desktop user before baking a template (qlvm vm run sshes into VMs with it)")
+	}
+	return strings.Join(keys, "\n") + "\n", nil
 }

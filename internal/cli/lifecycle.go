@@ -37,7 +37,7 @@ func startCmd() *cobra.Command {
 	}
 }
 
-// startVM boots a prepared VM (the qlvm start body); shared with apps'
+// startVM boots a prepared VM (the qlvm vm start body); shared with apps'
 // auto-start of a stopped VM.
 func startVM(ctx context.Context, name string) error {
 	dir := vmDirOf(name)
@@ -185,7 +185,7 @@ func listCmd() *cobra.Command {
 	}
 }
 
-// listRows renders `qlvm list` output: a header, one row per Xen domain
+// listRows renders `qlvm vm list` output: a header, one row per Xen domain
 // (type from meta when known), then an "available" section with stopped VMs.
 func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*vm.Meta) string {
 	var b strings.Builder
@@ -207,6 +207,5 @@ func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*v
 }
 
 func init() {
-	root := NewRootCmd()
-	root.AddCommand(startCmd(), stopCmd(), killCmd(), deleteCmd(), listCmd())
+	vmCmd().AddCommand(startCmd(), stopCmd(), killCmd(), deleteCmd(), listCmd())
 }

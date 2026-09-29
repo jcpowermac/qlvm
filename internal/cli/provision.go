@@ -48,5 +48,5 @@ func provisionCmd() *cobra.Command {
 }
 
 func init() {
-	NewRootCmd().AddCommand(provisionCmd())
+	vmCmd().AddCommand(provisionCmd())
 }

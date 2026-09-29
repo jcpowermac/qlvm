@@ -120,12 +120,12 @@ func syncKernelCmd() *cobra.Command {
 				return fmt.Errorf("sync-kernel %s: %w", name, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "synced kernel %s to %s\n", ver, tpl.Dir)
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restart to boot it: qlvm stop %s && qlvm start %s\n", name, name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restart to boot it: qlvm vm stop %s && qlvm vm start %s\n", name, name)
 			return nil
 		},
 	}
 }
 
 func init() {
-	NewRootCmd().AddCommand(syncKernelCmd())
+	vmCmd().AddCommand(syncKernelCmd())
 }

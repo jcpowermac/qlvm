@@ -19,3 +19,19 @@ func NewRootCmd() *cobra.Command {
 	}
 	return rootCmd
 }
+
+var vmRoot *cobra.Command
+
+// vmCmd returns the shared `vm` parent: every VM-facing command (create,
+// start, stop, kill, delete, list, run, provision, sync-kernel) registers
+// under it from its own init(); apps and install stay on the root.
+func vmCmd() *cobra.Command {
+	if vmRoot == nil {
+		vmRoot = &cobra.Command{
+			Use:   "vm",
+			Short: "Manage VMs (create, start, stop, kill, delete, list, run, provision, sync-kernel)",
+		}
+		NewRootCmd().AddCommand(vmRoot)
+	}
+	return vmRoot
+}

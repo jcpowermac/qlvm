@@ -17,7 +17,7 @@ import (
 // over the caller's Wayland session, so dom0's WAYLAND_DISPLAY must be set.
 var runWaypipe = func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if os.Getenv("WAYLAND_DISPLAY") == "" {
-		return errors.New("WAYLAND_DISPLAY is empty: qlvm run is a session command — run it as your desktop user from the Wayland login, not via sudo (sudo drops the session environment)")
+		return errors.New("WAYLAND_DISPLAY is empty: qlvm vm run is a session command — run it as your desktop user from the Wayland login, not via sudo (sudo drops the session environment)")
 	}
 	cmd := exec.Command("waypipe", args...) // #nosec G204 -- waypipe is the single permitted local exec (design spec)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
@@ -58,5 +58,5 @@ func waypipeSSHArgs(ip string, app []string) []string {
 }
 
 func init() {
-	NewRootCmd().AddCommand(runCmd())
+	vmCmd().AddCommand(runCmd())
 }
