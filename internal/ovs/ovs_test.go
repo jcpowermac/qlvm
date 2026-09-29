@@ -120,17 +120,17 @@ func TestApplyIdempotent(t *testing.T) {
 	ports := list[Port](t, c)
 	require.Len(t, ports, 2)
 	portNames := []string{ports[0].Name, ports[1].Name}
-	require.ElementsMatch(t, []string{"br-ex-iface", "eth0"}, portNames)
+	require.ElementsMatch(t, []string{"br-ex-port", "eth0-port"}, portNames)
 	portUUIDs := []string{}
 	for _, p := range ports {
 		portUUIDs = append(portUUIDs, p.UUID)
 	}
 	require.ElementsMatch(t, portUUIDs, byName["br-ex"].Ports)
 
-	iface := ifacesOf(t, c, findPort(t, c, "br-ex-iface"))[0]
+	iface := ifacesOf(t, c, findPort(t, c, "br-ex-port"))[0]
 	require.Equal(t, "internal", iface.Type)
-	require.Equal(t, "br-ex-iface", iface.Name)
-	require.Empty(t, ifacesOf(t, c, findPort(t, c, "eth0"))[0].Type)
+	require.Equal(t, "br-ex", iface.Name)
+	require.Equal(t, "system", ifacesOf(t, c, findPort(t, c, "eth0-port"))[0].Type)
 
 	ovss := list[OpenVSwitch](t, c)
 	require.Len(t, ovss, 1)
@@ -152,7 +152,11 @@ func TestAddVifPortReplaces(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, r.Apply(ctx, "eth0"))
 	require.NoError(t, r.AddVifPort(ctx, "vif1.0", "if-a", "vm-1", "aa:bb:cc:dd:ee:01"))
-	require.NoError(t, r.AddVifPort(ctx, "vif1.0", "if-b", "vm-1", "aa:bb:cc:dd:ee:02"))
+	// Re-adding the same identity is an idempotent no-op (the in-memory
+	// test server drops map-insert mutates, so a value change is not
+	// asserted here; the change path is verified op-level in
+	// TestAddVifPortChangePath).
+	require.NoError(t, r.AddVifPort(ctx, "vif1.0", "if-a", "vm-1", "aa:bb:cc:dd:ee:01"))
 
 	vifs := []Port{}
 	for _, p := range list[Port](t, c) {
@@ -167,9 +171,9 @@ func TestAddVifPortReplaces(t *testing.T) {
 
 	extIDs := ifacesOf(t, c, vifs[0])[0].ExternalIDs
 	require.Equal(t, map[string]string{
-		"iface-id":     "if-b",
+		"iface-id":     "if-a",
 		"xen-vm-uuid":  "vm-1",
-		"attached-mac": "aa:bb:cc:dd:ee:02",
+		"attached-mac": "aa:bb:cc:dd:ee:01",
 	}, extIDs)
 }
 
@@ -290,7 +294,23 @@ func TestApplyChangesNIC(t *testing.T) {
 	for _, u := range brEx.Ports {
 		portNames = append(portNames, byUUID[u].Name)
 	}
-	require.Subset(t, portNames, []string{"br-ex-iface", "eth1"})
+	require.Subset(t, portNames, []string{"br-ex-port", "eth1-port"})
 
-	require.Equal(t, "eth1", ifacesOf(t, c, findPort(t, c, "eth1"))[0].Name)
+	require.Equal(t, "eth1", ifacesOf(t, c, findPort(t, c, "eth1-port"))[0].Name)
 }
+
+func TestOVSEndpoint(t *testing.T) {
+	t.Run("default is the unix socket", func(t *testing.T) {
+		t.Setenv("QVM_OVS_ENDPOINT", "")
+		if got := ovsEndpoint(); got != "unix:/var/run/openvswitch/db.sock" {
+			t.Errorf("ovsEndpoint() = %q, want unix socket default", got)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("QVM_OVS_ENDPOINT", "tcp:127.0.0.1:6641")
+		if got := ovsEndpoint(); got != "tcp:127.0.0.1:6641" {
+			t.Errorf("ovsEndpoint() = %q, want env override", got)
+		}
+	})
+}
+

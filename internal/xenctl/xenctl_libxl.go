@@ -33,14 +33,10 @@ func New() (Xen, error) {
 func (x *libxlXen) Close() error { return x.Context.Close() }
 
 func (x *libxlXen) CreateDomain(spec *vm.DomainSpec) error {
-	cfg, err := toDomainConfig(spec)
-	if err != nil {
-		return err
-	}
-	if _, err := x.DomainCreateNew(cfg); err != nil {
-		return fmt.Errorf("create %s: %w", spec.Name, err)
-	}
-	return nil
+	// The domain config is assembled in C (xenctl_cgo.go); the binding's
+	// generated toC cannot express initialized C device structs (see that
+	// file's header).
+	return cgoCreateDomain(spec)
 }
 
 func (x *libxlXen) Destroy(name string) error {
@@ -107,59 +103,6 @@ func stateOf(d xenlight.Dominfo) string {
 	}
 }
 
-// toDomainConfig maps the pure DomainSpec onto the xenlight domain config
-// (string spellings come from task 9's DomainSpec, per its comment).
-func toDomainConfig(spec *vm.DomainSpec) (*xenlight.DomainConfig, error) {
-	cfg, err := xenlight.NewDomainConfig()
-	if err != nil {
-		return nil, err
-	}
-	uuid, err := parseUUID(spec.UUID)
-	if err != nil {
-		return nil, err
-	}
-	cfg.CInfo.Type = xenlight.DomainTypePvh
-	cfg.CInfo.Name = spec.Name
-	cfg.CInfo.Uuid = uuid
-	// b_info.type must match c_info.type and carry a non-nil union
-	// (libxl_domain_config_init leaves it INVALID; toC fails on a nil
-	// union). qlvm is PVH-only: add other variants if HVM/PV ever lands.
-	cfg.BInfo.Type = xenlight.DomainTypePvh
-	cfg.BInfo.TypeUnion = &xenlight.DomainBuildInfoTypeUnionPvh{}
-	cfg.BInfo.MaxVcpus = spec.MaxVcpus
-	cfg.BInfo.TargetMemkb = uint64(spec.TargetMemkb)
-	cfg.BInfo.Kernel = spec.Kernel
-	cfg.BInfo.Ramdisk = spec.Ramdisk
-	cfg.BInfo.Cmdline = strings.Join(spec.Extra, " ")
-	for _, d := range spec.Disks {
-		cfg.Disks = append(cfg.Disks, xenlight.DeviceDisk{
-			PdevPath:  d.PdevPath,
-			Vdev:      d.Vdev,
-			Format:    xenlight.DiskFormatRaw,
-			Readwrite: d.Readwrite,
-		})
-	}
-	for _, n := range spec.Nics {
-		mac, err := parseMAC(n.Mac)
-		if err != nil {
-			return nil, err
-		}
-		cfg.Nics = append(cfg.Nics, xenlight.DeviceNic{
-			Mac:     mac,
-			Script:  n.Script,
-			Nictype: xenlight.NicTypeVif,
-		})
-	}
-	for _, p := range spec.P9S {
-		cfg.P9S = append(cfg.P9S, xenlight.DeviceP9{
-			Tag:           p.Tag,
-			Path:          p.Path,
-			SecurityModel: p.SecurityModel,
-			Type:          xenlight.P9TypeXen9Pfsd,
-		})
-	}
-	return cfg, nil
-}
 
 // parseUUID parses a RFC 4122 string into xenlight.Uuid (no exported
 // parser in the generated API; the type is [16]byte).

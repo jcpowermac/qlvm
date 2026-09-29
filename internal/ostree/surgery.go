@@ -177,6 +177,7 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstyp
 		return partMount{}, partMount{}, "", "", err
 	}
 	var kept []partMount
+	var mountErr error
 	release := func() {
 		for _, m := range kept {
 			_ = fs.Umount(m.target)
@@ -195,10 +196,14 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstyp
 			return partMount{}, partMount{}, "", "", err
 		}
 		dev := "/dev/" + part
-		if err := fs.Mount(dev, target, fstype, ro); err != nil {
+		// The disk carries partitions the fstype cannot mount (EFI is
+		// vfat, swap is not a filesystem): skip them like the legacy
+		// probe did, remembering the last error for the no-root report.
+		if merr := fs.Mount(dev, target, fstype, ro); merr != nil {
+			mountErr = fmt.Errorf("%s %s: %w", tag, dev, merr)
+			_ = fs.Umount(target)
 			cleanup()
-			release()
-			return partMount{}, partMount{}, "", "", fmt.Errorf("%s %s: %w", tag, dev, err)
+			continue
 		}
 		switch probePart(target, fs) {
 		case "root":
@@ -216,7 +221,32 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstyp
 		}
 	}
 	release()
+	if mountErr != nil {
+		return partMount{}, partMount{}, "", "", fmt.Errorf("%s: template disk %s has no ostree root (and /boot) partition pair (last mount failure: %v)", tag, loop, mountErr)
+	}
 	return partMount{}, partMount{}, "", "", fmt.Errorf("%s: template disk %s has no ostree root (and /boot) partition pair", tag, loop)
+}
+
+// deploymentDir returns the single *.0 deployment entry under
+// ostree/deploy/<osid>/deploy/.
+func deploymentDir(ostreeDir, osid string, fs FS) (string, error) {
+	entries, err := fs.ReadDir(filepath.Join(ostreeDir, "deploy", osid, "deploy"))
+	if err != nil {
+		return "", err
+	}
+	var dep string
+	for _, e := range entries {
+		if strings.HasSuffix(e, ".0") {
+			if dep != "" {
+				return "", fmt.Errorf("%s: multiple deployments %v", ostreeDir, entries)
+			}
+			dep = e
+		}
+	}
+	if dep == "" {
+		return "", fmt.Errorf("%s/deploy/%s/deploy: no *.0 deployment", ostreeDir, osid)
+	}
+	return dep, nil
 }
 
 // bootKernel finds the deployment kernel and initramfs on the /boot
@@ -249,11 +279,18 @@ func bootKernel(bootTarget string, fs FS) (ver, kernelRel, initramfsRel string, 
 	if ver == "" {
 		return "", "", "", fmt.Errorf("%s: no vmlinuz-*", osidDirs[0])
 	}
-	want := "initramfs-" + ver
-	if !contains(files, want) {
-		return "", "", "", fmt.Errorf("%s: no %s", osidDirs[0], want)
+	// Bootc images name it initramfs-<ver>.img; match from the listing
+	// rather than assume the suffix.
+	var initRel string
+	for _, f := range files {
+		if strings.HasPrefix(f, "initramfs-"+ver) {
+			initRel = filepath.Join("ostree", osidDirs[0], f)
+		}
 	}
-	return ver, kernelRel, filepath.Join("ostree", osidDirs[0], want), nil
+	if initRel == "" {
+		return "", "", "", fmt.Errorf("%s: no initramfs-%s*", osidDirs[0], ver)
+	}
+	return ver, kernelRel, initRel, nil
 }
 
 // loopOf maps a partition node name (loop0p2) to its loop node name (loop0).
@@ -488,7 +525,7 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 		return fmt.Errorf("copy %s: %w", initramfsRel, err)
 	}
 
-	uuid, err := fs.ReadFile("/sys/class/block/" + loopOf(rootPart) + "/" + rootPart + "/uuid")
+	partuuid, err := fs.PartUUID(filepath.Join(dir, "template.raw"), rootPart)
 	if err != nil {
 		return fmt.Errorf("root partuuid of %s: %w", rootPart, err)
 	}
@@ -496,12 +533,19 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 	if fstype == "btrfs" {
 		rootFlags = "subvol=root" // template.Template contract
 	}
-	opath, osid, commit, err := ostreePath(filepath.Join(rwTarget, "ostree"), fs)
+	opath, osid, _, err := ostreePath(filepath.Join(rwTarget, "ostree"), fs)
 	if err != nil {
 		return err
 	}
 
-	etc := filepath.Join(rwTarget, "ostree", "deploy", osid, "deploy", commit+".0", "etc")
+	// The deployment commit is resolved from /ostree/deploy, not from the
+	// boot dir: bootc images keep the /boot (and boot.N) contents of the
+	// base commit while the deployment tree carries the final commit.
+	dep, err := deploymentDir(filepath.Join(rwTarget, "ostree"), osid, fs)
+	if err != nil {
+		return err
+	}
+	etc := filepath.Join(rwTarget, "ostree", "deploy", osid, "deploy", dep, "etc")
 	if err := writeIdentity(fs, etc); err != nil {
 		return err
 	}
@@ -517,7 +561,11 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype string) error {
 	if err := bakeHeadlessUnits(fs, etc); err != nil {
 		return err
 	}
-	return saveMeta(dir, ver, "UUID="+strings.TrimSpace(string(uuid)), rootFlags, opath)
+	// PARTUUID (not the fs UUID): the value is the GPT partition GUID,
+	// which the kernel resolves via /dev/disk/by-partuuid only under the
+	// PARTUUID= prefix; root=UUID= looks in by-uuid (fs UUIDs) and the
+	// guest drops to the dracut emergency shell.
+	return saveMeta(dir, ver, "PARTUUID="+partuuid, rootFlags, opath)
 }
 
 // BakeNetworkd writes the per-VM systemd-networkd config into the deployment
@@ -548,11 +596,15 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 		root.cleanup()
 	}()
 
-	_, osid, commit, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
+	_, osid, _, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", commit+".0", "etc", "systemd", "network")
+	dep, err := deploymentDir(filepath.Join(root.target, "ostree"), osid, fs)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", dep, "etc", "systemd", "network")
 	// root.target is a real loop-mount mountpoint: direct os.MkdirAll is
 	// intentional (directory creation has no FS seam method).
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -589,11 +641,15 @@ func BakeMounts(ctx context.Context, fs FS, diskPath, fstype string, mounts []Sh
 		root.cleanup()
 	}()
 
-	_, osid, commit, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
+	_, osid, _, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
 	if err != nil {
 		return err
 	}
-	systemdDir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", commit+".0", "etc", "systemd", "system")
+	dep, err := deploymentDir(filepath.Join(root.target, "ostree"), osid, fs)
+	if err != nil {
+		return err
+	}
+	systemdDir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", dep, "etc", "systemd", "system")
 	wants := filepath.Join(systemdDir, "multi-user.target.wants")
 	// root.target is a real loop-mount mountpoint: direct os use is
 	// intentional (no FS seam method for dirs/symlinks, as in BakeNetworkd).

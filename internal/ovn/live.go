@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
@@ -14,8 +15,25 @@ import (
 //go:embed testdata/ovn-nb.ovsschema
 var nbSchemaJSON []byte
 
-// nbEndpoint is the live OVN Northbound OVSDB endpoint on dom0.
-const nbEndpoint = "tcp:127.0.0.1:6640"
+// parseNBSchema parses the embedded OVN Northbound schema, used to type
+// reference columns when expanding named UUIDs before a transaction.
+func parseNBSchema() (*ovsdb.DatabaseSchema, error) {
+	s := &ovsdb.DatabaseSchema{}
+	if err := json.Unmarshal(nbSchemaJSON, s); err != nil {
+		return nil, fmt.Errorf("parse OVN NB schema: %w", err)
+	}
+	return s, nil
+}
+
+// nbEndpoint is the live OVN Northbound OVSDB endpoint on dom0: the
+// standard OVN NB unix socket by default (no native TCP protocol needed),
+// overridable via QVM_OVN_ENDPOINT (e.g. "tcp:127.0.0.1:6640").
+func nbEndpoint() string {
+	if v := os.Getenv("QVM_OVN_ENDPOINT"); v != "" {
+		return v
+	}
+	return "unix:/var/run/ovn/ovnnb_db.sock"
+}
 
 // NewLive dials the live OVN Northbound database and returns a monitoring
 // Reconciler over it.
@@ -28,7 +46,7 @@ func NewLive(ctx context.Context) (*Reconciler, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := client.NewOVSDBClient(clientModel, client.WithEndpoint(nbEndpoint))
+	c, err := client.NewOVSDBClient(clientModel, client.WithEndpoint(nbEndpoint()))
 	if err != nil {
 		return nil, err
 	}

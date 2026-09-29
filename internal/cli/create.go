@@ -38,6 +38,9 @@ func createCmd() *cobra.Command {
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
+			if domain == "" {
+				domain = cfg.Domains[0].Name // first configured domain is the default
+			}
 			pod, err := template.NewPodman(cmd.Context(), podmanSocket)
 			if err != nil {
 				return err
@@ -90,7 +93,7 @@ func createCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&domain, "domain", "", "isolation domain (config section name)")
+	cmd.Flags().StringVar(&domain, "domain", "", "isolation domain (config section name; default: first in config)")
 	cmd.Flags().StringVar(&typ, "type", "app", "VM type: app or disposable")
 	cmd.Flags().StringVar(&image, "image", "", "bootc image reference (required)")
 	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MB (default: per-type config)")

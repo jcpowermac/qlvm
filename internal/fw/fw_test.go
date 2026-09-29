@@ -2,10 +2,12 @@ package fw
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,7 +121,7 @@ func TestEnsureIdempotent(t *testing.T) {
 		"ZoneQueryService:zone:dom0:ssh",
 		"ZoneAddService:zone:dom0:ssh",
 		"PolicyByName:dom0-egress",
-		"AddPolicy:dom0-egress:DROP:100:host:any",
+		"AddPolicy:dom0-egress:DROP:100:HOST:ANY",
 		"PolicyRichRules:policy:dom0-egress",
 		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
 		"Reload",
@@ -135,4 +137,12 @@ func TestEnsureIdempotent(t *testing.T) {
 		"PolicyByName:dom0-egress",
 		"PolicyRichRules:policy:dom0-egress",
 	}, f.calls)
+}
+
+func TestNotFoundErr(t *testing.T) {
+	e := dbus.Error{Name: "org.fedoraproject.FirewallD1.Exception", Body: []any{"INVALID_ZONE: dom0"}}
+	require.NoError(t, notFoundErr(e, "INVALID_ZONE"))
+	require.Error(t, notFoundErr(e, "INVALID_POLICY"))
+	require.Error(t, notFoundErr(fmt.Errorf("boom"), "INVALID_ZONE"))
+	require.NoError(t, notFoundErr(nil, "INVALID_ZONE"))
 }

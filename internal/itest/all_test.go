@@ -26,15 +26,16 @@ import (
 	"github.com/jcpowermac/qlvm/internal/cli"
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/sshx"
+	"github.com/jcpowermac/qlvm/internal/systemd"
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
 // The live OVSDB endpoints on dom0 (same ones internal/ovn and internal/ovs
 // dial in their NewLive constructors).
 const (
-	nbEndpoint  = "tcp:127.0.0.1:6640" // OVN Northbound
-	sbEndpoint  = "tcp:127.0.0.1:6642" // OVN Southbound
-	ovsEndpoint = "tcp:127.0.0.1:6641" // Open_vSwitch
+	nbEndpoint  = "unix:/var/run/ovn/ovnnb_db.sock"       // OVN Northbound
+	sbEndpoint  = "unix:/var/run/ovn/ovnsb_db.sock"       // OVN Southbound
+	ovsEndpoint = "unix:/var/run/openvswitch/db.sock" // Open_vSwitch
 
 	configPath = "/etc/qvm/qlvm.toml"
 	stateRoot  = "/var/lib/qvm"
@@ -222,6 +223,24 @@ func TestInstallIdempotent(t *testing.T) {
 // QVM_ITEST=1 + QVM_ITEST_IMAGE: create a disposable VM from the image,
 // start it, wait for SSH, delete it, then assert no leftover logical
 // switch port and a gone vmDir.
+// TestSystemdUnitPropGet is a live regression guard for the D-Bus
+// destination bug: Properties.Get on a unit object must target the owning
+// service (org.freedesktop.systemd1); targeting the interface name instead
+// makes dbus-daemon answer "The name is not activatable". An already
+// active+enabled unit exercises the exact probe path with no side effects.
+func TestSystemdUnitPropGet(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	sd, err := systemd.NewSystem()
+	if err != nil {
+		t.Fatalf("systemd: %v", err)
+	}
+	if err := sd.EnableStart(ctx, "openvswitch.service"); err != nil {
+		t.Fatalf("EnableStart(openvswitch.service): %v", err)
+	}
+}
+
 func TestCreateStartSSHDelete(t *testing.T) {
 	if os.Getenv("QVM_ITEST") != "1" {
 		t.Skip("set QVM_ITEST=1 and QVM_ITEST_IMAGE to run the live create/start/ssh/delete cycle")

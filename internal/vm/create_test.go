@@ -37,8 +37,9 @@ type recBakeFS struct {
 	events *[]string
 }
 
-func (f *recBakeFS) LoopAttach(_ string) (string, error) { return "loop9", nil }
-func (f *recBakeFS) LoopDetach(_ string) error           { return nil }
+func (f *recBakeFS) PartUUID(_, _ string) (string, error) { return "test-partuuid", nil }
+func (f *recBakeFS) LoopAttach(_ string) (string, error)  { return "loop9", nil }
+func (f *recBakeFS) LoopDetach(_ string) error            { return nil }
 func (f *recBakeFS) Mount(_, target, _ string, _ bool) error {
 	return os.MkdirAll(target, 0o750)
 }
@@ -53,6 +54,8 @@ func (f *recBakeFS) ReadDir(p string) ([]string, error) {
 		return []string{"c0ffee00"}, nil
 	case strings.HasSuffix(p, "/ostree/boot.loader"):
 		return []string{"fedora"}, nil
+	case strings.HasSuffix(p, "/ostree/deploy/fedora/deploy"):
+		return []string{"c0ffee00.0"}, nil
 	case strings.HasSuffix(p, "/ostree"):
 		return []string{"repo", "boot.loader"}, nil
 	default:
@@ -298,7 +301,7 @@ var goldenTpl = &template.Template{
 	Image:      "os",
 	Digest:     "sha256:abc",
 	KernelVer:  "6.12.0",
-	RootDev:    "UUID=1234abcd-0000-0000-0000-000000000001",
+	RootDev:    "PARTUUID=1234abcd-0000-0000-0000-000000000001",
 	RootFlags:  "",
 	OstreePath: "/ostree/boot.loader/fedora/c0ffee00/0",
 }
@@ -330,7 +333,7 @@ func TestDomainConfigGolden(t *testing.T) {
 	require.Equal(t, "/var/lib/qvm/templates/os-abc/vmlinuz", got.Kernel)
 	require.Equal(t, "/var/lib/qvm/templates/os-abc/initramfs", got.Ramdisk)
 	require.Equal(t,
-		"root=UUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
+		"root=PARTUUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
 			"systemd.default-target=multi-user.target console=hvc0",
 		strings.Join(got.Extra, " "), "extra string byte-exact, no 9pstore kernel options")
 	require.Equal(t, 2, got.MaxVcpus)
@@ -347,7 +350,7 @@ func TestDomainConfigGolden(t *testing.T) {
 		tpl.RootFlags = "subvol=root"
 		got := DomainConfig(vmDir, goldenMeta, &tpl)
 		require.Equal(t,
-			"root=UUID=1234abcd-0000-0000-0000-000000000001 subvol=root ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
+			"root=PARTUUID=1234abcd-0000-0000-0000-000000000001 subvol=root ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
 				"systemd.default-target=multi-user.target console=hvc0",
 			strings.Join(got.Extra, " "))
 	})

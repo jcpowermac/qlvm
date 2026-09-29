@@ -62,10 +62,9 @@ func (f *fakeLinks) up(dev string) error {
 
 func addTestXs() *fakeXs {
 	return &fakeXs{nodes: map[string]string{
-		"/local/domain/0/device/vif/vif1.0/backend/frontend-id": "1",
 		"/local/domain/1/name": "web1",
-		"/local/domain/1/uuid": "0e9a1c55-0000-4000-8000-000000000001",
-		"/local/domain/0/device/vif/vif1.0/backend/frontend/mac": "aa:bb:cc:dd:ee:01",
+		"/local/domain/1/vm": "/vm/0e9a1c55-0000-4000-8000-000000000001",
+		"/local/domain/1/device/vif/0/mac": "aa:bb:cc:dd:ee:01",
 	}}
 }
 
@@ -86,7 +85,8 @@ func TestVifSkipsEmu(t *testing.T) {
 	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 		return nil, nil, nil, errors.New("ovs down")
 	}
-	assert.Equal(t, 0, run([]string{"add", "vif0.0-emu", "0", "aa:bb:cc:dd:ee:01", "0"}))
+	t.Setenv("vif", "vif0.0-emu")
+	assert.Equal(t, 0, run([]string{"add", "type_if=vif"}))
 }
 
 // TestRunTeardownWithDeadControlPlane pins bash do_without_error parity:
@@ -99,9 +99,10 @@ func TestRunTeardownWithDeadControlPlane(t *testing.T) {
 	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 		return nil, nil, nil, errors.New("ovsdb down")
 	}
-	assert.Equal(t, 0, run([]string{"remove", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
-	assert.Equal(t, 0, run([]string{"offline", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
-	assert.Equal(t, 1, run([]string{"add", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	t.Setenv("vif", "vif1.0")
+	assert.Equal(t, 0, run([]string{"remove"}))
+	assert.Equal(t, 0, run([]string{"offline"}))
+	assert.Equal(t, 1, run([]string{"online"}))
 }
 
 // TestNewlinkRequestLayout pins the wire bytes of the RTM_NEWLINK
@@ -129,7 +130,7 @@ func TestNewlinkRequestLayout(t *testing.T) {
 }
 
 func TestVifAddHappyPath(t *testing.T) {
-	t.Setenv("XENBUS_PATH", "/local/domain/0/device/vif/vif1.0/backend")
+	t.Setenv("XENBUS_PATH", "backend/vif/1/0")
 	xs := addTestXs()
 	ov := &fakeOVS{}
 	links := &fakeLinks{}
@@ -147,7 +148,7 @@ func TestVifAddHappyPath(t *testing.T) {
 }
 
 func TestVifAddFailurePropagates(t *testing.T) {
-	t.Setenv("XENBUS_PATH", "/local/domain/0/device/vif/vif1.0/backend")
+	t.Setenv("XENBUS_PATH", "backend/vif/1/0")
 	xs := addTestXs()
 
 	// OVS failure: error returned, link never brought up.
@@ -169,12 +170,13 @@ func TestVifAddFailurePropagates(t *testing.T) {
 	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 		return xs, ovFail, links.up, nil
 	}
-	assert.Equal(t, 1, run([]string{"add", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	t.Setenv("vif", "vif1.0")
+	assert.Equal(t, 1, run([]string{"online", "type_if=vif"}))
 
 	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 		return xs, &fakeOVS{}, links.up, nil
 	}
-	assert.Equal(t, 0, run([]string{"add", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	assert.Equal(t, 0, run([]string{"online", "type_if=vif"}))
 }
 
 // TestVifRemoveSwallows pins the teardown contract: remove|offline always
@@ -192,7 +194,8 @@ func TestVifRemoveSwallows(t *testing.T) {
 	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 		return &fakeXs{}, ovFail, links.up, nil
 	}
-	assert.Equal(t, 0, run([]string{"remove", "vif1.0", "1", "aa:bb:cc:dd:ee:01", "0"}))
+	t.Setenv("vif", "vif1.0")
+	assert.Equal(t, 0, run([]string{"remove"}))
 }
 
 func TestVifUnknownCommand(t *testing.T) {
@@ -200,8 +203,15 @@ func TestVifUnknownCommand(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRunUsage pins exit 1 on a malformed libxl invocation.
+// TestRunUsage pins exit 1 on a missing command, and a missing `vif` env
+// device name fails the bring-up path (XENBUS_PATH then never resolves).
 func TestRunUsage(t *testing.T) {
-	assert.Equal(t, 1, run([]string{"add"}))
 	assert.Equal(t, 1, run(nil))
+
+	oldWire := wire
+	t.Cleanup(func() { wire = oldWire })
+	wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
+		return addTestXs(), &fakeOVS{}, (&fakeLinks{}).up, nil
+	}
+	assert.Equal(t, 1, run([]string{"online"})) // no `vif` env set
 }

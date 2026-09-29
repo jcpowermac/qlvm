@@ -10,6 +10,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -77,7 +79,9 @@ func NewSystem() (*Manager, error) {
 // one proven on this dom0 (observed via NM D-Bus, 2026-09-26): br-ex is a
 // plain ovs-bridge carrying the LAN IP (ipv4 auto), ports use the ovs-port
 // type as ovs-bridge slaves, and the leaves are ovs-interface — internal
-// for br-ex-iface, system (with an ethernet slave) for the NIC.
+// for the br-ex interface, system (with an ethernet slave) for the NIC.
+// The internal leaf's con-name is the cosmetic "br-ex-iface" while its
+// interface-name is the OVS interface itself, "br-ex".
 func ovsSpecs(cfg *config.Config) []map[string]map[string]any {
 	nic := cfg.Network.NIC
 	return []map[string]map[string]any{
@@ -90,7 +94,7 @@ func ovsSpecs(cfg *config.Config) []map[string]map[string]any {
 			"connection": {"id": OVSBridge + "-port", "type": "ovs-port", "slave-type": "ovs-bridge", "master": OVSBridge, "interface-name": OVSBridge + "-port"},
 		},
 		{
-			"connection":    {"id": OVSBridge + "-iface", "type": "ovs-interface", "slave-type": "ovs-port", "master": OVSBridge + "-port", "interface-name": OVSBridge + "-iface"},
+			"connection":    {"id": OVSBridge + "-iface", "type": "ovs-interface", "slave-type": "ovs-port", "master": OVSBridge + "-port", "interface-name": OVSBridge},
 			"ovs-interface": {"type": "internal"},
 		},
 		{
@@ -178,7 +182,10 @@ func (s *systemConn) settings() dbus.BusObject {
 }
 
 func (s *systemConn) propGet(p dbus.ObjectPath, iface, name string, dest any) error {
-	return s.bus.Object(propsIface, p).Call(propsIface+".Get", 0, iface, name).Store(dest)
+	// Destination is the owning service name (NetworkManager), not the
+	// interface name — see systemd.go for why a Properties destination
+	// comes back as "The name is not activatable".
+	return s.bus.Object(nmService, p).Call(propsIface+".Get", 0, iface, name).Store(dest)
 }
 
 // connPath resolves a con-name to its NMConnection object path.
@@ -267,17 +274,105 @@ func (s *systemConn) AddConnection(spec map[string]map[string]any) error {
 	return s.settings().Call(nmSettingsIface+".AddConnection", 0, av).Store(&p)
 }
 
+// nmConnectionsDir holds NM's keyfile-format .nmconnection files.
+const nmConnectionsDir = "/etc/NetworkManager/system-connections"
+
+// keyfilePath resolves conName to its .nmconnection keyfile.
+func keyfilePath(conName string) (string, error) {
+	entries, err := os.ReadDir(nmConnectionsDir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".nmconnection") {
+			continue
+		}
+		p := filepath.Join(nmConnectionsDir, e.Name())
+		data, err := os.ReadFile(p) // #nosec G304 — p comes from listing the fixed nmConnectionsDir
+		if err != nil {
+			return "", err
+		}
+		if keyInSection(string(data), "connection", "id") == conName {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("connection %q keyfile not found in %s", conName, nmConnectionsDir)
+}
+
+// keyInSection returns the value of key inside the named section, or "".
+func keyInSection(data, section, key string) string {
+	in := false
+	for _, l := range strings.Split(data, "\n") {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "[") {
+			in = t == "["+section+"]"
+			continue
+		}
+		if in {
+			if v, ok := strings.CutPrefix(t, key+"="); ok {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// setKeyInSection replaces key=value inside the named section, appending
+// the line at the section end when absent.
+func setKeyInSection(data, section, key, value string) string {
+	lines := strings.Split(data, "\n")
+	start, end := -1, -1
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "[") {
+			if start >= 0 {
+				end = i
+				break
+			}
+			if t == "["+section+"]" {
+				start = i + 1
+			}
+			continue
+		}
+		if start >= 0 {
+			if _, ok := strings.CutPrefix(t, key+"="); ok {
+				lines[i] = key + "=" + value
+				return strings.Join(lines, "\n")
+			}
+		}
+	}
+	if start < 0 {
+		return data
+	}
+	if end < 0 {
+		end = len(lines)
+	}
+	return strings.Join(append(append(lines[:end:end], key+"="+value), lines[end:]...), "\n")
+}
+
+// SetConnectionValue edits the connection keyfile (NM's D-Bus Update takes
+// full settings and re-validates the connection: partial dicts and
+// structured types like ipv6.addresses a(ayuay) don't survive the
+// a{sv} round-trip), then tells NM to reload its on-disk connections.
 func (s *systemConn) SetConnectionValue(conName, key, value string) error {
-	p, err := s.connPath(conName)
+	p, err := keyfilePath(conName)
 	if err != nil {
 		return err
 	}
-	// NM's Update takes a{sa{sv}} keyed by setting name; zone is a property
-	// of the connection setting.
-	update := map[string]dbus.Variant{
-		"connection": dbus.MakeVariant(map[string]dbus.Variant{key: dbus.MakeVariant(value)}),
+	data, err := os.ReadFile(p) // #nosec G304 — p came from keyfilePath (fixed dir listing)
+	if err != nil {
+		return err
 	}
-	return s.bus.Object(nmService, p).Call(nmConnIface+".Update", 0, update).Store()
+	out := setKeyInSection(string(data), "connection", key, value)
+	tmp := p + ".qlvm-tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o600); err != nil { // #nosec G703 — same p
+		return err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return err
+	}
+	// Reload(1): connections only — no device rescan.
+	return s.root().Call(nmService+".Reload", 0, uint32(1)).Store()
 }
 
 func (s *systemConn) Activate(conName, dev string) error {

@@ -52,21 +52,34 @@ container-builder:
 # PATH; running the target as root (sudo make container-build) is required
 # to write there.
 OUT ?= /usr/local/bin
-# :z = SELinux shared labels (required on the dom0).
 # /gc = persistent Go cache (toolchain + module downloads happen once).
 # yajl is runtime-bundled: the binary carries an $ORIGIN rpath and the
-# build copies libyajl.so.2 into OUT, so the dom0 needs no new packages.
+# build copies libyajl.so.2 next to it, so the dom0 needs no new packages.
+# The binaries are built in the container's own filesystem and podman-cp'd
+# out: writing through a :z host bind mount would relabel them
+# container_file_t, a confined type that cannot read dom0 files (domain
+# build fails with -3).
 container-build: container-builder
 	@mkdir -p $(HOME)/.cache/qlvm-build $(OUT)
-	podman run --rm \
-		-v $(CURDIR):/src:z \
-		-v $(OUT):/out:z \
+	podman rm -f qlvm-bld 2>/dev/null || true
+	podman create --name qlvm-bld \
+		-v $(CURDIR):/src:ro \
 		-v $(HOME)/.cache/qlvm-build:/gc:z \
 		-e GOPATH=/gc -e GOCACHE=/gc/cache -e GOMODCACHE=/gc/pkg/mod \
 		-e 'CGO_LDFLAGS=-Wl,-rpath,$$ORIGIN' \
 		$(BUILDER) \
-		/bin/sh -c 'cd /src && GOTOOLCHAIN=auto GOFLAGS=-buildvcs=false make build BIN=/out \
+		/bin/sh -c 'cd /src && mkdir -p /out && GOTOOLCHAIN=auto GOFLAGS=-buildvcs=false make build BIN=/out \
 		&& cp -L /usr/lib64/libyajl.so.2 /out/'
+	podman start qlvm-bld
+	@podman wait qlvm-bld >/dev/null
+	@code=$$(podman inspect --format '{{.State.ExitCode}}' qlvm-bld); \
+		if [ "$$code" != "0" ]; then \
+			podman logs qlvm-bld; podman rm -f qlvm-bld; \
+			echo "container build failed (exit $$code)" >&2; exit 1; \
+		fi
+	podman cp qlvm-bld:/out/. $(OUT)/
+	podman rm -f qlvm-bld
+	@chcon -t bin_t $(OUT)/qlvm $(OUT)/qlvm-vif 2>/dev/null || true
 
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --build-tags '$(GO_TAGS)'

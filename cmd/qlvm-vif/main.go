@@ -1,13 +1,16 @@
 // Command qlvm-vif is the Xen vif hotplug script, installed by
-// `qlvm install` at /etc/xen/scripts/vif-ovn (spec §10). libxl execs it
-// as
+// `qlvm install` at /etc/xen/scripts/vif-ovn (spec §10). libxl (Xen 4.21)
+// execs it as
 //
-//	qlvm-vif <command> <dev> <domid> <mac> <port>
+//	qlvm-vif <online|offline> type_if=vif
 //
-// with command one of add|remove|online|offline. On add|online it reads
-// the VM's identity from xenstore and adds the OVS port to br-int via
-// libovsdb, then brings the internal netdev up with a raw netlink
-// request. Exit 0/1 per the Xen vif-script convention.
+// and passes the device name in the `vif` environment variable (e.g.
+// vif51.0) and the device's backend xenstore directory in XENBUS_PATH
+// (backend/vif/<domid>/<devid>); the frontend-id, domain name/uuid and
+// MAC are read from xenstore underneath XENBUS_PATH. On online it adds
+// the OVS port to br-int via libovsdb, then brings the internal netdev
+// up with a raw netlink request. Exit 0/1 per the Xen vif-script
+// convention.
 package main
 
 import (
@@ -72,22 +75,31 @@ func vifAdd(xs XsReader, vif ovs.VifPorter, linkUp func(string) error, dev strin
 	if xbus == "" {
 		return fmt.Errorf("XENBUS_PATH not set")
 	}
-	frontendID, err := xs.Read(xbus + "/frontend-id")
-	if err != nil {
-		return fmt.Errorf("read frontend-id: %w", err)
+	// XENBUS_PATH is backend/vif/<domid>/<devid>; the domid and devid are
+	// in the path. (The device's frontend-id node is the guest-side
+	// device number, not the domain id.) Xen 4.21 xenstore layout:
+	//   /local/domain/<domid>/name                     domain name
+	//   /local/domain/<domid>/vm      -> /vm/<uuid>    symlink to the vm tree
+	//   /local/domain/<domid>/device/vif/<devid>/mac   the vif MAC
+	parts := strings.Split(xbus, "/")
+	if len(parts) != 4 {
+		return fmt.Errorf("unexpected XENBUS_PATH %q", xbus)
 	}
-	dom := "/local/domain/" + frontendID
+	dom := "/local/domain/" + parts[2]
 	name, err := xs.Read(dom + "/name")
 	if err != nil {
 		return fmt.Errorf("read domain name: %w", err)
 	}
-	uuid, err := xs.Read(dom + "/uuid")
+	// There is no <domid>/uuid node in modern Xen; the vm symlink target
+	// is /vm/<uuid>.
+	vmLink, err := xs.Read(dom + "/vm")
 	if err != nil {
-		return fmt.Errorf("read domain uuid: %w", err)
+		return fmt.Errorf("read vm symlink: %w", err)
 	}
-	mac, err := xs.Read(xbus + "/frontend/mac")
+	uuid := strings.TrimPrefix(vmLink, "/vm/")
+	mac, err := xs.Read(fmt.Sprintf("%s/device/vif/%s/mac", dom, parts[3]))
 	if err != nil {
-		return fmt.Errorf("read frontend mac: %w", err)
+		return fmt.Errorf("read vif mac: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), handleTimeout)
 	defer cancel()
@@ -106,7 +118,7 @@ var wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("ovsdb: %w", err)
 	}
-	xs, err := xenstore.Dial(xenstore.DefaultSocket)
+	xs, err := xenstore.Dial(xenstore.SocketPath())
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -114,15 +126,19 @@ var wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 }
 
 // run is the testable entry point; it maps a VifHandle failure to exit 1
-// per the vif-script convention.
+// per the vif-script convention. libxl passes only the command (plus the
+// "type_if=vif" flag) as argv; the device name comes from the `vif`
+// environment variable.
 func run(args []string) int {
-	if len(args) != 5 {
-		fmt.Fprintln(os.Stderr, "usage: qlvm-vif <command> <dev> <domid> <mac> <port>")
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: qlvm-vif <online|offline> [type_if=vif]")
 		return 1
 	}
+	command := args[0]
+	dev := os.Getenv("vif")
 	// -emu (HVM guard) is a no-op and must not require a live control
 	// plane, so it exits before wiring.
-	if strings.HasSuffix(args[1], "-emu") {
+	if strings.HasSuffix(dev, "-emu") {
 		return 0
 	}
 	xs, vif, linkUp, err := wire()
@@ -131,12 +147,12 @@ func run(args []string) int {
 		// bash parity (do_without_error): teardown of a dying domain
 		// must not fail when the control plane is unreachable (e.g. OVS
 		// restarted after the VM started).
-		if args[0] == "remove" || args[0] == "offline" {
+		if command == "remove" || command == "offline" {
 			return 0
 		}
 		return 1
 	}
-	if err := VifHandle(args[0], args[1], xs, vif, linkUp); err != nil {
+	if err := VifHandle(command, dev, xs, vif, linkUp); err != nil {
 		fmt.Fprintln(os.Stderr, "qlvm-vif:", err)
 		return 1
 	}

@@ -7,6 +7,7 @@ package fw
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -120,7 +121,9 @@ func (m *Manager) Ensure(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	if ppath == "" {
-		ppath, err = m.conn.AddPolicy(Dom0Policy, "DROP", 100, []string{"host"}, []string{"any"})
+		// firewalld persists the special zone references uppercase; the
+		// config-manager only accepts the uppercase literals ANY/HOST.
+		ppath, err = m.conn.AddPolicy(Dom0Policy, "DROP", 100, []string{"HOST"}, []string{"ANY"})
 		if err != nil {
 			return err
 		}
@@ -174,7 +177,9 @@ func zoneSettingsDict(zone string) map[string]dbus.Variant {
 		"version":              dbus.MakeVariant(""),
 		"short":                dbus.MakeVariant(zone),
 		"description":          dbus.MakeVariant(""),
-		"target":               dbus.MakeVariant("{chain}_{zone}"),
+		// The dom0 zone allows; egress control lives in the
+		// dom0-egress policy, not the zone target.
+		"target":               dbus.MakeVariant("ACCEPT"),
 		"services":             dbus.MakeVariant([]string{}),
 		"ports":                dbus.MakeVariant(ports),
 		"icmp_blocks":          dbus.MakeVariant([]string{}),
@@ -218,10 +223,23 @@ func policySettingsDict(name, target string, priority int32, ingressZones, egres
 	}
 }
 
+// notFoundErr maps firewalld's "no such object" exceptions (the generic
+// org.fedoraproject.FirewallD1.Exception with an INVALID_ZONE /
+// INVALID_POLICY message) to nil so callers can create the object.
+func notFoundErr(err error, code string) error {
+	if err == nil {
+		return nil
+	}
+	if de, ok := err.(dbus.Error); ok && strings.Contains(de.Error(), code) {
+		return nil
+	}
+	return err
+}
+
 func (s *systemConn) ZoneByName(zone string) (string, error) {
 	var p dbus.ObjectPath
 	err := s.cfg().Call(fwConfigIface+".getZoneByName", 0, zone).Store(&p)
-	return string(p), err
+	return string(p), notFoundErr(err, "INVALID_ZONE")
 }
 
 func (s *systemConn) AddZone(zone string) (string, error) {
@@ -245,7 +263,7 @@ func (s *systemConn) ZoneAddService(zonePath, svc string) error {
 func (s *systemConn) PolicyByName(name string) (string, error) {
 	var p dbus.ObjectPath
 	err := s.cfg().Call(fwConfigIface+".getPolicyByName", 0, name).Store(&p)
-	return string(p), err
+	return string(p), notFoundErr(err, "INVALID_POLICY")
 }
 
 func (s *systemConn) AddPolicy(name, target string, priority int32, ingressZones, egressZones []string) (string, error) {

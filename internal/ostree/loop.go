@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +32,10 @@ type FS interface {
 	ReadFile(p string) ([]byte, error)
 	WriteFile(p string, data []byte, mode os.FileMode) error
 	CopyFile(src, dst string) (n int, err error)
+	// PartUUID returns the GPT partition GUID for a partition node name
+	// (e.g. "loop0p4") on the disk image at path. The kernel exposes no
+	// sysfs uuid file for loop partitions, so the GPT is parsed directly.
+	PartUUID(path, part string) (string, error)
 }
 
 // Mounter is the mount(2) surface of sys, injectable so the rw ("dirty log")
@@ -52,27 +58,32 @@ func unixMount(dev, target, fstype string, ro bool) error {
 	return unix.Mount(dev, target, fstype, flags, "")
 }
 
+// ioctlErr is a raw ioctl with errno (x/sys' IoctlSetInt has no error).
+func ioctlErr(fd, req, arg uintptr) error {
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, req, arg)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 type sys struct {
 	mount Mounter
 }
 
 const loopControl = "/dev/loop-control"
 
-// LoopAttach binds path to a free loop device: LOOP_CTL_GET_FREE on
-// /dev/loop-control, then LOOP_SET_STATUS64 with the backing file inode,
-// zero offset/sizelimit, and autoclear (+ partscan so GPT partition nodes
-// are created).
+// LoopAttach binds path to a free loop device, then LOOP_SET_STATUS64 with
+// the backing file inode, zero offset/sizelimit, and autoclear (+ partscan
+// so GPT partition nodes are created). The kernel's GET_FREE can name a
+// device whose loop object is wedged (observed on the dom0 after a legacy
+// VM's backing file was deleted while bound: GET_FREE keeps returning it
+// and SET_STATUS64 fails with ENODEV), so after a failure it scans the
+// remaining /sys/class/block loop devices.
 func (s *sys) LoopAttach(path string) (string, error) {
-	ctl, err := os.OpenFile(loopControl, os.O_RDWR, 0) // #nosec G304 -- fixed kernel device
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = ctl.Close() }()
-	idx, err := unix.IoctlRetInt(int(ctl.Fd()), unix.LOOP_CTL_GET_FREE)
-	if err != nil {
-		return "", fmt.Errorf("LOOP_CTL_GET_FREE: %w", err)
-	}
-	backing, err := os.OpenFile(path, os.O_RDONLY, 0) // #nosec G304 -- caller-owned template/disk path
+	// O_RDWR: the surgery mounts partitions read-write; a loop whose
+	// backing file is read-only refuses the write-side mount.
+	backing, err := os.OpenFile(path, os.O_RDWR, 0) // #nosec G304 -- caller-owned template/disk path
 	if err != nil {
 		return "", err
 	}
@@ -81,12 +92,6 @@ func (s *sys) LoopAttach(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dev := fmt.Sprintf("/dev/loop%d", idx)
-	lo, err := os.OpenFile(dev, os.O_RDWR, 0) // #nosec G304 -- kernel-generated loop path
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = lo.Close() }()
 	stSys, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
 		return "", fmt.Errorf("%s: unexpected stat type", path)
@@ -96,10 +101,68 @@ func (s *sys) LoopAttach(path string) (string, error) {
 		Flags: unix.LO_FLAGS_AUTOCLEAR | unix.LO_FLAGS_PARTSCAN,
 	}
 	copy(info.File_name[:], path)
-	if err := unix.IoctlLoopSetStatus64(int(lo.Fd()), &info); err != nil {
-		return "", fmt.Errorf("LOOP_SET_STATUS64 %s: %w", dev, err)
+
+	candidates := []string{}
+	if ctl, cerr := os.OpenFile(loopControl, os.O_RDWR, 0); cerr == nil { // #nosec G304 -- fixed kernel device
+		defer func() { _ = ctl.Close() }()
+		if idx, ierr := unix.IoctlRetInt(int(ctl.Fd()), unix.LOOP_CTL_GET_FREE); ierr == nil && idx >= 0 {
+			candidates = append(candidates, fmt.Sprintf("/dev/loop%d", idx))
+		}
 	}
-	return dev, nil
+	// Fallback pool: every block-layer loop device, numeric order.
+	entries, rerr := os.ReadDir("/sys/class/block") // #nosec G304 -- fixed kernel path
+	if rerr == nil {
+		for _, e := range entries {
+			n, ok := strings.CutPrefix(e.Name(), "loop")
+			if !ok {
+				continue
+			}
+			if _, perr := strconv.Atoi(n); perr != nil {
+				continue // loop0p1-style partition node
+			}
+			candidates = append(candidates, "/dev/"+e.Name())
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			mi, _ := strconv.Atoi(strings.TrimPrefix(candidates[i], "/dev/loop"))
+			mj, _ := strconv.Atoi(strings.TrimPrefix(candidates[j], "/dev/loop"))
+			return mi < mj
+		})
+	}
+
+	var lastErr error
+	for _, dev := range candidates {
+		lo, oerr := os.OpenFile(dev, os.O_RDWR, 0) // #nosec G304 -- kernel-generated loop path
+		if oerr != nil {
+			lastErr = oerr
+			continue
+		}
+		// LOOP_SET_FD must precede LOOP_SET_STATUS64: a bare
+		// SET_STATUS64 on an unbound loop fails with ENODEV (losetup's
+		// order works; the old SET_STATUS64-only code never attached).
+		var serr error
+		if serr = ioctlErr(uintptr(lo.Fd()), unix.LOOP_SET_FD, uintptr(backing.Fd())); serr == nil {
+			serr = unix.IoctlLoopSetStatus64(int(lo.Fd()), &info)
+			// AUTOCLEAR would unbind the loop when this setup fd closes
+		// (lo_release fires on the last opener), racing the partition
+		// scan: the p-nodes vanish ~100ms after attach and findParts
+		// polls past the window. Drop the flag and rely on the explicit
+		// LoopDetach (CLR_FD) every caller already defers.
+			if serr == nil {
+				noClear := info
+				noClear.Flags = unix.LO_FLAGS_PARTSCAN
+				serr = unix.IoctlLoopSetStatus64(int(lo.Fd()), &noClear)
+			}
+		}
+		if serr != nil {
+			_ = ioctlErr(uintptr(lo.Fd()), unix.LOOP_CLR_FD, 0)
+		}
+		_ = lo.Close()
+		if serr == nil {
+			return dev, nil
+		}
+		lastErr = serr
+	}
+	return "", fmt.Errorf("attach %s: no usable loop device: %w", path, lastErr)
 }
 
 // LoopDetach clears the backing file (LOOP_CLR_FD); autoclear also detaches
@@ -186,6 +249,20 @@ func (s *sys) ReadFile(p string) ([]byte, error) {
 
 func (s *sys) WriteFile(p string, data []byte, mode os.FileMode) error {
 	return os.WriteFile(p, data, mode) // #nosec G304 -- mount targets
+}
+
+// PartUUID implements FS.PartUUID: parse the number out of the partition
+// node name and read the GUID from the GPT of the image at path.
+func (s *sys) PartUUID(path, part string) (string, error) {
+	loop := loopOf(part)
+	if loop == "" {
+		return "", fmt.Errorf("%s: not a partition of a loop device", part)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(part, loop+"p"))
+	if err != nil {
+		return "", fmt.Errorf("%s: bad partition name: %w", part, err)
+	}
+	return gptPartUUID(path, n)
 }
 
 func (s *sys) CopyFile(src, dst string) (int, error) {

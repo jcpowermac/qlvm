@@ -186,3 +186,35 @@ func TestSlugFromRef(t *testing.T) {
 	}
 	assert.Equal(t, "a-b", slugFromRef(strings.ToUpper("Registry.example.com/a/B")))
 }
+
+func TestEnsureReusesFinishedRaw(t *testing.T) {
+	root := t.TempDir()
+	dir := DirFor(root, slugFromRef(testRef), testDigest)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("done"), 0o600))
+
+	p := &fakePodman{digest: testDigest}
+	tpl, err := Ensure(context.Background(), p, EnsureOpts{Root: root, Ref: testRef, Log: io.Discard})
+	require.NoError(t, err)
+	assert.Len(t, p.builderCalls, 0, "existing template.raw without META must not re-run the builder")
+	assert.Equal(t, testDigest, tpl.Digest)
+}
+
+func TestNormalizeDigest(t *testing.T) {
+	assert.Equal(t, "sha256:9bc21b", normalizeDigest("sha256:9bc21b"))
+	assert.Equal(t, "sha256:9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b",
+		normalizeDigest("9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b"))
+	assert.Equal(t, "weird", normalizeDigest("weird"))
+	assert.Equal(t, "abc", normalizeDigest("abc"))
+}
+
+func TestEnsureCanonicalizesBareDigest(t *testing.T) {
+	root := t.TempDir()
+	bare := "9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b"
+	p := &fakePodman{digest: bare}
+	_, err := Ensure(context.Background(), p, EnsureOpts{Root: root, Ref: testRef, Log: io.Discard})
+	_ = err
+	want := filepath.Join(root, "templates", slugFromRef(testRef)+"-sha256:"+bare)
+	_, statErr := os.Stat(want)
+	assert.NoError(t, statErr, "template dir must use the canonical sha256:-prefixed digest")
+}

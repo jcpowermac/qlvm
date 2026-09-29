@@ -106,7 +106,10 @@ func (s *busConn) UnitActive(unit string) (string, error) {
 		return "inactive", nil
 	}
 	var state string
-	err := s.bus.Object(propsIface, p).
+	// Destination is the owning service name (systemd), not the interface
+	// name — a Properties destination is not an owned bus name and
+	// dbus-daemon answers "The name is not activatable".
+	err := s.bus.Object(sdService, p).
 		Call(propsIface+".Get", 0, sdService+".Unit", "ActiveState").Store(&state)
 	return state, err
 }

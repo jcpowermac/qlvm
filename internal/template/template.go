@@ -6,6 +6,7 @@ package template
 
 import (
 	"bytes"
+	"errors"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/containers/podman/v5/pkg/bindings"
@@ -88,6 +90,9 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pull %s: %w", o.Ref, err)
 	}
+	// pkg/bindings returns bare hex: canonicalize once at this boundary so
+	// dir names and META digests always carry the sha256: prefix.
+	digest = normalizeDigest(digest)
 	dir := DirFor(o.Root, slugFromRef(o.Ref), digest)
 	if t, err := LoadMeta(dir); err == nil && t.Digest == digest {
 		return t, nil
@@ -95,11 +100,27 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
 	}
-	if err := p.RunImageBuilder(ctx, dir, o.Ref, o.Log); err != nil {
-		return nil, fmt.Errorf("image-builder for %s: %w", o.Ref, err)
+	// Reuse a raw left by an interrupted (killed) run of THIS image: the
+	// dir name embeds the digest and no META means the run never finished.
+	// A stale META means a different image owned this dir's contents —
+	// never trust the raw, re-bake.
+	// ponytail: a reused raw is stale if the image-builder CLI itself
+	// moves (:latest); pin the CLI image if that ever matters.
+	mustBuild := true
+	if _, merr := LoadMeta(dir); errors.Is(merr, os.ErrNotExist) {
+		if _, serr := os.Stat(filepath.Join(dir, "template.raw")); serr == nil {
+			mustBuild = false
+		} else if rerr := adoptRaw(dir); rerr == nil {
+			mustBuild = false
+		}
 	}
-	if err := adoptRaw(dir); err != nil {
-		return nil, err
+	if mustBuild {
+		if err := p.RunImageBuilder(ctx, dir, o.Ref, o.Log); err != nil {
+			return nil, fmt.Errorf("image-builder for %s: %w", o.Ref, err)
+		}
+		if err := adoptRaw(dir); err != nil {
+			return nil, err
+		}
 	}
 	t := &Template{Dir: dir, Image: o.Ref, Digest: digest}
 	if o.Bake != nil {
@@ -117,13 +138,20 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	return t, nil
 }
 
-// adoptRaw renames the lexicographically first *.raw in dir to template.raw.
+// adoptRaw renames the lexicographically first *.raw in dir (or its
+// image/ subdir, where recent image-builder versions write it) to
+// template.raw.
 // ponytail: lexicographic pick; prefer newest by mtime if a builder can
 // emit multiple raws at once.
 func adoptRaw(dir string) error {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.raw"))
 	if err != nil {
 		return err
+	}
+	if len(matches) == 0 {
+		if matches, err = filepath.Glob(filepath.Join(dir, "image", "*.raw")); err != nil {
+			return err
+		}
 	}
 	if len(matches) == 0 {
 		return fmt.Errorf("no .raw output in %s", dir)
@@ -194,6 +222,23 @@ func (p *podmanClient) Pull(ctx context.Context, ref string) (string, error) {
 	return "", fmt.Errorf("pull %s: no digest in response", ref)
 }
 
+// normalizeDigest prefixes a bare 64-hex digest with sha256:; anything
+// else passes through untouched.
+func normalizeDigest(d string) string {
+	if strings.HasPrefix(d, "sha256:") {
+		return d
+	}
+	if len(d) == 64 {
+		for _, c := range d {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+				return d
+			}
+		}
+		return "sha256:" + d
+	}
+	return d
+}
+
 func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string, errStream io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -201,15 +246,18 @@ func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string,
 	if _, err := p.Pull(p.ctx, imageBuilderImage); err != nil {
 		return err
 	}
-	resp, err := containers.CreateWithSpec(p.ctx, &specgen.SpecGenerator{
-		ContainerBasicConfig: specgen.ContainerBasicConfig{
-			Command: []string{"--bootc-ref", ref, "--bootc-pull-container", "--bootc-default-fs", "xfs", "--output-dir", "/output"},
-		},
-		ContainerStorageConfig: specgen.ContainerStorageConfig{
-			Image:  imageBuilderImage,
-			Mounts: []spec.Mount{{Type: "bind", Source: workdir, Destination: "/output", Options: []string{"bind", "rw"}}},
-		},
-	}, nil)
+	// NewSpecGenerator (not a zero literal): a zero SpecGenerator leaves
+	// HealthLogDestination "", and libpod's create path unconditionally
+	// validates it — os.Stat("") fails and the create errors with
+	// "HealthCheck Log '' destination error".
+	sgen := specgen.NewSpecGenerator(imageBuilderImage, false)
+	// image-builder's entrypoint chcons its cache dir (needs privileged
+	// under SELinux), and recent CLI versions take the raw build as
+	// "build raw <flags>" instead of top-level --bootc-* flags.
+	sgen.Command = []string{"build", "raw", "--bootc-ref", ref, "--bootc-pull-container", "--bootc-default-fs", "xfs", "--output-dir", "/output", "--with-buildlog", "--with-manifest"}
+	sgen.Privileged = boolPtr(true)
+	sgen.Mounts = []spec.Mount{{Type: "bind", Source: workdir, Destination: "/output", Options: []string{"bind", "rw"}}}
+	resp, err := containers.CreateWithSpec(p.ctx, sgen, nil)
 	if err != nil {
 		return fmt.Errorf("create image-builder container: %w", err)
 	}
@@ -224,11 +272,42 @@ func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string,
 	if err := containers.Start(p.ctx, id, nil); err != nil {
 		return fmt.Errorf("start image-builder: %w", err)
 	}
-	outCh, errCh := make(chan string), make(chan string)
+	// Heartbeat while the bake runs (minutes): podman's log fetch is
+	// non-following, so nothing streams until the container exits and
+	// the command otherwise looks dead.
+	hbDone := make(chan struct{})
 	go func() {
-		defer close(outCh)
-		defer close(errCh)
-		_ = containers.Logs(p.ctx, id, &containers.LogOptions{Stdout: boolPtr(true), Stderr: boolPtr(true)}, outCh, errCh)
+		tick := time.NewTicker(30 * time.Second)
+		defer tick.Stop()
+		start := time.Now()
+		for {
+			select {
+			case <-hbDone:
+				return
+			case <-tick.C:
+				_, _ = fmt.Fprintf(errStream, "image-builder: still baking (%s elapsed)\n", time.Since(start).Truncate(time.Second))
+			}
+		}
+	}()
+	code, werr := containers.Wait(p.ctx, id, nil)
+	close(hbDone)
+	if werr != nil {
+		return fmt.Errorf("wait image-builder: %w", werr)
+	}
+	// Now fetch the full buffered log. The bindings' Logs sends frames to
+	// the channels synchronously and NEVER closes them: ranging them hangs
+	// forever (that is the 23-minute stall). Drain from goroutines and
+	// close the channels ourselves only after the call has returned.
+	lctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	outCh := make(chan string)
+	errCh := make(chan string)
+	done := make(chan struct{})
+	go func() {
+		_ = containers.Logs(lctx, id, &containers.LogOptions{Stdout: boolPtr(true), Stderr: boolPtr(true)}, outCh, errCh)
+		close(outCh)
+		close(errCh)
+		close(done)
 	}()
 	go func() {
 		for l := range outCh {
@@ -240,10 +319,7 @@ func (p *podmanClient) RunImageBuilder(ctx context.Context, workdir, ref string,
 			_, _ = fmt.Fprint(errStream, l)
 		}
 	}()
-	code, werr := containers.Wait(p.ctx, id, nil)
-	if werr != nil {
-		return fmt.Errorf("wait image-builder: %w", werr)
-	}
+	<-done
 	if code != 0 {
 		return fmt.Errorf("image-builder exited with code %d", code)
 	}

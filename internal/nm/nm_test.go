@@ -1,6 +1,7 @@
 package nm
 
 import (
+	"strings"
 	"context"
 	"testing"
 
@@ -106,4 +107,21 @@ func TestEnsureOVSConnectionsSkipsExisting(t *testing.T) {
 		"AddConnection:enp3s0-port",
 		"AddConnection:enp3s0-ovs",
 	}, f.calls)
+}
+
+func TestSetKeyInSection(t *testing.T) {
+	const base = "[connection]\nid=br-ex-iface\ntype=ovs-interface\n\n[ovs-interface]\ntype=internal\n"
+	// add when absent: lands inside the [connection] section
+	got := setKeyInSection(base, "connection", "zone", "dom0")
+	assert.Equal(t, "[connection]\nid=br-ex-iface\ntype=ovs-interface\n\nzone=dom0\n[ovs-interface]\ntype=internal\n", got)
+	// replace when present
+	got = setKeyInSection(base+"\n", "connection", "zone", "dom0")
+	got = setKeyInSection(got, "connection", "zone", "work")
+	assert.Equal(t, "[connection]\nid=br-ex-iface\ntype=ovs-interface\n\nzone=work\n[ovs-interface]\ntype=internal\n\n", got)
+	// other sections untouched: no zone added under [ovs-interface]
+	assert.Equal(t, 1, strings.Count(got, "zone="))
+	// same key name in another section is not clobbered
+	other := "[connection]\nid=x\n\n[ethernet]\nmtu=1500\n"
+	got = setKeyInSection(other, "ethernet", "mtu", "9000")
+	assert.Equal(t, "[connection]\nid=x\n\n[ethernet]\nmtu=9000\n", got)
 }

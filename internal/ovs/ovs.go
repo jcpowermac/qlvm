@@ -11,15 +11,31 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/client"
 	"github.com/ovn-kubernetes/libovsdb/model"
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
+
+	"github.com/jcpowermac/qlvm/internal/ovsdbx"
 )
 
+// expandOps prepares ops for the live ovsdb-server: deterministic real
+// UUIDs for every named UUID, no uuid-name members on the wire.
+func expandOps(ops []ovsdb.Operation) ([]ovsdb.Operation, error) {
+	schema, err := parseOVSSchema()
+	if err != nil {
+		return nil, err
+	}
+	return ovsdbx.Expand(ops, schema)
+}
+
 // OVS topology qlvm reconciles on the dom0: the OVN-facing Open_vSwitch
-// external-ids, the br-int/br-ex bridge pair, the internal br-ex-iface
+// external-ids, the br-int/br-ex bridge pair, the internal br-ex interface
 // (dom0 side of br-ex, DHCP later via NM), and the physical NIC member.
+//
+// Naming follows the OVN external-bridge convention used by the running
+// dom0: ports are named "<x>-port" and keep the bare interface names —
+// the internal br-ex interface keeps the bridge name and the system
+// interface keeps the NIC name.
 const (
-	BrInt     = "br-int"
-	BrEx      = "br-ex"
-	BrExIface = "br-ex-iface"
+	BrInt = "br-int"
+	BrEx  = "br-ex"
 )
 
 // ovnExternalIDs are the Open_vSwitch external-ids OVN needs to wire
@@ -100,16 +116,19 @@ func sysNetdevExists(dev string) bool {
 // desiredUUID returns the deterministic named UUID of a desired object.
 // Named UUIDs let a single transaction cross-reference rows that are
 // inserted in the same transaction (see ovsdb.ExpandNamedUUIDs).
+// desiredUUID returns the named UUID a desired model is inserted under —
+// its own UUID field, so references (written as "q-..." strings) and the
+// resolve map always agree.
 func desiredUUID(m model.Model) string {
 	switch v := m.(type) {
 	case *OpenVSwitch:
-		return "q-ovs"
+		return v.UUID
 	case *Bridge:
-		return "q-br-" + v.Name
+		return v.UUID
 	case *Port:
-		return "q-port-" + v.Name
+		return v.UUID
 	case *Interface:
-		return "q-if-" + v.Name
+		return v.UUID
 	}
 	panic(fmt.Sprintf("unknown desired model type %T", m))
 }
@@ -131,18 +150,18 @@ func identity(m model.Model) string {
 
 // Desired builds the exact OVS object set for the given dom0 NIC: the
 // Open_vSwitch row with the OVN external-ids, br-int, and br-ex with its
-// internal br-ex-iface port and the NIC member port.
+// internal br-ex port and the NIC member port.
 func Desired(nic string) []model.Model {
 	return []model.Model{
-		&Interface{UUID: "q-if-" + BrExIface, Name: BrExIface, Type: "internal"},
-		&Interface{UUID: "q-if-" + nic, Name: nic},
-		&Port{UUID: "q-port-" + BrExIface, Name: BrExIface, Interfaces: []string{"q-if-" + BrExIface}},
-		&Port{UUID: "q-port-" + nic, Name: nic, Interfaces: []string{"q-if-" + nic}},
+		&Interface{UUID: "q-if-" + BrEx, Name: BrEx, Type: "internal"},
+		&Interface{UUID: "q-if-" + nic, Name: nic, Type: "system"},
+		&Port{UUID: "q-port-" + BrEx, Name: BrEx + "-port", Interfaces: []string{"q-if-" + BrEx}},
+		&Port{UUID: "q-port-" + nic, Name: nic + "-port", Interfaces: []string{"q-if-" + nic}},
 		&Bridge{UUID: "q-br-" + BrInt, Name: BrInt},
 		&Bridge{
 			UUID:  "q-br-" + BrEx,
 			Name:  BrEx,
-			Ports: []string{"q-port-" + BrExIface, "q-port-" + nic},
+			Ports: []string{"q-port-" + BrEx, "q-port-" + nic},
 		},
 		&OpenVSwitch{
 			UUID:        "q-ovs",
@@ -224,7 +243,11 @@ func (r *Reconciler) Apply(ctx context.Context, nic string) error {
 		return nil
 	}
 
-	reply, err := r.client.Transact(ctx, ops...)
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
@@ -426,67 +449,85 @@ var _ VifPorter = (*Reconciler)(nil)
 
 // AddVifPort adds a vif port named dev to br-int: the port carries an
 // internal-type interface whose external-ids carry the OVN iface-id, the
-// Xen VM UUID and the attached MAC. An existing port named dev is removed
-// first, so the call converges on the latest identity.
+// Xen VM UUID and the attached MAC. When a port named dev already exists
+// its Interface external-ids are updated in place (delete+recreate races
+// with ovs-vswitchd's still-held netdev: "could not add network device
+// ... (File exists)"); a missing port is created and added to br-int.
 func (r *Reconciler) AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac string) error {
 	brInt, ok := r.bridgeByName(ctx, BrInt)
 	if !ok {
 		return fmt.Errorf("bridge %q not found", BrInt)
 	}
 
-	var ops []ovsdb.Operation
-	if old, ok := r.portByName(ctx, dev); ok {
-		delOps, err := r.client.Where(&Port{UUID: old.UUID}).Delete()
-		if err != nil {
-			return err
-		}
-		ops = append(ops, delOps...)
-		if slicesContain(brInt.Ports, old.UUID) {
-			brModel := &Bridge{UUID: brInt.UUID}
-			mutateOps, err := r.client.Where(brModel).Mutate(brModel, model.Mutation{
-				Field:   &brModel.Ports,
-				Mutator: ovsdb.MutateOperationDelete,
-				Value:   []string{old.UUID},
-			})
-			if err != nil {
-				return err
-			}
-			ops = append(ops, mutateOps...)
-		}
-	}
-
-	named := "q-port-" + dev
 	extIDs := map[string]string{
 		"iface-id":     ifaceID,
 		"xen-vm-uuid":  vmUUID,
 		"attached-mac": mac,
 	}
-	// One Create per table: a single Create call targets one table, but
-	// all rows go out in the same transaction so the cross-reference
-	// survives (referential integrity).
-	createOps, err := r.client.Create(&Interface{UUID: "q-if-" + dev, Name: dev, Type: "internal", ExternalIDs: extIDs})
-	if err != nil {
-		return err
-	}
-	ops = append(ops, createOps...)
-	portOps, err := r.client.Create(&Port{UUID: named, Name: dev, Interfaces: []string{"q-if-" + dev}})
-	if err != nil {
-		return err
-	}
-	ops = append(ops, portOps...)
 
-	brModel := &Bridge{UUID: brInt.UUID}
-	mutateOps, err := r.client.Where(brModel).Mutate(brModel, model.Mutation{
-		Field:   &brModel.Ports,
-		Mutator: ovsdb.MutateOperationInsert,
-		Value:   []string{named},
-	})
+	var ops []ovsdb.Operation
+	if old, ok := r.portByName(ctx, dev); ok {
+		// Re-run with the same identity is a no-op (script retries must
+		// not churn the port); a changed identity mutates the Interface
+		// row in place so ovs-vswitchd keeps its netdev.
+		if len(old.Interfaces) != 1 {
+			return fmt.Errorf("port %s has %d interfaces, want 1", dev, len(old.Interfaces))
+		}
+		var ifs []Interface
+		if err := r.client.List(ctx, &ifs); err != nil {
+			return err
+		}
+		for _, i := range ifs {
+			if i.UUID == old.Interfaces[0] {
+				if mapsEqual(i.ExternalIDs, extIDs) {
+					return nil
+				}
+				ifaceModel := &Interface{UUID: i.UUID, ExternalIDs: extIDs}
+				mutateOps, err := r.client.Where(ifaceModel).Mutate(ifaceModel, model.Mutation{
+					Field:   &ifaceModel.ExternalIDs,
+					Mutator: ovsdb.MutateOperationInsert,
+					Value:   extIDs,
+				})
+				if err != nil {
+					return err
+				}
+				ops = append(ops, mutateOps...)
+			}
+		}
+	} else {
+		// One Create per table: a single Create call targets one table, but
+		// all rows go out in the same transaction so the cross-reference
+		// survives (referential integrity).
+		// type=system: the vif netdev already exists (libxl created it).
+		// type=internal makes ovs-vswitchd try to create it and fail with
+		// "could not add network device ... (File exists)".
+		createOps, err := r.client.Create(&Interface{UUID: "q-if-" + dev, Name: dev, Type: "system", ExternalIDs: extIDs})
+		if err != nil {
+			return err
+		}
+		ops = append(ops, createOps...)
+		portOps, err := r.client.Create(&Port{UUID: "q-port-" + dev, Name: dev, Interfaces: []string{"q-if-" + dev}})
+		if err != nil {
+			return err
+		}
+		ops = append(ops, portOps...)
+
+		brModel := &Bridge{UUID: brInt.UUID}
+		mutateOps, err := r.client.Where(brModel).Mutate(brModel, model.Mutation{
+			Field:   &brModel.Ports,
+			Mutator: ovsdb.MutateOperationInsert,
+			Value:   []string{"q-port-" + dev},
+		})
+		if err != nil {
+			return err
+		}
+		ops = append(ops, mutateOps...)
+	}
+	send, err := expandOps(ops)
 	if err != nil {
 		return err
 	}
-	ops = append(ops, mutateOps...)
-
-	reply, err := r.client.Transact(ctx, ops...)
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
@@ -534,7 +575,11 @@ func (r *Reconciler) DelVifPort(ctx context.Context, dev string) error {
 		ops = append(ops, mutateOps...)
 	}
 
-	reply, err := r.client.Transact(ctx, ops...)
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
@@ -650,4 +695,18 @@ func (r *Reconciler) waitForCache(ctx context.Context, cond func() bool) error {
 			}
 		}
 	}
+}
+
+// mapsEqual reports whether two external-ids maps carry the same
+// key/value pairs.
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }

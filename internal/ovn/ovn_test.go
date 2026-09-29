@@ -319,3 +319,18 @@ func findLogicalRouterPort(t *testing.T, c client.Client, name string) LogicalRo
 	require.FailNowf(t, "lrp not found", "lrp %q not found", name)
 	return LogicalRouterPort{}
 }
+
+func TestNBEndpoint(t *testing.T) {
+	t.Run("default is the unix socket", func(t *testing.T) {
+		t.Setenv("QVM_OVN_ENDPOINT", "")
+		if got := nbEndpoint(); got != "unix:/var/run/ovn/ovnnb_db.sock" {
+			t.Errorf("nbEndpoint() = %q, want unix socket default", got)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("QVM_OVN_ENDPOINT", "tcp:127.0.0.1:6640")
+		if got := nbEndpoint(); got != "tcp:127.0.0.1:6640" {
+			t.Errorf("nbEndpoint() = %q, want env override", got)
+		}
+	})
+}

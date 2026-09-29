@@ -3,6 +3,7 @@ package ostree
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,12 +30,14 @@ type fakeFS struct {
 	loops     []string
 	parts     map[string][]string
 	partRoots map[string]string
+	partUUIDs map[string]string
 	dirs      map[string][]string
 	files     map[string][]byte
 
-	mountErr error
-	copyErr  error
-	writeErr error
+	mountErr    error
+	mountErrFor map[string]error
+	copyErr     error
+	writeErr    error
 
 	targets  map[string]string
 	mounts   []mountCall
@@ -98,6 +101,13 @@ func (f *fakeFS) LoopAttach(path string) (string, error) {
 	return loop, nil
 }
 
+func (f *fakeFS) PartUUID(_, part string) (string, error) {
+	if u, ok := f.partUUIDs[part]; ok {
+		return u, nil
+	}
+	return "", fmt.Errorf("fakeFS: no partuuid for %s", part)
+}
+
 func (f *fakeFS) LoopDetach(dev string) error {
 	f.detached = append(f.detached, dev)
 	return nil
@@ -109,6 +119,11 @@ func (f *fakeFS) Mount(dev, target, fstype string, ro bool) error {
 		f.targets = map[string]string{}
 	}
 	f.targets[dev] = target
+	if f.mountErrFor != nil {
+		if err, ok := f.mountErrFor[dev]; ok {
+			return err
+		}
+	}
 	return f.mountErr
 }
 
@@ -260,13 +275,13 @@ func bakeFS() *fakeFS {
 		"r/ostree/boot.2/os1":        {"def456"},
 		"r/ostree/deploy":            {"os1"},
 		"r/ostree/deploy/os1":        {"deploy"},
-		"r/ostree/deploy/os1/deploy": {"abc123.0"},
+		"r/ostree/deploy/os1/deploy": {"def456.0"},
 	}
+	f.partUUIDs = map[string]string{"loop0p2": partUUID}
 	f.files = map[string][]byte{
-		"/sys/class/block/loop0/loop0p2/uuid":            []byte(partUUID + "\n"),
 		"b/ostree/os1/vmlinuz-6.1.0":                     []byte("VMLINUX"),
 		"b/ostree/os1/initramfs-6.1.0":                   []byte("INITRAMFS"),
-		"r/ostree/deploy/os1/deploy/abc123.0/etc/passwd": []byte("root:x:0:0:root:/root:/bin/bash\n"),
+		"r/ostree/deploy/os1/deploy/def456.0/etc/passwd": []byte("root:x:0:0:root:/root:/bin/bash\n"),
 	}
 	return f
 }
@@ -290,7 +305,7 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			tpl, err := template.LoadMeta(dir)
 			require.NoError(t, err)
 			assert.Equal(t, "6.1.0", tpl.KernelVer)
-			assert.Equal(t, "UUID="+partUUID, tpl.RootDev)
+			assert.Equal(t, "PARTUUID="+partUUID, tpl.RootDev)
 			assert.Equal(t, tc.rootFlags, tpl.RootFlags)
 			assert.Equal(t, "/ostree/boot.1/os1/abc123/0", tpl.OstreePath)
 			assert.Equal(t, testDigest, tpl.Digest)
@@ -332,10 +347,10 @@ func TestBakeTemplateFindsParts(t *testing.T) {
 			// Spec §6.1 headless bakes: resolved mask (kept), NetworkManager
 			// mask, and enables for bolt-rundir + systemd-networkd.
 			wantLinks := map[string]string{
-				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/systemd-resolved.service":                         "/dev/null",
-				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/NetworkManager.service":                           "/dev/null",
-				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/bolt-rundir.service":      "/etc/systemd/system/bolt-rundir.service",
-				"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/systemd-networkd.service": "/usr/lib/systemd/system/systemd-networkd.service",
+				"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/systemd-resolved.service":                         "/dev/null",
+				"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/NetworkManager.service":                           "/dev/null",
+				"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/bolt-rundir.service":      "/etc/systemd/system/bolt-rundir.service",
+				"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/systemd-networkd.service": "/usr/lib/systemd/system/systemd-networkd.service",
 			}
 			for path, want := range wantLinks {
 				var saw bool
@@ -387,10 +402,13 @@ func networkdFS() *fakeFS {
 	f.parts["/dev/loop3"] = []string{"loop3p1"}
 	f.partRoots = map[string]string{"loop3p1": "r"}
 	f.dirs = map[string][]string{
-		"r":                   {"ostree"},
-		"r/ostree":            {"boot.1", "deploy", "repo"},
-		"r/ostree/boot.1":     {"os1"},
-		"r/ostree/boot.1/os1": {"abc123"},
+		"r":                          {"ostree"},
+		"r/ostree":                   {"boot.1", "deploy", "repo"},
+		"r/ostree/boot.1":            {"os1"},
+		"r/ostree/boot.1/os1":        {"abc123"},
+		"r/ostree/deploy":            {"os1"},
+		"r/ostree/deploy/os1":        {"deploy"},
+		"r/ostree/deploy/os1/deploy": {"def456.0"},
 	}
 	return f
 }
@@ -408,7 +426,7 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Equal(t, "xfs", f.mounts[0].fstype, "mount must carry the fstype")
 	assert.False(t, f.mounts[0].ro, "networkd bake mounts the root rw")
 	require.Len(t, f.wrote, 1)
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/network/10-bolt.network", f.wrote[0].path)
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/network/10-bolt.network", f.wrote[0].path)
 	assert.Equal(t, NetworkdFile("10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1"), string(f.wrote[0].data))
 	assert.Equal(t, os.FileMode(0o644), f.wrote[0].mode)
 	assert.Equal(t, []string{"/dev/loop3"}, f.detached)
@@ -437,14 +455,14 @@ func TestBakeMounts(t *testing.T) {
 	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs", mounts))
 
 	require.Len(t, f.wrote, 2)
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/var-lib-qvm-data-0.mount", f.wrote[0].path)
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/var-lib-qvm-data-0.mount", f.wrote[0].path)
 	assert.Equal(t, SharedMountUnit(mounts[0]), string(f.wrote[0].data))
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/projects-1.mount", f.wrote[1].path)
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/projects-1.mount", f.wrote[1].path)
 	assert.Equal(t, SharedMountUnit(mounts[1]), string(f.wrote[1].data))
 
 	wantLinks := map[string]string{
-		"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/var-lib-qvm-data-0.mount": "/etc/systemd/system/var-lib-qvm-data-0.mount",
-		"ostree/deploy/os1/deploy/abc123.0/etc/systemd/system/multi-user.target.wants/projects-1.mount":         "/etc/systemd/system/projects-1.mount",
+		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/var-lib-qvm-data-0.mount": "/etc/systemd/system/var-lib-qvm-data-0.mount",
+		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/projects-1.mount":         "/etc/systemd/system/projects-1.mount",
 	}
 	for path, want := range wantLinks {
 		var saw bool
@@ -479,4 +497,37 @@ func TestBakeNetworkdMountFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "/dev/loop3p1", "mount failure must name the device")
 	assert.Equal(t, []string{"/dev/loop3"}, f.detached, "loop must be detached even when the mount fails")
 	assert.Empty(t, f.wrote)
+}
+
+func TestBakeTemplateSkipsUnmountablePartitions(t *testing.T) {
+	dir := template.DirFor(t.TempDir(), testSlug, testDigest)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
+	f := bakeFS()
+	f.parts["/dev/loop0"] = []string{"loop0p0", "loop0p1", "loop0p2"}
+	// p0 is the EFI (vfat) partition: it cannot mount as xfs and must be
+	// skipped, not fatal (the legacy probe behaved the same way).
+	f.mountErrFor = map[string]error{"/dev/loop0p0": &os.SyscallError{Syscall: "mount", Err: unix.EINVAL}}
+	require.NoError(t, BakeTemplate(context.Background(), f, dir, "xfs"))
+	assert.True(t, len(f.mounts) >= 3, "EFI partition must be attempted before the valid ones")
+}
+
+func TestBootKernelImgSuffix(t *testing.T) {
+	// Real bootc images name the initramfs initramfs-<ver>.img and the
+	// osid dir "default-<sha>".
+	f := newFakeFS()
+	f.dirs = map[string][]string{
+		"b":                    {"ostree"},
+		"b/ostree":             {"default-abc"},
+		"b/ostree/default-abc": {"initramfs-7.2.7-200.fc44.x86_64.img", "vmlinuz-7.2.7-200.fc44.x86_64", ".vmlinuz-7.2.7-200.fc44.x86_64.hmac"},
+	}
+	f.files = map[string][]byte{}
+	f.targets = map[string]string{"/dev/loop0p1": "b"}
+	f.partRoots = map[string]string{"loop0p1": "b"}
+
+	ver, kernelRel, initRel, err := bootKernel("b", f)
+	require.NoError(t, err)
+	assert.Equal(t, "7.2.7-200.fc44.x86_64", ver)
+	assert.Equal(t, "ostree/default-abc/vmlinuz-7.2.7-200.fc44.x86_64", kernelRel)
+	assert.Equal(t, "ostree/default-abc/initramfs-7.2.7-200.fc44.x86_64.img", initRel)
 }

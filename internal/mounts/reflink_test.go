@@ -12,9 +12,9 @@ import (
 )
 
 func TestReflinkError(t *testing.T) {
-	old := cloneFn
-	defer func() { cloneFn = old }()
-	cloneFn = func(_, _ uintptr) (uint64, error) { return 0, unix.EXDEV }
+	old := ficloneFn
+	defer func() { ficloneFn = old }()
+	ficloneFn = func(_, _ uintptr) error { return unix.EXDEV }
 
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
@@ -36,9 +36,9 @@ func TestReflinkCopiesContent(t *testing.T) {
 
 	dst := filepath.Join(dir, "dst")
 	err := Reflink(dst, src)
-	// EFAULT: tmpfs/tmpdir kernels signal clone_file_range as unsupported
-	// with EFAULT rather than EOPNOTSUPP; the real dom0 FS supports it.
-	if err != nil && (errors.Is(err, errSameFS) || errors.Is(err, unix.EFAULT)) {
+	// tmpfs answers FICLONE with ENOTTY (and some kernels with
+	// EOPNOTSUPP/EFAULT); the real dom0 btrfs supports it.
+	if err != nil && (errors.Is(err, errSameFS) || errors.Is(err, unix.ENOTTY) || errors.Is(err, unix.EFAULT)) {
 		t.Skipf("filesystem does not support FICLONE: %v", err)
 	}
 	require.NoError(t, err)

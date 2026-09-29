@@ -10,7 +10,18 @@ import (
 	"github.com/ovn-kubernetes/libovsdb/ovsdb"
 
 	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/ovsdbx"
 )
+
+// expandOps prepares ops for the live ovsdb-server: deterministic real
+// UUIDs for every named UUID, no uuid-name members on the wire.
+func expandOps(ops []ovsdb.Operation) ([]ovsdb.Operation, error) {
+	schema, err := parseNBSchema()
+	if err != nil {
+		return nil, err
+	}
+	return ovsdbx.Expand(ops, schema)
+}
 
 // External switch and port names.
 const (
@@ -267,7 +278,11 @@ func (r *Reconciler) Apply(ctx context.Context, cfg *config.Config) error {
 	}
 	ops = append(ops, attachOps...)
 
-	reply, err := r.client.Transact(ctx, ops...)
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
@@ -524,11 +539,15 @@ func (r *Reconciler) AddLSPort(ctx context.Context, sw, name, mac, ip string) er
 	if err != nil {
 		return err
 	}
-	reply, err := r.client.Transact(ctx, append(createOps, mutateOps...)...)
+	send, err := expandOps(append(createOps, mutateOps...))
 	if err != nil {
 		return err
 	}
-	if _, err := ovsdb.CheckOperationResults(reply, append(createOps, mutateOps...)); err != nil {
+	reply, err := r.client.Transact(ctx, send...)
+	if err != nil {
+		return err
+	}
+	if _, err := ovsdb.CheckOperationResults(reply, send); err != nil {
 		return err
 	}
 	return r.waitForCache(ctx, func() bool {
@@ -579,7 +598,11 @@ func (r *Reconciler) DelLSPort(ctx context.Context, name string) error {
 		ops = append(ops, mutateOps...)
 	}
 
-	reply, err := r.client.Transact(ctx, ops...)
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
@@ -676,7 +699,11 @@ func (r *Reconciler) SetGatewayChassis(ctx context.Context, lrpName, chassisID s
 	}
 	ops = append(ops, update...)
 
-	reply, err := r.client.Transact(ctx, ops...)
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
 	if err != nil {
 		return err
 	}
