@@ -110,6 +110,33 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
     `org.freedesktop.NetworkManager.Reload(1)`** (connections-only flag).
 
 ### OVN / guest network
+- **How it works (live-verified 2026-09-28).** Guest side: no DHCP, no
+  NetworkManager — systemd-networkd applies the baked `10-bolt.network`
+  (`[Match] MACAddress=` + static address/gateway/DNS) to the netfront
+  interface (`enX0`). Dom0 side: each VM gets an OVN LSP named after the VM
+  on the configured switch (`work`), plus an OVS port `vif<domid>.0`
+  (type=system, `external-ids:iface-id=<vm-name>` — that is how
+  ovn-controller ties the physical port to the LSP). Dom0 is NOT on the VM
+  subnet: traffic dom0→VM routes over the uplink subnet via the OVN
+  gateway router (`10.100.0.0/16 via <gw> dev br-ex`, static route on dom0
+  from the legacy setup), so ping replies carry ttl=63. Legacy bash
+  reference for the dom0 OVN/OVS/static plumbing: the legacy bash VM
+  project (sibling tree, `qvm-install`, `qvm-harden-dom0`,
+  `qvm-setup-egress`, `vif-ovn` scripts).
+- **Verify in 3 commands**: `ping -c3 <vm-ip>` (ttl=63 = via OVN router);
+  `sudo ovn-sbctl find Port_Binding` → the VM's port has `up: true`, a
+  `chassis`, and `mac`/`port_security` = the assigned MAC (the OVN "MAC
+  binding"); `sudo ovs-vsctl show` → `vif<domid>.0` under br-int.
+- The dom0 vif netdev's kernel-default MAC (`fe:ff:ff:ff:ff:ff`) does NOT
+  need setting — OVS/ovn match on the guest frame MAC, verified working
+  without touching it. No legacy-parity step missing there.
+- **In-guest debugging without console input**: console typing is flaky;
+  instead loop-attach the VM disk p4 (root) while the VM is STOPPED, drop a
+  one-shot `dump.service` into the deployment etc overlay
+  (`ostree/deploy/default/deploy/<commit>.0/etc/systemd/system/` + a
+  `multi-user.target.wants/` symlink) that writes what you need to `/var`,
+  boot, kill, remount, read. The journal is persistent — read
+  `/var/log/journal` the same way.
 - **A duplicate MAC across LSPs silently breaks routing.** If any stale LSP
   shares a MAC with a live VM's LSP (leftover from a previous test: the
   `bolt-test` LSP with the smoke VM's MAC/IP), ovn-controller's LSP-egress
