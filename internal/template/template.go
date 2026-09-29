@@ -94,6 +94,11 @@ func DirOfRef(root, ref, digest string) string {
 	return DirFor(root, slugFromRef(ref), digest)
 }
 
+// SlugFromRef is the dir-name prefix of ref (DirFor joins it with the
+// digest); callers that know the ref but not yet the digest discover the
+// baked dir by it.
+func SlugFromRef(ref string) string { return slugFromRef(ref) }
+
 // Ensure returns the template for o.Ref, building it when it is not already
 // present: pull -> digest -> skip if META matches, else run image-builder in
 // DirFor, adopt <dir>/*.raw as template.raw, bake, then save META.

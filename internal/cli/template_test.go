@@ -93,6 +93,55 @@ func TestCleanPlan(t *testing.T) {
 	assert.Equal(t, []string{"a", "c"}, cleanPlan(rows, true))
 }
 
+func TestTemplateCreatePlan(t *testing.T) {
+	tests := []struct {
+		name       string
+		exists     bool
+		referenced bool
+		force      bool
+		wantCalls  []string // order of action invocations
+		wantErr    []string // substrings the refusal must contain
+	}{
+		{name: "fresh: reap then bake", exists: false, wantCalls: []string{"reap", "bake"}},
+		{name: "exists without force: refuse", exists: true, wantErr: []string{"ns-os-bolt", "--force"}},
+		{name: "exists referenced with force: refuse", exists: true, referenced: true, force: true, wantErr: []string{"t1", "delete those VMs first"}},
+		{name: "exists unreferenced with force: reap remove bake", exists: true, force: true, wantCalls: []string{"reap", "remove", "bake"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := template.DirOfRef(root, cliTestRef, cliTestDigest)
+			if tc.exists {
+				require.NoError(t, os.MkdirAll(dir, 0o750))
+			}
+			if tc.referenced {
+				writeVM(t, root, "t1", cliTestRef, cliTestDigest)
+			}
+			var calls []string
+			act := templateCreateActions{
+				Reap:   func() { calls = append(calls, "reap") },
+				Remove: func() error { calls = append(calls, "remove"); return os.RemoveAll(dir) },
+				Bake:   func() error { calls = append(calls, "bake"); return nil },
+			}
+			err := templateCreatePlan(root, dir, tc.force, act)
+			if tc.wantErr != nil {
+				require.Error(t, err)
+				for _, sub := range tc.wantErr {
+					assert.Contains(t, err.Error(), sub)
+				}
+				assert.Empty(t, calls, "a refusal must run no actions")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantCalls, calls)
+			if tc.exists {
+				_, statErr := os.Stat(dir)
+				assert.True(t, os.IsNotExist(statErr), "force path removes the dir before baking")
+			}
+		})
+	}
+}
+
 func TestParseLoopLines(t *testing.T) {
 	root := t.TempDir()
 	alive := filepath.Join(root, "alive.img")

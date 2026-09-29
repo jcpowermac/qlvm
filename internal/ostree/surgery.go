@@ -117,7 +117,7 @@ func ostreePath(ostreeDir string, fs FS) (path, osid, commit string, err error) 
 }
 
 // MountPrefix prefixes the bake scratch mount dirs under the system temp
-// dir (cleared by qlvm template rebuild's reap step).
+// dir (cleared by qlvm template create's reap step).
 const MountPrefix = "qlvm-ostree-"
 
 func mountTarget() (string, func(), error) {
@@ -406,7 +406,7 @@ func bakeHeadlessUnits(fs FS, etc string) error {
 	for src, name := range map[string]string{
 		"/etc/systemd/system/bolt-rundir.service":          "bolt-rundir.service",
 		"/usr/lib/systemd/system/systemd-networkd.service": "systemd-networkd.service",
-		// qlvm run execs `waypipe ssh`: the guest needs a server.
+		// qlvm vm run execs `waypipe ssh`: the guest needs a server.
 		"/usr/lib/systemd/system/sshd.service": "sshd.service",
 	} {
 		link := filepath.Join(wants, name)
@@ -510,7 +510,7 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype, sshAuthKeys string) e
 		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
 	}
 	if sshAuthKeys == "" {
-		return fmt.Errorf("sshAuthKeys required: a VM without SSH identities is unrunnable (qlvm run)")
+		return fmt.Errorf("sshAuthKeys required: a VM without SSH identities is unrunnable (qlvm vm run)")
 	}
 	disk := filepath.Join(dir, "template.raw")
 	loop, err := fs.LoopAttach(disk)
@@ -595,7 +595,7 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype, sshAuthKeys string) e
 	if err := bakeHeadlessUnits(fs, etc); err != nil {
 		return err
 	}
-	// SSH identity for `qlvm run` (waypipe ssh) and sshx: authorized_keys in
+	// SSH identity for `qlvm vm run` (waypipe ssh) and sshx: authorized_keys in
 	// the VM user's home. The writable /var is the osid-level shared var
 	// (bootc layout: <root>/ostree/deploy/<osid>/var carries the deployment
 	// var/), so home lives there and survives into every reflinked VM.

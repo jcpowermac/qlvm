@@ -92,7 +92,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		_ = os.RemoveAll(vmDir)
 		return nil, err
 	}
-	// 0755 + world-readable meta.toml: `qlvm run` is a user-session command
+	// 0755 + world-readable meta.toml: `qlvm vm run` is a user-session command
 	// and must LoadMeta without root (disk.img itself stays 0600).
 	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: user-session read is the design
 		return nil, fmt.Errorf("create %s: %w", spec.Name, err)

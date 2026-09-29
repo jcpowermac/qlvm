@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,4 +48,13 @@ func TestCommandTree(t *testing.T) {
 	for _, old := range []string{"create", "start", "stop", "kill", "delete", "list", "run", "provision", "sync-kernel"} {
 		require.Nil(t, child(root, old), "old top-level %q must be an unknown command (no aliases)", old)
 	}
+	tpl := child(root, "template")
+	require.NotNil(t, tpl, "template parent must exist")
+	require.Equal(t, []string{"clean", "create"}, childNames(tpl),
+		"rebuild is gone; create <ref> [--force] is the bake command")
+	tplCreate := child(tpl, "create")
+	require.NotNil(t, tplCreate, "template create must exist")
+	assert.Equal(t, "create <ref>", tplCreate.Use)
+	require.NotNil(t, tplCreate.Flags().Lookup("force"), "template create must expose --force")
+	require.Nil(t, child(tpl, "rebuild"), "rebuild must be gone entirely (no alias)")
 }

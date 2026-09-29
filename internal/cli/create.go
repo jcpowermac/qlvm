@@ -110,7 +110,9 @@ func resolveTemplate(root, name string) (string, error) {
 			continue
 		}
 		have = append(have, e.Name())
-		if e.Name() == name || strings.HasPrefix(e.Name(), name) {
+		// name != "": `--template ""` passes cobra's required check (the flag
+		// is changed) but would prefix-match every dir; treat it as missing.
+		if name != "" && (e.Name() == name || strings.HasPrefix(e.Name(), name)) {
 			match = append(match, e.Name())
 		}
 	}

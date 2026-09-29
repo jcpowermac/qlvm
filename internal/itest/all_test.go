@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/sshx"
 	"github.com/jcpowermac/qlvm/internal/systemd"
+	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
@@ -220,9 +222,10 @@ func TestInstallIdempotent(t *testing.T) {
 }
 
 // TestCreateStartSSHDelete guards a full live lifecycle cycle behind
-// QVM_ITEST=1 + QVM_ITEST_IMAGE: create a disposable VM from the image,
-// start it, wait for SSH, delete it, then assert no leftover logical
-// switch port and a gone vmDir.
+// QVM_ITEST=1 + QVM_ITEST_IMAGE: bake the template (or reuse the already
+// baked dir), create a disposable VM referencing it, start it, wait for
+// SSH, delete it, then assert no leftover logical switch port and a gone
+// vmDir.
 // TestSystemdUnitPropGet is a live regression guard for the D-Bus
 // destination bug: Properties.Get on a unit object must target the owning
 // service (org.freedesktop.systemd1); targeting the interface name instead
@@ -266,7 +269,7 @@ func TestCreateStartSSHDelete(t *testing.T) {
 	root := cli.NewRootCmd()
 
 	cleanup := func() {
-		root.SetArgs([]string{"kill", name})
+		root.SetArgs([]string{"vm", "kill", name})
 		_ = root.Execute() // best effort; a failed create leaves nothing to kill
 		if err := os.RemoveAll(vmDir); err != nil {
 			t.Logf("cleanup vmDir: %v", err)
@@ -278,16 +281,27 @@ func TestCreateStartSSHDelete(t *testing.T) {
 		}
 	}()
 
-	root.SetArgs([]string{"create", name, "--domain", domain, "--type", "disposable", "--image", image})
+	// Bake first: vm create only references baked templates. On a repeat run
+	// the dir already exists and `template create` refuses — fine, the baked
+	// dir (discovered by slug prefix) is what vm create resolves.
+	slug := template.SlugFromRef(image)
+	root.SetArgs([]string{"template", "create", image})
 	if err := root.ExecuteContext(ctx); err != nil {
-		t.Fatalf("create: %v", err)
+		if !hasBakedDir(stateRoot, slug) {
+			t.Fatalf("template create: %v (and no baked dir for %s)", err, slug)
+		}
+	}
+
+	root.SetArgs([]string{"vm", "create", name, "--domain", domain, "--type", "disposable", "--template", slug})
+	if err := root.ExecuteContext(ctx); err != nil {
+		t.Fatalf("vm create: %v", err)
 	}
 	meta, err := vm.LoadMeta(vmDir)
 	if err != nil {
 		t.Fatalf("load meta: %v", err)
 	}
 
-	root.SetArgs([]string{"start", name})
+	root.SetArgs([]string{"vm", "start", name})
 	if err := root.ExecuteContext(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -303,7 +317,7 @@ func TestCreateStartSSHDelete(t *testing.T) {
 		t.Fatalf("wait for ssh at %s: %v", meta.IP, err)
 	}
 
-	root.SetArgs([]string{"delete", name})
+	root.SetArgs([]string{"vm", "delete", name})
 	if err := root.ExecuteContext(ctx); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -316,4 +330,20 @@ func TestCreateStartSSHDelete(t *testing.T) {
 			t.Errorf("lswitch port %q left behind after delete", n)
 		}
 	}
+}
+
+// hasBakedDir reports whether root/templates holds a baked dir for slug:
+// the dir name is <slug>-<digest> and the digest is only known post-pull.
+func hasBakedDir(root, slug string) bool {
+	entries, err := os.ReadDir(filepath.Join(root, "templates"))
+	if err != nil {
+		return false
+	}
+	prefix := slug + "-"
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			return true
+		}
+	}
+	return false
 }

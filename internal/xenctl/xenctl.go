@@ -27,7 +27,7 @@ type Xen interface {
 	Close() error
 }
 
-// DomainInfo is one row of the Xen domain list (qlvm list).
+// DomainInfo is one row of the Xen domain list (qlvm vm list).
 type DomainInfo struct {
 	Name  string
 	ID    uint32

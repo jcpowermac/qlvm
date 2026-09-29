@@ -30,7 +30,7 @@ const podmanSocket = "unix:///run/podman/podman.sock"
 const fstype = "xfs"
 
 // ensureTemplate pulls+bakes (if needed) the template for image and returns
-// it. The bake path: `template rebuild` (vm create only references baked
+// it. The bake path: `template create` (vm create only references baked
 // templates, it never bakes).
 func ensureTemplate(ctx context.Context, out io.Writer, image string) (*template.Template, error) {
 	pod, err := template.NewPodman(ctx, podmanSocket)
@@ -51,12 +51,12 @@ func ensureTemplate(ctx context.Context, out io.Writer, image string) (*template
 	})
 }
 
-// templateCmd groups the template cache lifecycle: list (default), rebuild,
+// templateCmd groups the template cache lifecycle: list (default), create,
 // clean.
 func templateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "template",
-		Short: "Manage baked OS templates (list, rebuild, clean)",
+		Short: "Manage baked OS templates (list, create, clean)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			rows, err := scanTemplates(installRoot)
 			if err != nil {
@@ -69,45 +69,82 @@ func templateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(templateRebuildCmd(), templateCleanCmd())
+	cmd.AddCommand(templateCreateCmd(), templateCleanCmd())
 	return cmd
 }
 
-func templateRebuildCmd() *cobra.Command {
-	var image string
+// templateCreateActions are the post-decision steps of a template create
+// (tests inject fakes to assert ordering: reap always precedes bake).
+type templateCreateActions struct {
+	Reap   func()
+	Remove func() error
+	Bake   func() error
+}
+
+// templateCreatePlan is the post-pull decision of `template create`: the
+// dir exists + no --force -> refuse (a bake is ~5 min; never silent); the
+// dir exists + --force -> flat refusal (no override flag) while any VM
+// references the dir, then reap + remove + bake (today's rebuild, verbatim);
+// the dir is absent -> reap + bake (a killed prior bake can leave a loop
+// device on a deleted file or a scratch mount that breaks template attach).
+func templateCreatePlan(root, dir string, force bool, act templateCreateActions) error {
+	exists := false
+	if _, err := os.Stat(dir); err == nil {
+		exists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if exists && !force {
+		return fmt.Errorf("template %s already exists; re-bake with --force: qlvm template create <ref> --force", filepath.Base(dir))
+	}
+	if exists {
+		if names := vmTemplateRefs(root)[dir]; len(names) > 0 {
+			return fmt.Errorf("template %s is referenced by VMs %s; delete those VMs first", filepath.Base(dir), strings.Join(names, ", "))
+		}
+	}
+	act.Reap()
+	if exists {
+		if err := act.Remove(); err != nil {
+			return err
+		}
+	}
+	return act.Bake()
+}
+
+func templateCreateCmd() *cobra.Command {
+	var force bool
 	cmd := &cobra.Command{
-		Use:   "rebuild",
-		Short: "Force a fresh pull + bake of a template image",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "create <ref>",
+		Short: "Pull + bake a template image (refuses over an existing dir without --force)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
+			ref := args[0]
 			pod, err := template.NewPodman(ctx, podmanSocket)
 			if err != nil {
 				return err
 			}
-			digest, err := pod.Pull(ctx, image)
+			digest, err := pod.Pull(ctx, ref)
 			if err != nil {
 				return err
 			}
-			digest = template.NormalizeDigest(digest)
-			dir := template.DirOfRef(installRoot, image, digest)
-			if names := vmTemplateRefs(installRoot)[dir]; len(names) > 0 {
-				return fmt.Errorf("template %s is referenced by VMs %s; delete those VMs first", filepath.Base(dir), strings.Join(names, ", "))
-			}
-			reapStale(ctx, pod, installRoot, out)
-			if err := os.RemoveAll(dir); err != nil {
+			dir := template.DirOfRef(installRoot, ref, template.NormalizeDigest(digest))
+			if err := templateCreatePlan(installRoot, dir, force, templateCreateActions{
+				Reap:   func() { reapStale(ctx, pod, installRoot, out) },
+				Remove: func() error { return os.RemoveAll(dir) },
+				Bake: func() error {
+					_, err := ensureTemplate(ctx, out, ref)
+					return err
+				},
+			}); err != nil {
 				return err
 			}
-			if _, err := ensureTemplate(ctx, out, image); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(out, "rebuilt %s\n", filepath.Base(dir))
+			_, _ = fmt.Fprintf(out, "created %s\n", filepath.Base(dir))
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&image, "image", "", "bootc image reference (required)")
-	_ = cmd.MarkFlagRequired("image")
+	cmd.Flags().BoolVar(&force, "force", false, "re-bake over an existing template dir (still refused while a VM references it)")
 	return cmd
 }
 
@@ -274,9 +311,9 @@ func humanSize(n int64) string {
 }
 
 // reapStale clears the residue a killed bake leaves behind before a fresh
-// rebuild: stale loop devices, leftover bake scratch mounts, and exited
+// bake: stale loop devices, leftover bake scratch mounts, and exited
 // image-builder containers. Best-effort — each failure is a warning and the
-// rebuild proceeds.
+// bake proceeds.
 func reapStale(ctx context.Context, pod template.Podman, root string, out io.Writer) {
 	staleLoops(ctx, root, out)
 	leftoverBakeMounts(out)
@@ -357,8 +394,8 @@ func init() {
 
 // sshAuthKeys collects the id_*.pub identities (the same names sshx offers:
 // ed25519, ecdsa, rsa) of the calling user — root under `sudo qlvm template
-// rebuild` — and of SUDO_USER, the desktop user who will run `qlvm vm run`
-// without sudo. Baked into every VM's authorized_keys; empty result is a
+// create <ref> --force` — and of SUDO_USER, the desktop user who will run
+// `qlvm vm run` without sudo. Baked into every VM's authorized_keys; empty result is a
 // hard error: a VM without SSH identities is unrunnable.
 func sshAuthKeys() (string, error) {
 	var homes []string

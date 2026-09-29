@@ -28,6 +28,7 @@ func TestResolveTemplate(t *testing.T) {
 		{name: "unique prefix", ref: "os-bolt-sha256:b", wantDir: "os-bolt-sha256:bbb"},
 		{name: "ambiguous", ref: "os-bolt", wantErr: []string{"os-bolt-sha256:aaa", "os-bolt-sha256:bbb"}},
 		{name: "missing", ref: "nope", wantErr: []string{"os-bolt-sha256:aaa", "os-rock-sha256:ccc"}},
+		{name: "empty (flag.Changed still passes required)", ref: "", wantErr: []string{"no template dir matching", "os-bolt-sha256:aaa"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -53,6 +53,6 @@ func (m *Meta) Save(vmDir string) error {
 	if err != nil {
 		return err
 	}
-	// 0644: read by `qlvm run` in the user's session (no secrets in Meta).
+	// 0644: read by `qlvm vm run` in the user's session (no secrets in Meta).
 	return os.WriteFile(filepath.Join(vmDir, metaFile), data, 0o644) //nolint:gosec // G306: see comment
 }
