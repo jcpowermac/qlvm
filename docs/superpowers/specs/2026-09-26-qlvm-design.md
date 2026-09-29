@@ -29,9 +29,11 @@ One creation flow, generalized from the former "bolt" throwaway-VM tool:
 - A **template** is a raw disk image built from a bootc container ref by
   `image-builder-cli` (run as a container via the podman client API). The
   template has identity (user + SSH key) and headless runtime units baked
-  into its ostree deployment tree.
-- A **VM** is a btrfs reflink copy (`FICLONE`) of the template. Per-VM
-  networkd config is baked in by mounting the ostree root over a loop device.
+  into its ostree deployment tree. Templates are created explicitly with
+  `qlvm template create <ref>` — VM creation never bakes one.
+- A **VM** is a btrfs reflink copy (`FICLONE`) of an explicitly referenced
+  template. Per-VM networkd config is baked in by mounting the ostree root
+  over a loop device.
 - VMs are created directly through libxl (`xenlight`) — **no `.xl` files**.
 - **Type** is `app` (persisted, default) or `disposable` (throwaway).
   - `app`: persisted, gets a `~/.ssh/config` entry.
@@ -45,22 +47,30 @@ One creation flow, generalized from the former "bolt" throwaway-VM tool:
 
 ## 3. CLI surface
 
-Single binary `qlvm` (cobra), 11 subcommands, plus one small helper binary:
+Single binary `qlvm` (cobra) with two command groups — `template` (baked OS
+image cache) and `vm` (virtual machine lifecycle) — plus dom0-level
+`install` and the `apps` launcher, and one small helper binary:
 
 ```
 qlvm install                              # idempotent dom0 orchestration
-qlvm create <name> --domain <d> \
-      [--type app|disposable] --image <ref> \
+
+qlvm template [list]                      # dir, image, kernel, size, referencing VMs
+qlvm template create <ref> [--force]      # pull + bake a template (re-bake: --force)
+qlvm template clean [--force]             # remove unreferenced dirs (--force: incomplete too)
+
+qlvm vm create <name> --template <dir> \
+      [--domain <d>] [--type app|disposable] \
       [--mount host:guest]... \
       [--memory MB] [--vcpus N]
-qlvm start <name>
-qlvm stop <name>
-qlvm kill <name>
-qlvm delete <name>
-qlvm list                                 # columns: name, type, state, mem, vcpus
-qlvm run <name> <app> [args...]           # waypipe ssh
-qlvm provision <name> [--dir PATH]
-qlvm sync-kernel <name>
+qlvm vm start <name>
+qlvm vm stop <name>
+qlvm vm kill <name>
+qlvm vm delete <name>
+qlvm vm list                              # columns: name, type, state, mem, vcpus
+qlvm vm run <vm> [app...]                 # waypipe ssh
+qlvm vm provision <vm> [--dir PATH]
+qlvm vm sync-kernel <vm>
+
 qlvm apps [sync [vm]]                     # rofi launcher + desktop-file cache
 ```
 
@@ -167,15 +177,22 @@ will (TDD: integration test runs it twice).
    binary, `chmod +x`).
 8. **Config** — write `/etc/qvm/qlvm.toml`.
 
-## 6. `create`
+## 6. Templates and `vm create`
 
-1. **ensureTemplate(image)** — idempotent on image digest:
-   - podman client: `pull <ref>` → digest.
-   - If `templates/<slug>-<digest>/` exists → done.
-   - Else: run `ghcr.io/osbuild/image-builder-cli:latest` via podman
-     (`build raw --bootc-ref <ref> --bootc-pull-container --bootc-default-fs xfs
-     --output-dir /output`), adopt the produced raw as `template.raw`.
-   - Ostree surgery (loop attach via `x/sys/unix` ioctls + `unix.Mount`):
+### 6.1 Template lifecycle (`qlvm template`)
+
+- **`template create <ref>`** — explicit, user-triggered bake:
+  - podman client: `pull <ref>` → digest → `templates/<slug>-<digest>/`.
+  - If the dir already exists → refuse unless `--force` (a template bake
+    costs ~5 minutes; never triggered silently).
+  - `--force` (re-bake): flat refusal (no override) if any existing VM
+    references the target dir, then reap residue (stale loop devices whose
+    backing file is gone, leftover `/tmp/qlvm-ostree-*` bake mounts, exited
+    image-builder containers), remove the dir, bake.
+  - run `ghcr.io/osbuild/image-builder-cli:latest` via podman
+    (`build raw --bootc-ref <ref> --bootc-pull-container --bootc-default-fs xfs
+    --output-dir /output`), adopt the produced raw as `template.raw`.
+  - Ostree surgery (loop attach via `x/sys/unix` ioctls + `unix.Mount`):
      - locate the ostree root partition (the one with `/ostree/repo`) and the
        `/boot` partition (containing `ostree/<osid>/vmlinuz-*`); partition
        UUIDs/types from sysfs (`/sys/class/block/…`).
@@ -190,6 +207,25 @@ will (TDD: integration test runs it twice).
    - If any mount fails (e.g. dirty xfs log after a `kill`): hard error
      printing the manual repair command (`xfs_repair -L <dev>`) — no auto
      repair, no exec.
+- **`template list`** — table of template dirs: dir name, image ref, digest,
+  kernel version, size, which VMs reference it (resolved from
+  `vms/*/meta.toml`). Incomplete dirs (no META / no `template.raw`) get a
+  warning; an empty cache is not an error.
+- **`template clean [--force]`** — remove complete unreferenced dirs
+  (the next explicit `template create` re-bakes); `--force` also removes
+  incomplete ones.
+
+### 6.2 `vm create`
+
+1. **Template reference** — `--template` is required and names a template
+   dir (the TEMPLATE column of `qlvm template list`): exact dir name or a
+   unique prefix of one; zero or multiple candidates → hard error listing
+   what exists. The template's META supplies the image ref + digest
+   persisted in the VM's `meta.toml`. **No podman, no pull, no bake, ever** —
+   a missing or incomplete template hard-fails pointing at
+   `qlvm template create <ref>`. Consequence: if the upstream image changed,
+   VMs keep the bake they were given; a newer bake is a new dir, created
+   explicitly.
 2. **VM state** —
    - look up domain in config → subnet/gateway; next host number =
      the max of the existing host numbers on the switch (excluding `*to-gw`)
@@ -224,16 +260,16 @@ will (TDD: integration test runs it twice).
 - **delete** — `DomainDestroy` (if running), remove OVN lswitch port, remove
   OVS port (stale-port cleanup as in start), remove `vms/<name>/` (reflink —
   only private extents reclaimed), remove ssh-config block (app type).
-- **list** — `ListDomain` (xenlight) joined with `meta.toml` files; columns
+- **`vm list`** — `ListDomain` (xenlight) joined with `meta.toml` files; columns
   name, type (`app`/`disposable`), state, mem, vcpus; stopped VMs listed
   under "available".
-- **run** — `exec waypipe ssh <name> <app>…` (only local exec in the project;
+- **`vm run`** — `exec waypipe ssh <name> <app>…` (only local exec in the project;
   requires `WAYLAND_DISPLAY`, errors clearly when absent).
 - **sync-kernel** — over SSH (`x/crypto/ssh`): resolve the VM's current kernel
   version (`rpm -q kernel-core --last`), copy `vmlinuz` + `initramfs` from the
   VM into the matching template dir; tell the user to restart VMs.
 
-## 8. `provision`
+## 8. `vm provision`
 
 Syncs dotfiles into the VM's home over sftp, behind a fakeable `Runner` seam
 (the original Go config-management dependency was dropped during
@@ -314,7 +350,8 @@ Every feature lands test-first.
   - CLI wiring: command tree, flag parsing, error paths (cobra `Execute`)
 - **Integration (`-tags integration`, need root + Xen dom0)**:
   - `install` twice → second run is a no-op (idempotency)
-  - `create` → `start` → SSH round-trip → `sync-kernel` → `apps sync` → `delete`
+  - `template create` → `vm create` → `vm start` → SSH round-trip →
+    `vm sync-kernel` → `apps sync` → `vm delete`
 - **CI** (GitHub Actions): `golangci-lint run` (with `go vet`), `go test
   ./...`, build with cgo enabled (libxl headers in the job image).
 
@@ -334,7 +371,7 @@ qlvm/
 │   ├── fw/                   # firewalld D-Bus
 │   ├── nm/                   # NetworkManager D-Bus
 │   ├── systemd/              # systemd D-Bus helpers
-│   ├── template/             # ensureTemplate: podman, image-builder, ostree surgery
+│   ├── template/             # template.Ensure: podman, image-builder, ostree surgery
 │   ├── ostree/               # loop/mount helpers, partition discovery, dep-tree paths
 │   ├── vm/                   # create/start/stop/kill/delete/list, meta.toml
 │   ├── provisioner/          # dotfile sync (Runner seam; real: sftp over sshx)
@@ -359,7 +396,7 @@ qlvm/
 | all NFS (storage VM, mounts, NFS ACLs) | p9 shares via `--mount` |
 | `qvm-nfs-manager` | superseded |
 | `qvm-harden-dom0` | environment-specific; content → `docs/hardening.md` |
-| legacy config-management (deploy/*.py + venv install) | `qlvm provision` (Runner seam) |
+| legacy config-management (deploy/*.py + venv install) | `qlvm vm provision` (Runner seam) |
 | `.xl` config files | direct libxl domain config |
 | Splunk/llama egress rules, hard-coded IPs, personal usernames | clean repo; egress is config-driven |
 
@@ -385,3 +422,4 @@ qlvm/
 - `provision` profiles / extra runner operations — the `Runner` seam accepts new Op kinds; add when
   needed.
 - Multiple image digests per VM name / template GC — first-come.
+  (`template clean` removes complete unreferenced dirs today.)
