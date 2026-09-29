@@ -116,8 +116,12 @@ func ostreePath(ostreeDir string, fs FS) (path, osid, commit string, err error) 
 	return "/ostree/" + boot + "/" + osid + "/" + commit + "/0", osid, commit, nil
 }
 
+// MountPrefix prefixes the bake scratch mount dirs under the system temp
+// dir (cleared by qlvm template rebuild's reap step).
+const MountPrefix = "qlvm-ostree-"
+
 func mountTarget() (string, func(), error) {
-	dir, err := os.MkdirTemp("", "qlvm-ostree-") // #nosec G304 -- internal mount point under the system temp dir
+	dir, err := os.MkdirTemp("", MountPrefix) // #nosec G304 -- internal mount point under the system temp dir
 	if err != nil {
 		return "", nil, err
 	}

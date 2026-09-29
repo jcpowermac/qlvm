@@ -13,15 +13,8 @@ import (
 	"github.com/jcpowermac/qlvm/internal/mounts"
 	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/ovn"
-	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
-
-const podmanSocket = "unix:///run/podman/podman.sock"
-
-// fstype is the filesystem for both the template bake and the VM disk
-// (ruling 4: the CLI passes it explicitly; one spelling so the two can't drift).
-const fstype = "xfs"
 
 func createCmd() *cobra.Command {
 	var domain, typ, image string
@@ -44,22 +37,7 @@ func createCmd() *cobra.Command {
 			if domain == "" {
 				domain = cfg.Domains[0].Name // first configured domain is the default
 			}
-			pod, err := template.NewPodman(cmd.Context(), podmanSocket)
-			if err != nil {
-				return err
-			}
-			tpl, err := template.Ensure(cmd.Context(), pod, template.EnsureOpts{
-				Root: installRoot,
-				Ref:  image,
-				Log:  cmd.OutOrStdout(),
-				Bake: func(dir string) error {
-					keys, err := sshAuthKeys()
-					if err != nil {
-						return err
-					}
-					return ostree.BakeTemplate(cmd.Context(), ostree.NewFS(nil), dir, fstype, keys)
-				},
-			})
+			tpl, err := ensureTemplate(cmd.Context(), cmd.OutOrStdout(), image)
 			if err != nil {
 				return err
 			}

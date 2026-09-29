@@ -2,6 +2,7 @@ package template
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,10 +21,13 @@ const (
 // fakePodman records calls; RunImageBuilder simulates the builder by
 // dropping a raw output file in the workdir.
 type fakePodman struct {
-	digest       string
-	pulls        []string
-	builderCalls []builderCall
-	builderErr   error
+	digest        string
+	pulls         []string
+	builderCalls  []builderCall
+	builderErr    error
+	builderConts  []string // ids returned by ListBuilderContainers
+	removedConts  []string
+	removeContErr error
 }
 
 type builderCall struct{ workdir, ref string }
@@ -39,6 +43,18 @@ func (f *fakePodman) RunImageBuilder(_ context.Context, workdir, ref string, _ i
 		return f.builderErr
 	}
 	return os.WriteFile(filepath.Join(workdir, "bootc.raw"), []byte("bootc output"), 0o600)
+}
+
+func (f *fakePodman) ListBuilderContainers(_ context.Context) ([]string, error) {
+	return f.builderConts, nil
+}
+
+func (f *fakePodman) RemoveContainer(_ context.Context, id string, _ bool) error {
+	if f.removeContErr != nil {
+		return f.removeContErr
+	}
+	f.removedConts = append(f.removedConts, id)
+	return nil
 }
 
 func TestDirFor(t *testing.T) {
@@ -201,11 +217,11 @@ func TestEnsureReusesFinishedRaw(t *testing.T) {
 }
 
 func TestNormalizeDigest(t *testing.T) {
-	assert.Equal(t, "sha256:9bc21b", normalizeDigest("sha256:9bc21b"))
+	assert.Equal(t, "sha256:9bc21b", NormalizeDigest("sha256:9bc21b"))
 	assert.Equal(t, "sha256:9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b",
-		normalizeDigest("9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b"))
-	assert.Equal(t, "weird", normalizeDigest("weird"))
-	assert.Equal(t, "abc", normalizeDigest("abc"))
+		NormalizeDigest("9bc21b264ad327fbe8b3af63bfe1597789f29a5f25f5399b0057cb010ab0e70b"))
+	assert.Equal(t, "weird", NormalizeDigest("weird"))
+	assert.Equal(t, "abc", NormalizeDigest("abc"))
 }
 
 func TestEnsureCanonicalizesBareDigest(t *testing.T) {
@@ -217,4 +233,53 @@ func TestEnsureCanonicalizesBareDigest(t *testing.T) {
 	want := filepath.Join(root, "templates", slugFromRef(testRef)+"-sha256:"+bare)
 	_, statErr := os.Stat(want)
 	assert.NoError(t, statErr, "template dir must use the canonical sha256:-prefixed digest")
+}
+
+func TestReapBuilderContainers(t *testing.T) {
+	p := &fakePodman{builderConts: []string{"abc123", "def456"}}
+	var log strings.Builder
+	require.NoError(t, ReapBuilderContainers(context.Background(), p, &log))
+	assert.Equal(t, []string{"abc123", "def456"}, p.removedConts)
+	assert.Contains(t, log.String(), "abc123")
+	assert.Contains(t, log.String(), "def456")
+}
+
+func TestReapBuilderContainersNoopWhenNone(t *testing.T) {
+	p := &fakePodman{}
+	var log strings.Builder
+	require.NoError(t, ReapBuilderContainers(context.Background(), p, &log))
+	assert.Empty(t, p.removedConts)
+	assert.Empty(t, log.String())
+}
+
+func TestReapBuilderContainersSurfacesRemoveError(t *testing.T) {
+	p := &fakePodman{builderConts: []string{"abc123"}, removeContErr: errors.New("boom")}
+	err := ReapBuilderContainers(context.Background(), p, io.Discard)
+	require.ErrorContains(t, err, "abc123")
+	assert.ErrorContains(t, err, "boom")
+}
+
+func TestDirOfRef(t *testing.T) {
+	assert.Equal(t,
+		filepath.Join("/var/lib/qvm", "templates", "ns-os-bolt-"+testDigest),
+		DirOfRef("/var/lib/qvm", testRef, testDigest))
+}
+
+func TestEnsureBackfillsEmptyImageFromBakeMeta(t *testing.T) {
+	root := t.TempDir()
+	p := &fakePodman{digest: testDigest}
+	tpl, err := Ensure(context.Background(), p, EnsureOpts{
+		Root: root,
+		Ref:  testRef,
+		Log:  io.Discard,
+		Bake: func(dir string) error {
+			// Simulate the ostree enricher: persists a META without Image.
+			return (&Template{Dir: dir, Digest: testDigest, KernelVer: "6.12.0"}).SaveMeta(dir)
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, testRef, tpl.Image)
+	baked, err := LoadMeta(tpl.Dir)
+	require.NoError(t, err)
+	assert.Equal(t, testRef, baked.Image, "backfill must be persisted to the META file")
 }

@@ -237,3 +237,20 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   must run `--privileged` under SELinux. Raw lands in `$OUTPUT/raw-x86_64.raw`
   (top level; older versions used `image/`), with `--with-buildlog
   --with-manifest` alongside.
+
+### Templates (qlvm template)
+- `template list` / `clean` never touch podman; `rebuild` pulls first, then
+  refuses **flat** if any VM's `vms/<n>/meta.toml` (Image+Digest) resolves
+  to the target dir — no `--force` override; delete the VM first.
+- `clean` removes complete unreferenced dirs (the next `create` re-bakes,
+  ~5 min); `--force` adds incomplete dirs (no META, e.g. leftovers from a
+  killed bake or by-hand dirs like the old `boot`/`cloud-init`).
+- `rebuild` reaps a killed bake's residue first: loop devices whose backing
+  file under `/var/lib/qvm` is gone (a force-killed VM leaves one attached
+  to `(deleted)` — `losetup -a` shows the suffix, parsers must allow it),
+  leftover `/tmp/qlvm-ostree-*` mounts (`unix.Unmount`; std has no
+  `os.Unmount`), and exited image-builder containers (Podman REST
+  `ancestor` filter + `Exited`).
+- Legacy META files can have `image = ""` (pre-`o.Ref` builds); `Ensure`
+  backfills it from the ref and re-saves — `template list`'s IMAGE column
+  is empty only until the next ensure/rebuild touches the dir.

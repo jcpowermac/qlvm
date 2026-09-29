@@ -55,6 +55,9 @@ config block).
 | `qlvm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
 | `qlvm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
 | `qlvm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
+| `qlvm template [list]` | List baked templates (dir, image, kernel, size, which VMs reference each); warns on incomplete dirs |
+| `qlvm template rebuild --image <ref>` | Force a fresh pull + bake of an image's template (~5 min). Refuses if any VM references it. First reaps a killed bake's residue: stale loop devices, leftover `/tmp/qlvm-ostree-*` mounts, exited image-builder containers |
+| `qlvm template clean [--force]` | Remove template dirs no VM references (the next `create` re-bakes). `--force` also removes incomplete dirs (no META) |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
 

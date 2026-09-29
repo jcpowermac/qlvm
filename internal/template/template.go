@@ -6,8 +6,8 @@ package template
 
 import (
 	"bytes"
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +32,11 @@ const imageBuilderImage = "ghcr.io/osbuild/image-builder-cli:latest"
 type Podman interface {
 	Pull(ctx context.Context, ref string) (digest string, err error)
 	RunImageBuilder(ctx context.Context, workdir, ref string, errStream io.Writer) error
+	// ListBuilderContainers returns the ids of exited image-builder
+	// containers left behind by killed bakes.
+	ListBuilderContainers(ctx context.Context) ([]string, error)
+	// RemoveContainer removes a container; force also removes running ones.
+	RemoveContainer(ctx context.Context, id string, force bool) error
 }
 
 // Template is a built OS template. RootFlags is "subvol=root" on btrfs hosts,
@@ -82,6 +87,13 @@ func DirFor(root, slug, digest string) string {
 	return filepath.Join(root, "templates", slug+"-"+digest)
 }
 
+// DirOfRef returns the canonical template directory for a ref+digest pair
+// without talking to podman or the disk — used to map VM metas to the
+// template dir they consume.
+func DirOfRef(root, ref, digest string) string {
+	return DirFor(root, slugFromRef(ref), digest)
+}
+
 // Ensure returns the template for o.Ref, building it when it is not already
 // present: pull -> digest -> skip if META matches, else run image-builder in
 // DirFor, adopt <dir>/*.raw as template.raw, bake, then save META.
@@ -92,7 +104,7 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	}
 	// pkg/bindings returns bare hex: canonicalize once at this boundary so
 	// dir names and META digests always carry the sha256: prefix.
-	digest = normalizeDigest(digest)
+	digest = NormalizeDigest(digest)
 	dir := DirFor(o.Root, slugFromRef(o.Ref), digest)
 	if t, err := LoadMeta(dir); err == nil && t.Digest == digest {
 		return t, nil
@@ -127,8 +139,15 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 		if err := o.Bake(dir); err != nil {
 			return nil, fmt.Errorf("bake %s: %w", dir, err)
 		}
-		// Bake may have persisted an enriched META; keep it as-is.
+		// Bake may have persisted an enriched META; keep it, but backfill
+		// fields the enricher derives (Image) that it left empty.
 		if baked, err := LoadMeta(dir); err == nil && baked.Digest == digest {
+			if baked.Image == "" {
+				baked.Image = o.Ref
+				if serr := baked.SaveMeta(dir); serr != nil {
+					return nil, serr
+				}
+			}
 			return baked, nil
 		}
 	}
@@ -206,6 +225,24 @@ func NewPodman(ctx context.Context, socket string) (Podman, error) {
 	return &podmanClient{ctx: cctx}, nil
 }
 
+// ReapBuilderContainers removes exited image-builder containers left behind
+// by killed bakes (an aborted ~5-minute build is the common path; see the
+// Podman pitfalls in AGENTS.md). Nothing is reapable when no such
+// container exists; log receives one line per removal.
+func ReapBuilderContainers(ctx context.Context, p Podman, log io.Writer) error {
+	ids, err := p.ListBuilderContainers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := p.RemoveContainer(ctx, id, true); err != nil {
+			return fmt.Errorf("remove orphaned image-builder container %s: %w", id, err)
+		}
+		_, _ = fmt.Fprintf(log, "removed orphaned image-builder container %s\n", id)
+	}
+	return nil
+}
+
 func (p *podmanClient) Pull(ctx context.Context, ref string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -222,9 +259,37 @@ func (p *podmanClient) Pull(ctx context.Context, ref string) (string, error) {
 	return "", fmt.Errorf("pull %s: no digest in response", ref)
 }
 
-// normalizeDigest prefixes a bare 64-hex digest with sha256:; anything
+func (p *podmanClient) ListBuilderContainers(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	list, err := containers.List(p.ctx, &containers.ListOptions{
+		All:     boolPtr(true),
+		Filters: map[string][]string{"ancestor": {imageBuilderImage}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, c := range list {
+		if c.Exited {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (p *podmanClient) RemoveContainer(ctx context.Context, id string, force bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := containers.Remove(p.ctx, id, &containers.RemoveOptions{Force: boolPtr(force)})
+	return err
+}
+
+// NormalizeDigest prefixes a bare 64-hex digest with sha256:; anything
 // else passes through untouched.
-func normalizeDigest(d string) string {
+func NormalizeDigest(d string) string {
 	if strings.HasPrefix(d, "sha256:") {
 		return d
 	}
