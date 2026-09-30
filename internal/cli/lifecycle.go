@@ -101,6 +101,39 @@ func killCmd() *cobra.Command {
 	}
 }
 
+// stopForced stops a domain gracefully, force-killing if the graceful
+// stop fails (zombie domains never answer ACPI).
+func stopForced(x xenctl.Xen, name string) error {
+	if err := x.Shutdown(name); err == nil {
+		return nil
+	}
+	return x.Destroy(name)
+}
+
+func restartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart <name>",
+		Short: "Restart a VM (graceful stop, force-kill if it refuses, then start)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			x, err := xenctl.New()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = x.Close() }()
+			if err := stopForced(x, name); err != nil {
+				return fmt.Errorf("restart %s: stop: %w", name, err)
+			}
+			if err := startVM(cmd.Context(), name); err != nil {
+				return fmt.Errorf("restart %s: %w", name, err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restarted %s\n", name)
+			return nil
+		},
+	}
+}
+
 func deleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <name>",
@@ -207,5 +240,5 @@ func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*v
 }
 
 func init() {
-	vmCmd().AddCommand(startCmd(), stopCmd(), killCmd(), deleteCmd(), listCmd())
+	vmCmd().AddCommand(startCmd(), stopCmd(), killCmd(), restartCmd(), deleteCmd(), listCmd())
 }

@@ -43,9 +43,9 @@ func TestCommandTree(t *testing.T) {
 		"top level keeps apps/install; VM commands move under vm")
 	vm := child(root, "vm")
 	require.NotNil(t, vm, "vm parent must exist")
-	require.Equal(t, []string{"create", "delete", "kill", "list", "provision", "run", "start", "stop", "sync-kernel"},
+	require.Equal(t, []string{"create", "delete", "kill", "list", "provision", "restart", "run", "start", "stop", "sync-kernel"},
 		childNames(vm))
-	for _, old := range []string{"create", "start", "stop", "kill", "delete", "list", "run", "provision", "sync-kernel"} {
+	for _, old := range []string{"create", "start", "stop", "kill", "delete", "list", "run", "provision", "restart", "sync-kernel"} {
 		require.Nil(t, child(root, old), "old top-level %q must be an unknown command (no aliases)", old)
 	}
 	tpl := child(root, "template")
