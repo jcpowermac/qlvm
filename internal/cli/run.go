@@ -54,6 +54,12 @@ func waypipeSSHArgs(ip string, app []string) []string {
 	return append([]string{"ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		// The dom0→VM path is multi-hop (br-ex uplink → OVN gateway →
+		// OVN switch → vif): idle TCP flows blackhole there, so keep the
+		// connection alive — and fail in ~45s if the peer died, instead of
+		// hanging until ssh's default ~15min give-up.
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
 		vm.SSHUser + "@" + ip}, app...)
 }
 

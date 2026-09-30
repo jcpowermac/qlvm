@@ -23,6 +23,8 @@ func TestWaypipeSSHArgs(t *testing.T) {
 	want := []string{"ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
 		"user@10.100.1.10", "firefox", "--no-remote"}
 	assert.Equal(t, want, got)
 }
