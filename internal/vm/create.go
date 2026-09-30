@@ -50,9 +50,10 @@ type Spec struct {
 // can observe its position in the create ordering.
 var sshConfigFn = AddSSHConfig
 
-// Create prepares a VM (spec §6): OVN port -> reflink disk -> per-VM networkd
-// bake -> per-mount 9p .mount units -> meta.toml -> ssh-config (app only). Any failure after the port is
-// added deletes the port and the half-built VM dir, leaving no orphan port.
+// Create prepares a VM (spec §6): OVN port -> reflink disk -> per-VM XFS
+// UUIDs -> per-VM networkd bake -> per-mount 9p .mount units -> meta.toml ->
+// ssh-config (app only). Any failure after the port is added deletes the
+// port and the half-built VM dir, leaving no orphan port.
 func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*Meta, error) {
 	dom, ok := cfg.Domain(spec.Domain)
 	if !ok {
@@ -103,6 +104,12 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	disk := filepath.Join(vmDir, "disk.img")
 	if err := d.Reflink(disk, filepath.Join(d.Tpl.Dir, "template.raw")); err != nil {
 		return fail(fmt.Errorf("reflink disk: %w", err))
+	}
+	// Per-VM XFS UUIDs before the networkd bake: the bake remounts the root
+	// partition, and xfs_admin needs it unmounted (and must run on the fresh
+	// reflink, not the template).
+	if err := ostree.UniqueXFS(ctx, d.FS, disk, d.FSType); err != nil {
+		return fail(fmt.Errorf("unique xfs uuids: %w", err))
 	}
 	dns := ""
 	if len(cfg.Network.DNS) > 0 {

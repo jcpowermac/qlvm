@@ -31,24 +31,53 @@ func (r *recOVN) DelLSPort(_ context.Context, name string) error {
 	return nil
 }
 
-// recBakeFS is a minimal ostree.FS that satisfies BakeNetworkd: it presents
-// one fake root partition with a single boot.loader deployment.
+// recBakeFS is a minimal ostree.FS that satisfies UniqueXFS and
+// BakeNetworkd: it presents two fake partitions (loop9p1 /boot, loop9p2 the
+// ostree root) and records LoopAttach into the shared event log so tests can
+// observe the per-VM XFS UUID step's position in the create ordering.
 type recBakeFS struct {
 	events *[]string
 }
 
 func (f *recBakeFS) PartUUID(_, _ string) (string, error) { return "test-partuuid", nil }
-func (f *recBakeFS) LoopAttach(_ string) (string, error)  { return "loop9", nil }
-func (f *recBakeFS) LoopDetach(_ string) error            { return nil }
-func (f *recBakeFS) Mount(_, target, _ string, _ bool) error {
-	return os.MkdirAll(target, 0o750)
+func (f *recBakeFS) LoopAttach(_ string) (string, error) {
+	*f.events = append(*f.events, "loopattach")
+	return "loop9", nil
+}
+func (f *recBakeFS) LoopDetach(_ string) error { return nil }
+func (f *recBakeFS) Mount(dev, target, _ string, _ bool) error {
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		return err
+	}
+	// probePart walks the real mount target, so lay down the minimal
+	// per-partition tree there (boot: an osid with a vmlinuz; root: repo +
+	// the deployment tree ostreePath/deploymentDir resolve).
+	switch dev {
+	case "/dev/loop9p1":
+		_ = os.MkdirAll(filepath.Join(target, "ostree", "os1"), 0o750)
+		_ = os.WriteFile(filepath.Join(target, "ostree", "os1", "vmlinuz-6.1.0"), []byte("x"), 0o644)
+	case "/dev/loop9p2":
+		_ = os.MkdirAll(filepath.Join(target, "ostree", "repo"), 0o750)
+		_ = os.MkdirAll(filepath.Join(target, "ostree", "boot.1", "os1", "abc123"), 0o750)
+		_ = os.MkdirAll(filepath.Join(target, "ostree", "deploy", "os1", "deploy", "c0ffee00.0"), 0o750)
+	}
+	return nil
 }
 func (f *recBakeFS) Umount(_ string) error { return nil }
 func (f *recBakeFS) Partitions(_ context.Context, _ string) []string {
-	return []string{"loop9p1"}
+	return []string{"loop9p1", "loop9p2"}
 }
 
 func (f *recBakeFS) ReadDir(p string) ([]string, error) {
+	// The mount targets are real temp dirs (see Mount); the virtual
+	// suffix switch is only the fallback for unmapped paths.
+	if entries, err := os.ReadDir(p); err == nil {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return names, nil
+	}
 	switch {
 	case strings.HasSuffix(p, "/ostree/boot.loader/fedora"):
 		return []string{"c0ffee00"}, nil
@@ -86,7 +115,21 @@ func testCfg() *config.Config {
 	}
 }
 
-func testDeps(t *testing.T, root string, events *[]string, reflinkErr error) CreateDeps {
+// stubXFSAdmin installs a PATH-prefixed fake xfs_admin that records its args
+// (one line per call) to logPath and exits 0, so the real ostree.xfsAdminFn
+// seam (a package var the vm tests cannot replace) succeeds in the unit
+// environment. xfs_admin is a filesystem utility with no Go binding.
+func stubXFSAdmin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "xfs_admin.args")
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "xfs_admin"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return logPath
+}
+
+func testDeps(t *testing.T, root string, events *[]string, reflinkErr error) (CreateDeps, string) {
 	t.Helper()
 	return CreateDeps{
 		OVN: &recOVN{events: events},
@@ -98,7 +141,7 @@ func testDeps(t *testing.T, root string, events *[]string, reflinkErr error) Cre
 		},
 		Root:   root,
 		FSType: "xfs",
-	}
+	}, stubXFSAdmin(t)
 }
 
 func TestCreateHappyPath(t *testing.T) {
@@ -111,7 +154,8 @@ func TestCreateHappyPath(t *testing.T) {
 		sshConfigFn = func(_ string, _ *Meta) error { sshCalls++; return nil }
 		t.Cleanup(func() { sshConfigFn = old })
 
-		m, err := Create(context.Background(), testDeps(t, root, &events, nil), testCfg(),
+		d, xfsLog := testDeps(t, root, &events, nil)
+		m, err := Create(context.Background(), d, testCfg(),
 			Spec{Name: "vm1", Domain: "work", Type: "disposable"})
 		require.NoError(t, err)
 		require.Equal(t, "10.100.1.10", m.IP)
@@ -123,8 +167,20 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm1/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", bake}
-		require.Equal(t, want, events, "order: OVN port -> reflink -> networkd bake -> (meta save, file on disk)")
+		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake}
+		require.Equal(t, want, events, "order: OVN port -> reflink -> UniqueXFS (loopattach) -> networkd bake (loopattach) -> (meta save, file on disk)")
+		// The per-VM XFS UUID step must have invoked xfs_admin -U generate on
+		// both the root and boot partitions of the reflinked disk.
+		args, err := os.ReadFile(xfsLog) // #nosec G304 -- t.TempDir path
+		require.NoError(t, err)
+		var xfsLines []string
+		for _, l := range strings.Split(strings.TrimSpace(string(args)), "\n") {
+			if l != "" {
+				xfsLines = append(xfsLines, l)
+			}
+		}
+		require.Equal(t, []string{"-U generate /dev/loop9p2", "-U generate /dev/loop9p1"}, xfsLines,
+			"xfs_admin -U generate runs exactly once per partition (root then boot)")
 		require.FileExists(t, filepath.Join(root, "vms/vm1/meta.toml"))
 		require.Equal(t, 0, sshCalls, "disposable writes no ssh-config entry")
 		require.NoFileExists(t, filepath.Join(home, ".ssh", "config"))
@@ -143,7 +199,8 @@ func TestCreateHappyPath(t *testing.T) {
 		}
 		t.Cleanup(func() { sshConfigFn = old })
 
-		m, err := Create(context.Background(), testDeps(t, root, &events, nil), testCfg(),
+		d, _ := testDeps(t, root, &events, nil)
+		m, err := Create(context.Background(), d, testCfg(),
 			Spec{Name: "vm2", Domain: "work", Type: "app"})
 		require.NoError(t, err)
 		require.Equal(t, 4096, m.MemoryMB)
@@ -151,8 +208,8 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm2/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", bake, "ssh"}
-		require.Equal(t, want, events, "order: OVN -> reflink -> bake -> meta save -> ssh config")
+		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "ssh"}
+		require.Equal(t, want, events, "order: OVN -> reflink -> UniqueXFS (loopattach) -> bake (loopattach) -> meta save -> ssh config")
 		require.Equal(t, m.Name, sshMeta.Name)
 		got, err := os.ReadFile(filepath.Join(home, ".ssh", "config")) // #nosec G304 -- t.TempDir path
 
@@ -164,7 +221,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()
 		cfg := testCfg()
-		d := testDeps(t, root, new([]string), nil)
+		d, _ := testDeps(t, root, new([]string), nil)
 		m1, err := Create(context.Background(), d, cfg, Spec{Name: "first", Domain: "work", Type: "app"})
 		require.NoError(t, err)
 		require.Equal(t, "10.100.1.10", m1.IP)
@@ -176,7 +233,7 @@ func TestCreateHappyPath(t *testing.T) {
 	t.Run("delete-then-create does not reuse a live hostnum", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()
-		d := testDeps(t, root, new([]string), nil)
+		d, _ := testDeps(t, root, new([]string), nil)
 		for _, name := range []string{"a", "b", "c"} {
 			if _, err := Create(context.Background(), d, testCfg(),
 				Spec{Name: name, Domain: "work", Type: "disposable"}); err != nil {
@@ -195,7 +252,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()
 		var events []string
-		d := testDeps(t, root, &events, nil)
+		d, _ := testDeps(t, root, &events, nil)
 		_, err := Create(context.Background(), d, testCfg(), Spec{
 			Name: "vm1", Domain: "work", Type: "disposable",
 			Mounts: []Mount{{Host: "/srv/data", Guest: "data"}, {Host: "/home/user/projects", Guest: "/var/lib/qvm/projects"}},
@@ -227,7 +284,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()
 		var events []string
-		d := testDeps(t, root, &events, nil)
+		d, _ := testDeps(t, root, &events, nil)
 		// Simulate a create that crashed between MkdirAll and meta save.
 		require.NoError(t, os.MkdirAll(filepath.Join(root, "vms", "crashed"), 0o750))
 		m, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
@@ -239,7 +296,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		root := t.TempDir()
 		var events []string
-		d := testDeps(t, root, &events, nil)
+		d, _ := testDeps(t, root, &events, nil)
 		_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
 		require.NoError(t, err)
 		_, err = Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
@@ -250,7 +307,7 @@ func TestCreateHappyPath(t *testing.T) {
 	t.Run("unknown domain is refused", func(t *testing.T) {
 		root := t.TempDir()
 		var events []string
-		d := testDeps(t, root, &events, nil)
+		d, _ := testDeps(t, root, &events, nil)
 		_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "nope", Type: "app"})
 		require.Error(t, err)
 		require.Empty(t, events, "no OVN side effects before domain lookup")
@@ -262,7 +319,7 @@ func TestCreateReflinkFailureLeavesNoOrphanPort(t *testing.T) {
 	var events []string
 	// Mirror the real Reflink contract: EXDEV/EOPNOTSUPP surfaces as an error
 	// containing "same filesystem".
-	d := testDeps(t, root, &events, errors.New("clone: same filesystem required (EXDEV)"))
+	d, _ := testDeps(t, root, &events, errors.New("clone: same filesystem required (EXDEV)"))
 	_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "same filesystem")
