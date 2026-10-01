@@ -61,7 +61,16 @@ int qlvm_create_domain(libxl_ctx *ctx,
     d.b_info.type = LIBXL_DOMAIN_TYPE_PVH;
     memset(&d.b_info.u, 0, sizeof(d.b_info.u));
     d.b_info.max_vcpus = maxvcpus;
-    d.b_info.nr_vcpus = maxvcpus;
+    // Boot all vCPUs online: xl's vcpus= maps to the avail_vcpus bitmap,
+    // and an unset bitmap defaults to 1 online vCPU despite max_vcpus (the
+    // A3 symptom). config_dispose below frees the map.
+    {
+        uint32_t nbytes = (uint32_t)((maxvcpus + 7) / 8);
+        d.b_info.avail_vcpus.size = nbytes;
+        d.b_info.avail_vcpus.map = nbytes ? calloc(1, nbytes) : NULL;
+        for (i = 0; i < maxvcpus; i++)
+            d.b_info.avail_vcpus.map[i / 8] |= (uint8_t)(1u << (i % 8));
+    }
     d.b_info.target_memkb = memkb;
     // max_memkb defaults to a 32MB stub when left unset; pin it to the
     // requested memory. shadow_memkb is left at the generated-init
