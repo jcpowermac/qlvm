@@ -42,7 +42,7 @@ func recordXFS(t *testing.T, calls *[]string, err error) {
 	t.Cleanup(func() { xfsAdminFn = old })
 }
 
-func TestUniqueXFSRegeneratesBootAndRoot(t *testing.T) {
+func TestUniqueXFSRegeneratesRootOnly(t *testing.T) {
 	disk := filepath.Join(t.TempDir(), "disk.img")
 	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
 	f := uuidFS()
@@ -51,8 +51,8 @@ func TestUniqueXFSRegeneratesBootAndRoot(t *testing.T) {
 
 	require.NoError(t, UniqueXFS(context.Background(), f, disk, "xfs"))
 
-	assert.Equal(t, []string{"/dev/loop9p2", "/dev/loop9p1"}, calls,
-		"xfs_admin must run exactly once on the root partition then the boot partition")
+	assert.Equal(t, []string{"/dev/loop9p2"}, calls,
+		"xfs_admin must run exactly once, on the root partition only — the image fstab pins the /boot XFS UUID, so the boot partition must be left untouched")
 	assert.Equal(t, []string{disk}, f.attached, "the VM disk must be loop-attached")
 	assert.Equal(t, []string{"/dev/loop9"}, f.detached, "the loop must be detached")
 	assert.Len(t, f.umounted, 2, "the probe mounts must be unmounted before xfs_admin")

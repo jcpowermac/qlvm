@@ -170,7 +170,8 @@ func TestCreateHappyPath(t *testing.T) {
 		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake}
 		require.Equal(t, want, events, "order: OVN port -> reflink -> UniqueXFS (loopattach) -> networkd bake (loopattach) -> (meta save, file on disk)")
 		// The per-VM XFS UUID step must have invoked xfs_admin -U generate on
-		// both the root and boot partitions of the reflinked disk.
+		// the root partition only — the image fstab pins the /boot XFS UUID,
+		// so the boot partition must be left untouched.
 		args, err := os.ReadFile(xfsLog) // #nosec G304 -- t.TempDir path
 		require.NoError(t, err)
 		var xfsLines []string
@@ -179,8 +180,8 @@ func TestCreateHappyPath(t *testing.T) {
 				xfsLines = append(xfsLines, l)
 			}
 		}
-		require.Equal(t, []string{"-U generate /dev/loop9p2", "-U generate /dev/loop9p1"}, xfsLines,
-			"xfs_admin -U generate runs exactly once per partition (root then boot)")
+		require.Equal(t, []string{"-U generate /dev/loop9p2"}, xfsLines,
+			"xfs_admin -U generate runs exactly once, on the root partition only")
 		require.FileExists(t, filepath.Join(root, "vms/vm1/meta.toml"))
 		require.Equal(t, 0, sshCalls, "disposable writes no ssh-config entry")
 		require.NoFileExists(t, filepath.Join(home, ".ssh", "config"))

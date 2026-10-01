@@ -60,8 +60,9 @@ var xfsAdminFn = func(dev string) error {
     return exec.Command("xfs_admin", "-U", "generate", dev).Run()
 }
 
-// UniqueXFS gives a reflinked template copy unique XFS filesystem UUIDs
-// (boot + root partitions) so dom0 can loop-mount a VM disk and its
+// UniqueXFS gives a reflinked template copy a unique XFS filesystem UUID
+// on the ROOT partition only (the /boot partition keeps the template's
+// UUID — see REGRESSION NOTE). So dom0 can loop-mount a VM disk and its
 // template simultaneously. Non-XFS fstypes are a no-op.
 func UniqueXFS(ctx context.Context, fs FS, disk, fstype string) error {
     if fstype != "xfs" {
@@ -72,20 +73,15 @@ func UniqueXFS(ctx context.Context, fs FS, disk, fstype string) error {
         return err
     }
     defer func() { _ = fs.LoopDetach(loop) }()
-    root, boot, rootPart, bootPart, err := findParts(ctx, fs, loop, true, true, fstype, "uuid")
+    root, boot, rootPart, _, err := findParts(ctx, fs, loop, true, true, fstype, "uuid")
     if err != nil {
         return err
     }
-    for _, pm := range []partMount{root, boot} { // unmount before xfs_admin
+    for _, pm := range []partMount{root, boot} { // unmount both before xfs_admin
         pm.cleanup()
     }
-    for _, part := range []string{rootPart, bootPart} {
-        if part == "" {
-            continue
-        }
-        if err := xfsAdminFn("/dev/" + part); err != nil {
-            return fmt.Errorf("xfs uuid %s: %w", part, err)
-        }
+    if err := xfsAdminFn("/dev/" + rootPart); err != nil {
+        return fmt.Errorf("xfs uuid %s: %w", rootPart, err)
     }
     return nil
 }
@@ -107,24 +103,42 @@ if err := ostree.UniqueXFS(ctx, d.FS, disk, d.FSType); err != nil {
 leaves no residue. Writing the superblock COWs reflinked extents — the
 template is untouched (same mechanism `BakeNetworkd` already relies on).
 
+**REGRESSION NOTE** (live-verified 2026-09-30): regenerating the **/boot**
+partition's XFS UUID is NOT boot-safe — the os-bolt image's baked
+`/etc/fstab` pins `/boot` by its XFS UUID (`UUID=... /boot auto ro 0 0`),
+so after regeneration `boot.mount` times out after 30s, systemd goes to
+EMERGENCY, and sshd never starts (every VM created with the two-partition
+binary was unrunnable). Root-only was chosen over rewriting the image
+fstab (the guest is ostree-atomic; per-VM `/etc` rewrites are out of
+scope) and over image-side PARTUUID boot references (needs a re-bake for
+existing templates). The uniqueness need is dom0-side only: dom0 surgery
+loop-mounts partitions by device path (never by UUID) and nothing on dom0
+mounts a VM /boot by UUID — a shared /boot UUID across VMs is exactly the
+pre-Task-1 state, which booted fine. So: root-only.
+
 **Tests** (`uuid_test.go`, TDD): fake `FS` recording `LoopAttach`/
 `LoopDetach`/`Partitions` (reuse the fake pattern from `surgery_test.go`);
 record `xfsAdminFn` calls.
-1. `fstype="xfs"` → `xfsAdminFn` called exactly for `/dev/<bootPart>` and
-   `/dev/<rootPart>` (order: boot then root), loop attached+detached.
+1. `fstype="xfs"` → `xfsAdminFn` called EXACTLY ONCE, for
+   `/dev/<rootPart>` only (never `/dev/<bootPart>`), loop attached+detached,
+   both partitions unmounted.
 2. `fstype="ext4"` → no `xfsAdminFn` calls, no loop attach.
 3. `xfsAdminFn` error → error returned, loop detached.
 
 `create_test.go`: the Create ordering test asserts `UniqueXFS` runs after
 reflink and before the networkd bake (via the existing FS fake — make the
 fake's `LoopAttach` fail when called before the "reflink" marker, or record
-call order).
+call order). The fake `xfs_admin` argv log must contain exactly ONE
+`-U generate /dev/<rootPart>` line (root partition only, per the
+REGRESSION NOTE).
 
 **Verify:** `go build ./...` + the tagged `go test ./...` from Global
 constraints. Live (after container-build, Task 4): create a scratch VM, then
 `xfs_info` the template p4 and the VM p4 (loop-attach + kpartx, RO) — UUIDs
 differ; `xfs_info` two VMs from the same template — they differ from each
-other.
+other. For the /boot partition: the VM's /boot XFS UUID must EQUAL the
+template's by design (the image fstab pins it — REGRESSION NOTE); only
+p4/root may differ across VMs.
 
 ## Task 2 — `qlvm vm restart <name>` (the recovery path we used by hand)
 
