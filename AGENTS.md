@@ -248,9 +248,9 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   `bootc-fetch-apply-updates.timer` ships ENABLED in the image layer
   (`/usr/lib/systemd/system/default.target.wants/`); ~1–3 h after every boot
   it runs `bootc upgrade --apply --quiet` (stages a deployment; does not
-  self-reboot), so a long-lived VM's next reboot is a post-upgrade one — this
-  image will zombie a forgotten VM within hours of use. Image problem for the
-  os-bolt sibling repo; not patchable in qlvm.
+  self-reboot), so any later reboot of a long-lived VM is unattended and
+  post-upgrade — and, per the note above, will zombie the domain. Image
+  problem for the os-bolt sibling repo; not patchable in qlvm.
 - Related state anomalies observed on the same VMs (not chased): domains
   show `-b----` (vCPU `-b-`) for parts of the life while the guest is
   provably live (`qlvm vm list` mislabels such a VM `stopped`); `qlvm vm
