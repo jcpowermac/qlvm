@@ -180,6 +180,11 @@ func (f *fakeFS) WriteFile(p string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
+// MkdirAll is a no-op on the virtual tree: the path must NOT be created on
+// the real (temp-target) filesystem, or the raw-OS chown/setxattr guards in
+// BakeTemplate stop no-op'ing (see the fs.MkdirAll call site there).
+func (f *fakeFS) MkdirAll(_ string, _ os.FileMode) error { return nil }
+
 func (f *fakeFS) CopyFile(src, dst string) (int, error) {
 	if f.copyErr != nil {
 		return 0, f.copyErr

@@ -64,6 +64,10 @@ func (f *recBakeFS) Mount(dev, target, _ string, _ bool) error {
 	return nil
 }
 func (f *recBakeFS) Umount(_ string) error { return nil }
+func (f *recBakeFS) MkdirAll(_ string, _ os.FileMode) error {
+	*f.events = append(*f.events, "mkdirall")
+	return nil
+}
 func (f *recBakeFS) Partitions(_ context.Context, _ string) []string {
 	return []string{"loop9p1", "loop9p2"}
 }

@@ -134,6 +134,11 @@ func chownForUser(path string, uid int) error {
 	if os.Geteuid() != 0 {
 		return nil
 	}
+	// The Lstat guard no-ops for virtual FS fakes (paths exist only on real
+	// loop-mounted trees), mirroring setSELinuxContext.
+	if _, err := os.Lstat(path); err != nil {
+		return nil
+	}
 	return os.Chown(path, uid, uid) // #nosec G306 -- fixed uid for an internal path
 }
 
@@ -617,7 +622,11 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype, sshAuthKeys string) e
 	// group/other write) without a chown on the loop-mounted tree.
 	home := filepath.Join(rwTarget, "ostree", "deploy", osid, "var", "home", defaultVMUser)
 	sshDir := filepath.Join(home, ".ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+	// Through the FS, not os: a raw MkdirAll materializes the dir under the
+	// fake's real temp mount target, which defeats the Lstat guards in
+	// chownForUser/setSELinuxContext (raw chown/setxattr then run against a
+	// half-real tree and fail on non-root/non-SELinux hosts, e.g. CI).
+	if err := fs.MkdirAll(sshDir, 0o700); err != nil {
 		return err
 	}
 	authKeys := filepath.Join(sshDir, "authorized_keys")

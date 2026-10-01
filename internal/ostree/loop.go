@@ -31,6 +31,10 @@ type FS interface {
 	ReadDir(p string) ([]string, error)
 	ReadFile(p string) ([]byte, error)
 	WriteFile(p string, data []byte, mode os.FileMode) error
+	// MkdirAll creates p (and parents) on the target tree: the real FS on
+	// the loop mount, fakes in their virtual tree (so raw-OS side effects
+	// like chown/setxattr on the path stay no-ops against fakes).
+	MkdirAll(p string, mode os.FileMode) error
 	CopyFile(src, dst string) (n int, err error)
 	// PartUUID returns the GPT partition GUID for a partition node name
 	// (e.g. "loop0p4") on the disk image at path. The kernel exposes no
@@ -253,6 +257,8 @@ func (s *sys) WriteFile(p string, data []byte, mode os.FileMode) error {
 
 // PartUUID implements FS.PartUUID: parse the number out of the partition
 // node name and read the GUID from the GPT of the image at path.
+func (s *sys) MkdirAll(p string, mode os.FileMode) error { return os.MkdirAll(p, mode) }
+
 func (s *sys) PartUUID(path, part string) (string, error) {
 	loop := loopOf(part)
 	if loop == "" {
