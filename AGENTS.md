@@ -222,24 +222,35 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   unresponsive, gone only via `xl destroy`. Reproduced twice back-to-back
   (Xen 4.21, guest kernel 7.2.7-200.fc44, template 72e8ffbb…): reboot fired
   ~20:54:53 → `---sr-` by 20:55:23, and ~21:03:22 → `---sr-` by 21:03:30,
-  both zombied 5+ min (22 samples). This is the same terminal state as the
-  "foo" incident; whether the in-guest upgrade changes anything on this path
-  is untested.
+  both zombied 5+ min (22 samples in run 2). This is the same terminal
+  state as the "foo" incident; whether the in-guest upgrade changes
+  anything on this path is untested.
 - **Why no policy can save it: the dom0 has no libxl event handler.**
   qlvm creates domains via libxl cgo in a process that exits after create;
   `ps aux` shows no libxl/xl daemon for the live domain and there is no
   `/etc/libxl.conf` (libxl logging off — `journalctl -t libxl` is empty,
   zero libxl lines around create/stop/reboot/destroy). The guest's ACPI/HVM
-  reboot request is queued in the hypervisor and never consumed, so even the
-  default `on_reboot=destroy` never runs. Setting `on_reboot=` in
-  `internal/xenctl/xenctl_cgo.go` is a NO-OP until a dom0 process handles
-  libxl events for the domain's lifetime. `xl dmesg` (hypervisor ring) was
+  reboot request appears to go unhandled in the hypervisor — no dom0 process
+  exists to consume it, and the hypervisor's internal state is not directly
+  observable — so even the default `on_reboot=destroy` never runs. Setting
+  `on_reboot=` in `internal/xenctl/xenctl_cgo.go` is a NO-OP until a dom0
+  process handles libxl events for the domain's lifetime. `xl dmesg`
+  (hypervisor ring) was
   empty (0 bytes). Netconsole was judged uninformative: the hang is after
   the guest kernel stops executing, so no in-guest channel reports past
   `machine restart` (the hvc0 ring already captures the kernel's last word).
-- Recovery: `sudo xl destroy <name>` + `qlvm vm start <name>` (or
-  `qlvm vm restart`). Loop-forensics on the zombie's disk are safe once the
-  domain is gone from `xl list`.
+- Recovery: `sudo xl destroy <name>` + `qlvm vm start <name>` — and
+  `qlvm vm restart` now performs exactly that (graceful ACPI stop, linger
+  poll ~60 s, force-kill, start): live-verified against a real `---sr-`
+  zombie on 2026-09-30 (rc=0 in ~61 s; Task 4b smoke). Loop-forensics on the
+  zombie's disk are safe once the domain is gone from `xl list`.
+- **The image's auto-upgrade timer makes the next reboot unattended.**
+  `bootc-fetch-apply-updates.timer` ships ENABLED in the image layer
+  (`/usr/lib/systemd/system/default.target.wants/`); ~1–3 h after every boot
+  it runs `bootc upgrade --apply --quiet` (stages a deployment; does not
+  self-reboot), so a long-lived VM's next reboot is a post-upgrade one — this
+  image will zombie a forgotten VM within hours of use. Image problem for the
+  os-bolt sibling repo; not patchable in qlvm.
 - Related state anomalies observed on the same VMs (not chased): domains
   show `-b----` (vCPU `-b-`) for parts of the life while the guest is
   provably live (`qlvm vm list` mislabels such a VM `stopped`); `qlvm vm

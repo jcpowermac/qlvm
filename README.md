@@ -57,7 +57,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm vm start <name>` | Boot a prepared VM (cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
 | `qlvm vm kill <name>` | Force destroy |
-| `qlvm vm restart <name>` | Graceful stop, force-kill if it refuses, then start |
+| `qlvm vm restart <name>` | Graceful stop, force-kill if it lingers, then start |
 | `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
 | `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
 | `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
@@ -73,8 +73,11 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 leaves the Xen domain a zombie: `xl list` shows `---sr-`, vCPUs halted,
 no ping/SSH, and the ACPI stop never answers — the dom0 runs no toolstack
 process to consume the guest's reboot event, so no libxl `on_reboot` policy
-can ever fire. Recover with `qlvm vm restart <name>` (graceful stop,
-force-kill on refusal, start); for a stuck zombie that is
+can ever fire. Recover with `qlvm vm restart <name>`: its graceful stop
+does not wait for the zombie (libxl sends the ACPI event and returns),
+so the command polls for ~60 s, force-kills if it lingers, then starts —
+on a zombie, allow ~60–90 s before it returns (live-verified against a
+real `---sr-` zombie, 2026-09-30). For a manual low-level recovery, use
 `sudo xl destroy <name>` + `qlvm vm start <name>`. Plain `systemctl reboot`
 in the guest was shown to hang deterministically (live evidence in
 `AGENTS.md`, "Live-smoke pitfalls").
