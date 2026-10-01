@@ -57,6 +57,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm vm start <name>` | Boot a prepared VM (cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
 | `qlvm vm kill <name>` | Force destroy |
+| `qlvm vm restart <name>` | Graceful stop, force-kill if it refuses, then start |
 | `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
 | `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
 | `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
@@ -67,6 +68,16 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm template clean [--force]` | Remove template dirs no VM references (a `vm create` that wants one fails until `qlvm template create <ref>` re-bakes it). `--force` also removes incomplete dirs (no META) |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
+
+**In-guest reboot is unsupported.** A reboot issued from inside the guest
+leaves the Xen domain a zombie: `xl list` shows `---sr-`, vCPUs halted,
+no ping/SSH, and the ACPI stop never answers — the dom0 runs no toolstack
+process to consume the guest's reboot event, so no libxl `on_reboot` policy
+can ever fire. Recover with `qlvm vm restart <name>` (graceful stop,
+force-kill on refusal, start); for a stuck zombie that is
+`sudo xl destroy <name>` + `qlvm vm start <name>`. Plain `systemctl reboot`
+in the guest was shown to hang deterministically (live evidence in
+`AGENTS.md`, "Live-smoke pitfalls").
 
 ## Shared mounts
 
