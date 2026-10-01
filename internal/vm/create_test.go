@@ -330,6 +330,25 @@ func TestCreateReflinkFailureLeavesNoOrphanPort(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(root, "vms/vm1/disk.img"))
 }
 
+func TestCreateXFSAdminFailureLeavesNoOrphan(t *testing.T) {
+	root := t.TempDir()
+	var events []string
+	d, _ := testDeps(t, root, &events, nil)
+	// A PATH-prefixed xfs_admin that fails mid-create (testDeps's success
+	// stub is shadowed: this dir comes first on PATH).
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "xfs_admin"),
+		[]byte("#!/bin/sh\nexit 1\n"), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unique xfs uuids")
+	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "ovn-del:vm1"},
+		events, "failed create must delete the OVN port")
+	require.NoDirExists(t, filepath.Join(root, "vms/vm1"), "failed create must remove the VM dir (no orphan disk.img)")
+}
+
 func TestMetaRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	m := &Meta{
