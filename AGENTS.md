@@ -203,6 +203,21 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   live xfs is a corruption hazard. When the domain won't exit: `xl
   destroy`, verify, then mount.
 
+### CI (GitHub Actions)
+- **CI = ubuntu-latest: non-root, no SELinux, no libxl** (stub path; the
+  Makefile's exclude tags already handle the podman cgo deps). Unit tests
+  must pass there, not just on this SELinux-enforcing dom0.
+- **Fake-FS contract**: a fake's mount target is a REAL temp dir, so any
+  raw `os.*` call on a target path materializes for real and leaks into
+  raw-OS side effects (chown/setxattr ran on CI and broke the bake tests
+  2026-09-29). Route tree operations through the `ostree.FS` interface and
+  keep raw side effects Lstat-guarded (surgery.go `chownForUser` /
+  `setSELinuxContext`). Repro the CI failure locally: `sudo go test
+  ./internal/ostree/`, or non-root via `podman run --rm -v $PWD:/src:z -w
+  /src localhost/qlvm-builder:local sh -c 'go test -tags
+  "exclude_graphdriver_btrfs exclude_graphdriver_zfs
+  containers_image_openpgp" ./...'`.
+
 ### Xen / build
 - Two binary flavors: repo `bin/qlvm` = portable stub (no `libxl` tag);
   `/usr/local/bin/qlvm` = real cgo build via `sudo make container-build`
@@ -293,15 +308,22 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   unique prefix, pure filesystem) and the VM's Image+Digest come from the
   template META — it never pulls or bakes. Baking is `template create
   <ref>`, a deliberate user action.
-- `template list` / `clean` never touch podman. `create <ref>` pulls
+- `template list` / `delete` never touch podman. `create <ref>` pulls
   first, then: dir absent → reap + bake (~5 min); dir exists → refuse
   unless `--force`; `--force` is the re-bake: flat refusal (no override
   flag) if any VM's `vms/<n>/meta.toml` (Image+Digest) resolves to the
   target dir — delete the VM first — then reap, remove, bake.
-- `clean` removes complete unreferenced dirs (a `vm create` that wants one
-  then fails until `template create <ref>` re-bakes); `--force` adds
-  incomplete dirs (no META, e.g. leftovers from a killed bake or by-hand
-  dirs like the old `boot`/`cloud-init`).
+- `delete [dir...]` removes the named dirs (exact name or unique prefix;
+  flat refusal while a VM references one). With no args it removes complete
+  unreferenced dirs (a `vm create` that wants one then fails until
+  `template create <ref>` re-bakes); `--force` adds incomplete dirs (no
+  META, e.g. leftovers from a killed bake or by-hand dirs like the old
+  `boot`/`cloud-init`).
+- **The boot kernel is per-VM state** (`vms/<name>/{vmlinuz,initramfs}`),
+  seeded from the template dir at `vm start` (`vm.EnsureKernel`; existing
+  files are never replaced) and refreshed in place by `vm sync-kernel`. The
+  template dir is immutable after the bake — one VM's in-guest upgrade never
+  re-points a sibling's boot.
 - `create` reaps a killed bake's residue on both paths, before baking: loop
   devices whose backing file under `/var/lib/qvm` is gone (a force-killed
   VM leaves one attached to `(deleted)` — `losetup -a` shows the suffix,

@@ -79,8 +79,38 @@ func TestTemplateListOutput(t *testing.T) {
 
 	w := templateWarnings(rows)
 	assert.Contains(t, w, "ns-os-bolt-sha256:b")
-	assert.Contains(t, w, "clean --force")
+	assert.Contains(t, w, "delete --force")
 	assert.NotContains(t, w, "ns-os-bolt-sha256:a")
+}
+
+func TestTemplateDeletePlan(t *testing.T) {
+	root := t.TempDir()
+	referenced := writeTemplate(t, root, cliTestRef, cliTestDigest, true)
+	writeVM(t, root, "t1", cliTestRef, cliTestDigest)
+	unreferenced := writeTemplate(t, root, "registry.example.com/ns/other:latest", cliTestDigest, false)
+
+	rows, err := scanTemplates(root)
+	require.NoError(t, err)
+
+	// No args: GC — the referenced dir is kept; the unreferenced one goes.
+	got, err := templateDeletePlan(root, rows, nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Base(unreferenced)}, got)
+
+	// Exact name: flat refusal while a VM references the dir.
+	_, err = templateDeletePlan(root, rows, []string{filepath.Base(referenced)}, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "t1")
+	assert.Contains(t, err.Error(), "delete those VMs first")
+
+	// Unique prefix: removed.
+	got, err = templateDeletePlan(root, rows, []string{"ns-other"}, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Base(unreferenced)}, got)
+
+	// Unknown ref: hard error.
+	_, err = templateDeletePlan(root, rows, []string{"nope"}, false)
+	require.Error(t, err)
 }
 
 func TestCleanPlan(t *testing.T) {
@@ -152,7 +182,7 @@ func TestParseLoopLines(t *testing.T) {
 		"/dev/loop1: [0807]:107 (/etc/other.img)",                       // outside root: ignore
 		"/dev/loop2 (NAME OF LOOP): [0807]:108 (" + root + "/gone.img)", // under root, deleted: stale
 		"/dev/loop3: [0807]:109 ( /etc/vms/x/disk.img )",                // outside root (spaces): ignore
-		"/dev/loop4: [0036]:1 (" + root + "/gone2.img (deleted))",        // (deleted) suffix: stale
+		"/dev/loop4: [0036]:1 (" + root + "/gone2.img (deleted))",       // (deleted) suffix: stale
 	}, "\n")
 	stale := parseLoopLines(output, root)
 	assert.Equal(t, []string{"/dev/loop2", "/dev/loop4"}, stale)

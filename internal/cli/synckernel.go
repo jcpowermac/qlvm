@@ -11,7 +11,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/jcpowermac/qlvm/internal/sshx"
-	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
@@ -33,10 +32,11 @@ func (s sshKernelSyncer) FetchFile(ctx context.Context, path string) (io.ReadClo
 }
 
 // syncKernel copies the VM's current kernel and initramfs from its /boot
-// into dir (the VM's template dir): each file lands under its exact fetched
-// name and additionally as the unversioned vmlinuz/initramfs that the VM's
-// domain config boots (vm/domcfg), so a restart picks the new kernel up.
-// The template META's kernel_ver is updated to keep state honest.
+// into dir (the VM's own state dir): each file lands under its exact
+// fetched name and additionally as the unversioned vmlinuz/initramfs that
+// the VM's domain config boots (vm/domcfg), so a restart picks the new
+// kernel up. The per-VM copy means a sibling VM of the same template keeps
+// its own boot kernel; the template dir stays immutable after the bake.
 func syncKernel(ctx context.Context, host kernelSyncer, dir string) (string, error) {
 	raw, err := host.Run(ctx, "rpm -q kernel-core --last | head -1")
 	if err != nil {
@@ -76,14 +76,6 @@ func syncKernel(ctx context.Context, host kernelSyncer, dir string) (string, err
 			}
 		}
 	}
-	tpl, err := template.LoadMeta(dir)
-	if err != nil {
-		return "", err
-	}
-	tpl.KernelVer = ver
-	if err := tpl.SaveMeta(dir); err != nil {
-		return "", err
-	}
 	return ver, nil
 }
 
@@ -95,13 +87,10 @@ func syncKernelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := args[0]
-			m, err := vm.LoadMeta(vmDirOf(name))
+			vmDir := vmDirOf(name)
+			m, err := vm.LoadMeta(vmDir)
 			if err != nil {
 				return fmt.Errorf("sync-kernel %s: %w", name, err)
-			}
-			tpl, err := template.LoadByRef(installRoot, m.Image, m.Digest)
-			if err != nil {
-				return fmt.Errorf("sync-kernel %s: template: %w", name, err)
 			}
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -115,11 +104,11 @@ func syncKernelCmd() *cobra.Command {
 				return err
 			}
 			defer func() { _ = c.Close() }()
-			ver, err := syncKernel(ctx, sshKernelSyncer{c: c}, tpl.Dir)
+			ver, err := syncKernel(ctx, sshKernelSyncer{c: c}, vmDir)
 			if err != nil {
 				return fmt.Errorf("sync-kernel %s: %w", name, err)
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "synced kernel %s to %s\n", ver, tpl.Dir)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "synced kernel %s to %s\n", ver, vmDir)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restart to boot it: qlvm vm stop %s && qlvm vm start %s\n", name, name)
 			return nil
 		},

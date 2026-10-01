@@ -85,11 +85,14 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 		})
 	}
 	return &DomainSpec{
-		Type:        "PVH",
-		Name:        m.Name,
-		UUID:        m.UUID,
-		Kernel:      filepath.Join(tpl.Dir, "vmlinuz"),
-		Ramdisk:     filepath.Join(tpl.Dir, "initramfs"),
+		Type: "PVH",
+		Name: m.Name,
+		UUID: m.UUID,
+		// The boot kernel is per-VM state in vmDir (seeded from the
+		// template dir at start by EnsureKernel; refreshed in place by
+		// sync-kernel), so one VM's upgrade never re-points a sibling's boot.
+		Kernel:      filepath.Join(vmDir, "vmlinuz"),
+		Ramdisk:     filepath.Join(vmDir, "initramfs"),
 		Extra:       extra,
 		MaxVcpus:    m.VCPUs,
 		TargetMemkb: m.MemoryMB * 1024,

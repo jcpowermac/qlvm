@@ -54,7 +54,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 |---|---|
 | `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, NetworkManager, systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
 | `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB`, `--vcpus N`, `--config PATH` |
-| `qlvm vm start <name>` | Boot a prepared VM (cleans stale OVS vif ports first) |
+| `qlvm vm start <name>` | Boot a prepared VM (seeds the per-VM kernel files from the template dir if missing, cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
 | `qlvm vm kill <name>` | Force destroy |
 | `qlvm vm restart <name>` | Graceful stop, force-kill if it lingers, then start |
@@ -62,10 +62,10 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
 | `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
 | `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
-| `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into its template so a restart picks up a kernel the VM upgraded in place |
+| `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into the VM's own state dir (`vms/<name>/`) so a restart picks up a kernel the VM upgraded in place. Per-VM: a sibling VM of the same template keeps its own kernel; the template dir is never touched |
 | `qlvm template [list]` | List baked templates (dir, image, kernel, size, which VMs reference each); warns on incomplete dirs |
 | `qlvm template create <ref> [--force]` | Pull + bake an image's template (~5 min) into `templates/<slug>-<digest>/`. Refuses if the dir already exists; `--force` is the re-bake: flat refusal while any VM references the dir, otherwise remove + bake. Reaps a killed bake's residue before baking on both paths: stale loop devices, leftover `/tmp/qlvm-ostree-*` mounts, exited image-builder containers |
-| `qlvm template clean [--force]` | Remove template dirs no VM references (a `vm create` that wants one fails until `qlvm template create <ref>` re-bakes it). `--force` also removes incomplete dirs (no META) |
+| `qlvm template delete [dir...] [--force]` | Remove the named template dirs (exact dir name or unique prefix; flat refusal while a VM references one — delete the VMs first). With no args, removes every dir no VM references (a `vm create` that wants one fails until `qlvm template create <ref>` re-bakes it); `--force` also removes incomplete dirs (no META) |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
 

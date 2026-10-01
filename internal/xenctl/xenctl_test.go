@@ -78,7 +78,16 @@ func testMeta(t *testing.T, dir, typ string) *vm.Meta {
 	return m
 }
 
-var testTpl = &template.Template{Dir: "/tmp/tpl", RootDev: "/dev/xvda3"}
+// testTpl builds a template fixture in a temp dir with the bake-extracted
+// kernel files that Start's EnsureKernel seeds into the VM dir from.
+func testTpl(t *testing.T) *template.Template {
+	t.Helper()
+	dir := t.TempDir()
+	for _, f := range []string{"vmlinuz", "initramfs"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, f), []byte(f), 0o600))
+	}
+	return &template.Template{Dir: dir, RootDev: "/dev/xvda3"}
+}
 
 func TestDomainState(t *testing.T) {
 	// Flag combos mirror libxl dominfo (domctl rc flags); "blocked, not
@@ -89,7 +98,7 @@ func TestDomainState(t *testing.T) {
 	}{
 		{dying: true, want: "dying"},
 		{running: true, want: "running"},
-		{running: true, blocked: true, want: "running", /* a live guest is running even if a vCPU is blocked on I/O */},
+		{running: true, blocked: true, want: "running" /* a live guest is running even if a vCPU is blocked on I/O */},
 		{paused: true, want: "paused"},
 		{blocked: true, want: "blocked"},
 		{want: "stopped"},
@@ -106,7 +115,7 @@ func TestStartRefusesRunning(t *testing.T) {
 	vif := &fakeVif{events: &events}
 	m := testMeta(t, t.TempDir(), "app")
 
-	err := Start(context.Background(), x, vif, m, t.TempDir(), testTpl)
+	err := Start(context.Background(), x, vif, m, t.TempDir(), testTpl(t))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already running")
 	require.Empty(t, events, "no OVS or Xen action when the domain is already running")
@@ -118,7 +127,7 @@ func TestStartCleansStalePort(t *testing.T) {
 	vif := &fakeVif{stale: []string{"vif3.0"}, events: &events}
 	m := testMeta(t, t.TempDir(), "app")
 
-	require.NoError(t, Start(context.Background(), x, vif, m, t.TempDir(), testTpl))
+	require.NoError(t, Start(context.Background(), x, vif, m, t.TempDir(), testTpl(t)))
 	require.Equal(t, []string{"vifdel:vif3.0", "create:vm1"}, events,
 		"stale port removed before CreateDomain")
 }
@@ -129,7 +138,7 @@ func TestStartNoStalePorts(t *testing.T) {
 	vif := &fakeVif{events: &events}
 	m := testMeta(t, t.TempDir(), "app")
 
-	require.NoError(t, Start(context.Background(), x, vif, m, t.TempDir(), testTpl))
+	require.NoError(t, Start(context.Background(), x, vif, m, t.TempDir(), testTpl(t)))
 	require.Equal(t, []string{"create:vm1"}, events)
 }
 

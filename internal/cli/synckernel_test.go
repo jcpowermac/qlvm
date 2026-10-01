@@ -7,13 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/jcpowermac/qlvm/internal/template"
 )
 
 type fakeKernelHost struct {
@@ -36,8 +33,6 @@ func (f *fakeKernelHost) FetchFile(_ context.Context, path string) (io.ReadClose
 
 func TestSyncKernelFetchFailureWritesNothing(t *testing.T) {
 	dir := t.TempDir()
-	digest := "sha256:" + strings.Repeat("a", 64)
-	require.NoError(t, (&template.Template{Dir: dir, Digest: digest, Image: "os-bolt"}).SaveMeta(dir))
 
 	// Kernel fetch succeeds, initramfs fetch fails mid-flow.
 	host := &fakeKernelHost{files: map[string][]byte{
@@ -67,8 +62,6 @@ func readAll(t *testing.T, path string) []byte {
 
 func TestSyncKernelFlow(t *testing.T) {
 	dir := t.TempDir()
-	digest := "sha256:" + strings.Repeat("a", 64)
-	require.NoError(t, (&template.Template{Dir: dir, Digest: digest, Image: "os-bolt"}).SaveMeta(dir))
 
 	host := &fakeKernelHost{files: map[string][]byte{
 		"/boot/vmlinuz-6.11.9-300.fc44":       []byte("KERNEL"),
@@ -86,8 +79,4 @@ func TestSyncKernelFlow(t *testing.T) {
 	// ...and the unversioned aliases the VM's domain config boots.
 	assert.Equal(t, []byte("KERNEL"), readAll(t, filepath.Join(dir, "vmlinuz")))
 	assert.Equal(t, []byte("INITRAMFS"), readAll(t, filepath.Join(dir, "initramfs")))
-
-	tpl, err := template.LoadMeta(dir)
-	require.NoError(t, err)
-	assert.Equal(t, "6.11.9-300.fc44", tpl.KernelVer)
 }

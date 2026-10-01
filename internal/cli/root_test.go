@@ -50,8 +50,8 @@ func TestCommandTree(t *testing.T) {
 	}
 	tpl := child(root, "template")
 	require.NotNil(t, tpl, "template parent must exist")
-	require.Equal(t, []string{"clean", "create"}, childNames(tpl),
-		"rebuild is gone; create <ref> [--force] is the bake command")
+	require.Equal(t, []string{"create", "delete", "list"}, childNames(tpl),
+		"template follows the vm surface: list, create, delete (clean is gone)")
 	tplCreate := child(tpl, "create")
 	require.NotNil(t, tplCreate, "template create must exist")
 	assert.Equal(t, "create <ref>", tplCreate.Use)

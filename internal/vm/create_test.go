@@ -55,7 +55,7 @@ func (f *recBakeFS) Mount(dev, target, _ string, _ bool) error {
 	switch dev {
 	case "/dev/loop9p1":
 		_ = os.MkdirAll(filepath.Join(target, "ostree", "os1"), 0o750)
-		_ = os.WriteFile(filepath.Join(target, "ostree", "os1", "vmlinuz-6.1.0"), []byte("x"), 0o644)
+		_ = os.WriteFile(filepath.Join(target, "ostree", "os1", "vmlinuz-6.1.0"), []byte("x"), 0o644) // #nosec G306 -- test fixture
 	case "/dev/loop9p2":
 		_ = os.MkdirAll(filepath.Join(target, "ostree", "repo"), 0o750)
 		_ = os.MkdirAll(filepath.Join(target, "ostree", "boot.1", "os1", "abc123"), 0o750)
@@ -128,7 +128,7 @@ func stubXFSAdmin(t *testing.T) string {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "xfs_admin.args")
 	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "xfs_admin"), []byte(script), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "xfs_admin"), []byte(script), 0o755)) // #nosec G306 -- script must be executable
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
 }
@@ -342,7 +342,7 @@ func TestCreateXFSAdminFailureLeavesNoOrphan(t *testing.T) {
 	// stub is shadowed: this dir comes first on PATH).
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "xfs_admin"),
-		[]byte("#!/bin/sh\nexit 1\n"), 0o755))
+		[]byte("#!/bin/sh\nexit 1\n"), 0o755)) // #nosec G306 -- script must be executable
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
@@ -411,8 +411,8 @@ func TestDomainConfigGolden(t *testing.T) {
 	require.Equal(t, "PVH", got.Type)
 	require.Equal(t, "vm1", got.Name)
 	require.Equal(t, goldenMeta.UUID, got.UUID)
-	require.Equal(t, "/var/lib/qvm/templates/os-abc/vmlinuz", got.Kernel)
-	require.Equal(t, "/var/lib/qvm/templates/os-abc/initramfs", got.Ramdisk)
+	require.Equal(t, "/var/lib/qvm/vms/vm1/vmlinuz", got.Kernel)
+	require.Equal(t, "/var/lib/qvm/vms/vm1/initramfs", got.Ramdisk)
 	require.Equal(t,
 		"root=PARTUUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
 			"systemd.default-target=multi-user.target console=hvc0",

@@ -52,25 +52,40 @@ func ensureTemplate(ctx context.Context, out io.Writer, image string) (*template
 }
 
 // templateCmd groups the template cache lifecycle: list (default), create,
-// clean.
+// delete. The template dir is immutable after the bake — VMs boot their own
+// per-VM kernel copies, so nothing at runtime writes into it.
 func templateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "template",
-		Short: "Manage baked OS templates (list, create, clean)",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			rows, err := scanTemplates(installRoot)
-			if err != nil {
-				return err
-			}
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), templateListOutput(rows))
-			if w := templateWarnings(rows); w != "" {
-				_, _ = fmt.Fprint(cmd.ErrOrStderr(), w)
-			}
-			return nil
-		},
+		Short: "Manage baked OS templates (list, create, delete)",
+		RunE:  runTemplateList,
 	}
-	cmd.AddCommand(templateCreateCmd(), templateCleanCmd())
+	cmd.AddCommand(templateListCmd(), templateCreateCmd(), templateDeleteCmd())
 	return cmd
+}
+
+func templateListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List baked templates (dir, image, kernel, size, referencing VMs)",
+		Args:  cobra.NoArgs,
+		RunE:  runTemplateList,
+	}
+}
+
+// runTemplateList renders the template table (stdout) and incomplete-dir
+// warnings (stderr). Shared by the `list` subcommand and the bare
+// `qlvm template` default.
+func runTemplateList(cmd *cobra.Command, _ []string) error {
+	rows, err := scanTemplates(installRoot)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprint(cmd.OutOrStdout(), templateListOutput(rows))
+	if w := templateWarnings(rows); w != "" {
+		_, _ = fmt.Fprint(cmd.ErrOrStderr(), w)
+	}
+	return nil
 }
 
 // templateCreateActions are the post-decision steps of a template create
@@ -148,34 +163,66 @@ func templateCreateCmd() *cobra.Command {
 	return cmd
 }
 
-func templateCleanCmd() *cobra.Command {
+// templateDeleteCmd removes template dirs: the named ones (exact dir name
+// or unique prefix, as `vm create --template` resolves), or with no args,
+// every dir no VM references (incomplete dirs only with --force).
+func templateDeleteCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "clean",
-		Short: "Remove template dirs no VM references (--force also removes incomplete dirs)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Use:   "delete [dir...]",
+		Short: "Remove the named template dirs, or with no args, every dir no VM references (--force also removes incomplete dirs)",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			rows, err := scanTemplates(installRoot)
 			if err != nil {
 				return err
 			}
+			names, err := templateDeletePlan(installRoot, rows, args, force)
+			if err != nil {
+				return err
+			}
 			out := cmd.OutOrStdout()
-			n := 0
-			for _, name := range cleanPlan(rows, force) {
+			for _, name := range names {
 				if err := os.RemoveAll(filepath.Join(installRoot, "templates", name)); err != nil {
 					return err
 				}
-				n++
 				_, _ = fmt.Fprintf(out, "removed %s\n", name)
 			}
-			if n == 0 {
-				_, _ = fmt.Fprintln(out, "clean: nothing to remove")
+			if len(names) == 0 {
+				_, _ = fmt.Fprintln(out, "delete: nothing to remove")
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "also remove incomplete dirs (no META)")
+	cmd.Flags().BoolVar(&force, "force", false, "with no args, also remove incomplete dirs (no META)")
 	return cmd
+}
+
+// templateDeletePlan names the dirs `template delete` removes: the args
+// (exact dir name or unique prefix, resolved like `vm create --template`),
+// or with no args the GC plan of every unreferenced dir. A named dir a VM
+// still references is a flat refusal — delete the VMs first.
+func templateDeletePlan(root string, rows []tplRow, names []string, force bool) ([]string, error) {
+	if len(names) == 0 {
+		return cleanPlan(rows, force), nil
+	}
+	refs := map[string][]string{}
+	for _, r := range rows {
+		refs[r.Dir] = r.Refs
+	}
+	var out []string
+	for _, name := range names {
+		dir, err := resolveTemplate(root, name)
+		if err != nil {
+			return nil, fmt.Errorf("template delete %s: %w", name, err)
+		}
+		hit := filepath.Base(dir)
+		if vms := refs[hit]; len(vms) > 0 {
+			return nil, fmt.Errorf("template %s is referenced by VMs %s; delete those VMs first", hit, strings.Join(vms, ", "))
+		}
+		out = append(out, hit)
+	}
+	return out, nil
 }
 
 // tplRow is one scanned template dir.
@@ -280,9 +327,9 @@ func templateWarnings(rows []tplRow) string {
 	for _, r := range rows {
 		switch {
 		case !r.Complete:
-			fmt.Fprintf(&b, "warning: %s is incomplete (no META); remove with: qlvm template clean --force\n", r.Dir)
+			fmt.Fprintf(&b, "warning: %s is incomplete (no META); remove with: qlvm template delete --force\n", r.Dir)
 		case !r.HasRaw:
-			fmt.Fprintf(&b, "warning: %s has no template.raw (incomplete bake); remove with: qlvm template clean\n", r.Dir)
+			fmt.Fprintf(&b, "warning: %s has no template.raw (incomplete bake); remove with: qlvm template delete\n", r.Dir)
 		}
 	}
 	return b.String()

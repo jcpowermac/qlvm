@@ -54,10 +54,11 @@ type DomainInfo struct {
 	State string
 }
 
-// Start boots a prepared VM: it refuses to start a running domain, removes
-// stale OVS vif ports left by a prior crashed start (duplicate iface-id
-// would break OVN binding), then creates the domain. vmDir is the VM state
-// dir holding meta.toml and disk.img.
+// Start boots a prepared VM: it refuses to start a running domain, seeds
+// the per-VM kernel files from the template dir if missing, removes stale
+// OVS vif ports left by a prior crashed start (duplicate iface-id would
+// break OVN binding), then creates the domain. vmDir is the VM state dir
+// holding meta.toml, disk.img and the per-VM kernel/initramfs.
 func Start(ctx context.Context, x Xen, vp ovs.VifPorter, m *vm.Meta, vmDir string, tpl *template.Template) error {
 	running, err := x.Running(m.Name)
 	if err != nil {
@@ -74,6 +75,9 @@ func Start(ctx context.Context, x Xen, vp ovs.VifPorter, m *vm.Meta, vmDir strin
 		if err := vp.DelVifPort(ctx, dev); err != nil {
 			return fmt.Errorf("start %s: remove stale port %s: %w", m.Name, dev, err)
 		}
+	}
+	if err := vm.EnsureKernel(vmDir, tpl.Dir); err != nil {
+		return fmt.Errorf("start %s: %w", m.Name, err)
 	}
 	if err := x.CreateDomain(vm.DomainConfig(vmDir, m, tpl)); err != nil {
 		return fmt.Errorf("start %s: create domain: %w", m.Name, err)

@@ -56,7 +56,7 @@ qlvm install                              # idempotent dom0 orchestration
 
 qlvm template [list]                      # dir, image, kernel, size, referencing VMs
 qlvm template create <ref> [--force]      # pull + bake a template (re-bake: --force)
-qlvm template clean [--force]             # remove unreferenced dirs (--force: incomplete too)
+qlvm template delete [dir...] [--force]   # named dirs, or (no args) unreferenced dirs (--force: incomplete too)
 
 qlvm vm create <name> --template <dir> \
       [--domain <d>] [--type app|disposable] \
@@ -211,9 +211,12 @@ will (TDD: integration test runs it twice).
   kernel version, size, which VMs reference it (resolved from
   `vms/*/meta.toml`). Incomplete dirs (no META / no `template.raw`) get a
   warning; an empty cache is not an error.
-- **`template clean [--force]`** — remove complete unreferenced dirs
-  (the next explicit `template create` re-bakes); `--force` also removes
-  incomplete ones.
+- **`template delete [dir...] [--force]`** — remove the named template
+  dirs (exact dir name or unique prefix, resolved like `vm create
+  --template`; a dir a VM still references is a flat refusal — delete the
+  VMs first); with no args, remove complete unreferenced dirs (the next
+  explicit `template create` re-bakes); `--force` also removes incomplete
+  ones.
 
 ### 6.2 `vm create`
 
@@ -239,7 +242,9 @@ will (TDD: integration test runs it twice).
    write `10-bolt.network` (Match MAC, static IP/gw/DNS) into the deployment
    tree's `/etc/systemd/network/`, umount, detach.
 4. **Domain config** — the full libxl domain configuration (PVH type, name,
-   stable UUID, kernel/ramdisk from template dir, `extra` =
+   stable UUID, kernel/ramdisk = per-VM copies in `vms/<name>/` (seeded from
+   the template dir at `start` by `vm.EnsureKernel`; the template dir stays
+   immutable after the bake), `extra` =
    `root=PARTUUID=… [rootflags] ostree=<path> systemd.default-target=multi-user.target
    console=hvc0`, disk `xvda` = `disk.img` (raw, rw), vif `mac=<MAC>,script=vif-ovn`,
    `P9S` entries for each `--mount`) is stored in `meta.toml`, not booted.
@@ -251,10 +256,12 @@ will (TDD: integration test runs it twice).
 
 ## 7. Lifecycle
 
-- **start** — error if the domain already runs; cleanup stale OVS ports whose
-  `external-ids:iface-id` matches the VM but whose netdev is gone (libovsdb
-  scan + delete); then `DomainCreateNew` with the stored config from
-  `meta.toml` + template.
+- **start** — error if the domain already runs; seed the per-VM
+  kernel/initramfs from the template dir if missing (`vm.EnsureKernel` —
+  existing files, e.g. a sync-kernel'd upgrade, are never replaced); cleanup
+  stale OVS ports whose `external-ids:iface-id` matches the VM but whose
+  netdev is gone (libovsdb scan + delete); then `DomainCreateNew` with the
+  stored config from `meta.toml` + template.
 - **stop** — `DomainShutdown` (ACPI).
 - **kill** — `DomainDestroy`.
 - **delete** — `DomainDestroy` (if running), remove OVN lswitch port, remove
@@ -267,7 +274,10 @@ will (TDD: integration test runs it twice).
   requires `WAYLAND_DISPLAY`, errors clearly when absent).
 - **sync-kernel** — over SSH (`x/crypto/ssh`): resolve the VM's current kernel
   version (`rpm -q kernel-core --last`), copy `vmlinuz` + `initramfs` from the
-  VM into the matching template dir; tell the user to restart VMs.
+  VM into the VM's own state dir (`vms/<name>/`, where the domain config
+  boots them) — per-VM, so a sibling of the same template keeps its own
+  kernel and the template dir stays immutable; tell the user to restart the
+  VM.
 
 ## 8. `vm provision`
 
