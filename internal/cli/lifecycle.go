@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -101,11 +102,40 @@ func killCmd() *cobra.Command {
 	}
 }
 
-// stopForced stops a domain gracefully, force-killing if the graceful
-// stop fails (zombie domains never answer ACPI).
+// stopPollInterval/stopMaxWait govern stopForced's post-shutdown poll loop.
+// Package vars so tests can shorten them; a healthy bootc guest powers off
+// in well under the 60 s default, the zombie path costs 60 s before the
+// force-kill.
+var (
+	stopPollInterval = 1500 * time.Millisecond
+	stopMaxWait      = 60 * time.Second
+)
+
+// stopForced stops a domain gracefully and force-kills if it refuses ACPI
+// or lingers after a successful shutdown (zombie domains never answer
+// ACPI, and Shutdown only queues the event — it never waits).
 func stopForced(x xenctl.Xen, name string) error {
-	if err := x.Shutdown(name); err == nil {
-		return nil
+	if err := x.Shutdown(name); err != nil {
+		return x.Destroy(name)
+	}
+	// Shutdown is fire-and-forget: the ACPI event is queued and libxl
+	// returns immediately, so success proves nothing. Poll until the
+	// domain is actually gone; a domain that lingers (the in-guest-reboot
+	// zombie, ---sr-, never answers ACPI) gets force-killed — Destroy is
+	// the verified recovery.
+	deadline := time.Now().Add(stopMaxWait)
+	for {
+		running, err := x.Running(name)
+		if err != nil {
+			return err
+		}
+		if !running {
+			return nil
+		}
+		if !time.Now().Add(stopPollInterval).Before(deadline) {
+			break
+		}
+		time.Sleep(stopPollInterval)
 	}
 	return x.Destroy(name)
 }
@@ -113,7 +143,7 @@ func stopForced(x xenctl.Xen, name string) error {
 func restartCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart <name>",
-		Short: "Restart a VM (graceful stop, force-kill if it refuses, then start)",
+		Short: "Restart a VM (graceful stop, force-kill if it lingers, then start)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]

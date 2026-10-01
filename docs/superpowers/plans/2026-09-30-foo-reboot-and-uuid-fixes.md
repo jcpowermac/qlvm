@@ -145,13 +145,14 @@ p4/root may differ across VMs.
 **Files:** `internal/cli/lifecycle.go`, `internal/cli/lifecycle_test.go`
 
 The foo zombie was recovered by destroy + start. Make that one command.
-Graceful first, force on refusal (a zombie never answers ACPI):
+Graceful first; when the domain lingers after a *successful* Shutdown,
+force-kill (a zombie never answers ACPI):
 
 ```go
 func restartCmd() *cobra.Command {
     return &cobra.Command{
         Use:   "restart <name>",
-        Short: "Restart a VM (graceful stop, force-kill if it refuses, then start)",
+        Short: "Restart a VM (graceful stop, force-kill if it lingers, then start)",
         Args:  cobra.ExactArgs(1),
         RunE: func(cmd *cobra.Command, args []string) error {
             name := args[0]
@@ -160,10 +161,8 @@ func restartCmd() *cobra.Command {
                 return err
             }
             defer func() { _ = x.Close() }()
-            if err := x.Shutdown(name); err != nil {
-                if derr := x.Destroy(name); derr != nil {
-                    return fmt.Errorf("restart %s: stop %v; kill %w", name, err, derr)
-                }
+            if err := stopForced(x, name); err != nil {
+                return fmt.Errorf("restart %s: stop: %w", name, err)
             }
             if err := startVM(cmd.Context(), name); err != nil {
                 return fmt.Errorf("restart %s: %w", name, err)
@@ -178,26 +177,68 @@ func restartCmd() *cobra.Command {
 Register in `init()` next to `killCmd`. `startVM` (already a shared body)
 does the OVS port cleanup + boot.
 
-**Tests** (`lifecycle_test.go`): extract the decision into
-`restartPolicy(shutdownErr error) string` is overkill — instead test the
-composed behavior with a small seam: `var shutdownFn/destroyFn/startFn` is
-also overkill. Keep it honest: the only logic is "stop; on error kill;
-start". Factor that into
+**Tests** (`lifecycle_test.go`): keep it honest — the only logic is
+"stop (verified), then start". Factor the stop side into `stopForced` and
+unit-test it with a `fakeXen`-style recorder (the pattern in
+`internal/xenctl/xenctl_test.go`), five cases detailed below the sketch.
 
 ```go
-// stopForced stops a domain gracefully, force-killing if the graceful
-// stop fails (zombie domains never answer ACPI).
+// stopPollInterval/stopMaxWait govern stopForced's post-shutdown poll
+// loop; package vars so tests can shorten them (t.Cleanup restore, the
+// ostree.xfsAdminFn seam pattern).
+var (
+    stopPollInterval = 1500 * time.Millisecond
+    stopMaxWait      = 60 * time.Second
+)
+
+// stopForced stops a domain gracefully and VERIFIES it is gone: Shutdown
+// is fire-and-forget (ACPI queued, returns immediately), so on success it
+// polls Running until the domain disappears or stopMaxWait elapses, then
+// force-kills a lingering domain. A Running error is surfaced, not treated
+// as gone (Running returns (false, nil) for an absent domain — that IS
+// the "gone" case).
 func stopForced(x xenctl.Xen, name string) error {
-    if err := x.Shutdown(name); err == nil {
-        return nil
+    if err := x.Shutdown(name); err != nil {
+        return x.Destroy(name)
+    }
+    deadline := time.Now().Add(stopMaxWait)
+    for {
+        running, err := x.Running(name)
+        if err != nil {
+            return err
+        }
+        if !running {
+            return nil
+        }
+        if !time.Now().Add(stopPollInterval).Before(deadline) {
+            break
+        }
+        time.Sleep(stopPollInterval)
     }
     return x.Destroy(name)
 }
 ```
 
-and unit-test `stopForced` with a `fakeXen`-style recorder (the pattern in
-`internal/xenctl/xenctl_test.go`): (a) Shutdown ok → no Destroy; (b)
-Shutdown err → Destroy called; (c) both err → wrapped error.
+Test cases: (a) Shutdown ok, Running gone → no Destroy; (b) Shutdown ok,
+Running present once or twice then gone → no Destroy, nil; (c) Shutdown
+ok, Running present through the (shortened) max wait → Destroy IS called,
+its error (if any) is the return value; (d) Shutdown err, Destroy ok →
+nil; (e) Shutdown ok, Running errors → that error, no Destroy. The fake
+scripts Running per call (FIFO queue, falling back to a name→bool map);
+the seam vars get millisecond values in tests.
+
+**AMENDMENT NOTE (2026-09-30).** The original design assumed "graceful
+stop times out waiting on ACPI → must fall through to Destroy". Reality,
+verified live (Task 3 report, anomaly A2): `x.Shutdown` (libxl
+`DomainShutdown`) returns success IMMEDIATELY — the ACPI event is queued
+and never consumed — `qlvm vm stop` returned rc=0 while the domain
+lingered `---s--` for 6+ minutes until a manual `xl destroy`. The
+in-guest-reboot zombie (`---sr-`) ignores ACPI, reproduced 2/2. A
+stopForced that trusted a successful Shutdown would therefore `startVM`
+straight into `domain already running` with the zombie intact. Fix: poll
+`Running` after a successful Shutdown and fall through to `Destroy` on
+linger (the verified foo recovery). Plain `qlvm vm stop` keeps its
+fire-and-forget behavior (separate controller-tracked issue, out of scope).
 
 **Verify:** tagged `go test ./internal/cli/`.
 
