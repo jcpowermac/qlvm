@@ -89,18 +89,7 @@ func (x *libxlXen) Running(name string) (bool, error) {
 }
 
 func stateOf(d xenlight.Dominfo) string {
-	switch {
-	case d.Dying:
-		return "dying"
-	case !d.Running:
-		return "stopped"
-	case d.Paused:
-		return "paused"
-	case d.Blocked:
-		return "blocked"
-	default:
-		return "running"
-	}
+	return domainState(d.Dying, d.Running, d.Paused, d.Blocked)
 }
 
 

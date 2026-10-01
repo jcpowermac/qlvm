@@ -80,6 +80,26 @@ func testMeta(t *testing.T, dir, typ string) *vm.Meta {
 
 var testTpl = &template.Template{Dir: "/tmp/tpl", RootDev: "/dev/xvda3"}
 
+func TestDomainState(t *testing.T) {
+	// Flag combos mirror libxl dominfo (domctl rc flags); "blocked, not
+	// running" is the live -b---- case that was mislabelled stopped.
+	tests := []struct {
+		dying, running, paused, blocked bool
+		want                            string
+	}{
+		{dying: true, want: "dying"},
+		{running: true, want: "running"},
+		{running: true, blocked: true, want: "running", /* a live guest is running even if a vCPU is blocked on I/O */},
+		{paused: true, want: "paused"},
+		{blocked: true, want: "blocked"},
+		{want: "stopped"},
+	}
+	for _, tc := range tests {
+		got := domainState(tc.dying, tc.running, tc.paused, tc.blocked)
+		require.Equal(t, tc.want, got, "state for dying=%v running=%v paused=%v blocked=%v", tc.dying, tc.running, tc.paused, tc.blocked)
+	}
+}
+
 func TestStartRefusesRunning(t *testing.T) {
 	var events []string
 	x := &fakeXen{running: map[string]bool{"vm1": true}, events: &events}

@@ -27,6 +27,24 @@ type Xen interface {
 	Close() error
 }
 
+// domainState maps the libxl domain flags to the qlvm vm list STATE
+// column. Pure (no libxl import) so the mapping is unit-testable without
+// the libxl build tag.
+func domainState(dying, running, paused, blocked bool) string {
+	switch {
+	case dying:
+		return "dying"
+	case paused:
+		return "paused"
+	case running:
+		return "running"
+	case blocked:
+		return "blocked"
+	default:
+		return "stopped"
+	}
+}
+
 // DomainInfo is one row of the Xen domain list (qlvm vm list).
 type DomainInfo struct {
 	Name  string
