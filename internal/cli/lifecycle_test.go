@@ -136,6 +136,21 @@ func TestStopForcedShutdownRefusedDestroys(t *testing.T) {
 	require.Equal(t, []string{"shutdown:vm1", "destroy:vm1"}, events, "shutdown refused — destroy follows")
 }
 
+func TestStopCmdWaitsForShutdown(t *testing.T) {
+	var events []string
+	shortStopSeams(t, time.Millisecond, 10*time.Millisecond)
+	old := xenctlNew
+	defer func() { xenctlNew = old }()
+	x := &fakeXen{events: &events, running: map[string]bool{"vm1": true}, runningSeq: []bool{true, false}}
+	xenctlNew = func() (xenctl.Xen, error) { return x, nil }
+
+	cmd := stopCmd()
+	cmd.SetArgs([]string{"vm1"})
+	require.NoError(t, cmd.Execute())
+	require.Equal(t, []string{"shutdown:vm1"}, events)
+	require.Empty(t, x.runningSeq, "stopCmd must poll Running until the domain disappears")
+}
+
 func TestStopForcedBothFailSurfacesDestroyError(t *testing.T) {
 	var events []string
 	killErr := errors.New("domain already gone")

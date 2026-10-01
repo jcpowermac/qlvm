@@ -23,6 +23,9 @@ func vmDirOf(name string) string {
 	return filepath.Join(installRoot, "vms", name)
 }
 
+// xenctlNew creates a live Xen connection. Replaced in tests.
+var xenctlNew = xenctl.New
+
 func startCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start <name>",
@@ -68,12 +71,12 @@ func stopCmd() *cobra.Command {
 		Short: "Gracefully stop a running VM",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			x, err := xenctl.New()
+			x, err := xenctlNew()
 			if err != nil {
 				return err
 			}
 			defer func() { _ = x.Close() }()
-			if err := x.Shutdown(args[0]); err != nil {
+			if err := stopForced(x, args[0]); err != nil {
 				return fmt.Errorf("stop %s: %w", args[0], err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "stopped %s\n", args[0])
