@@ -61,6 +61,7 @@ int qlvm_create_domain(libxl_ctx *ctx,
     d.b_info.type = LIBXL_DOMAIN_TYPE_PVH;
     memset(&d.b_info.u, 0, sizeof(d.b_info.u));
     d.b_info.max_vcpus = maxvcpus;
+    d.b_info.nr_vcpus = maxvcpus;
     d.b_info.target_memkb = memkb;
     // max_memkb defaults to a 32MB stub when left unset; pin it to the
     // requested memory. shadow_memkb is left at the generated-init
