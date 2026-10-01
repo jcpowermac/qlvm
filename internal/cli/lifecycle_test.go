@@ -49,10 +49,10 @@ func (f *fakeXen) Close() error { return nil }
 
 // shortStopSeams shrinks stopPollInterval/stopMaxWait so stopForced's poll
 // loop finishes in milliseconds, restoring both on test cleanup.
-func shortStopSeams(t *testing.T, interval, max time.Duration) {
+func shortStopSeams(t *testing.T, interval, limit time.Duration) {
 	t.Helper()
 	oldI, oldW := stopPollInterval, stopMaxWait
-	stopPollInterval, stopMaxWait = interval, max
+	stopPollInterval, stopMaxWait = interval, limit
 	t.Cleanup(func() { stopPollInterval, stopMaxWait = oldI, oldW })
 }
 

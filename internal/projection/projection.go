@@ -68,7 +68,7 @@ func execWaypipe(args []string, stdin io.Reader, out, errW io.Writer) error {
 //  5. wait for the client to exit (app exit), then clean up.
 func Run(ctx context.Context, d Deps, m *vm.Meta, dom0IP, exec string, stdin io.Reader, out, errW io.Writer) error {
 	d.fill()
-	ln, err := net.Listen("tcp4", "0.0.0.0:0")
+	ln, err := net.Listen("tcp4", "0.0.0.0:0") // #nosec G102 -- ephemeral port; the guest dials in from the VM subnet
 	if err != nil {
 		return fmt.Errorf("listen data port: %w", err)
 	}

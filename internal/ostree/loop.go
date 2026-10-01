@@ -147,10 +147,10 @@ func (s *sys) LoopAttach(path string) (string, error) {
 		if serr = ioctlErr(uintptr(lo.Fd()), unix.LOOP_SET_FD, uintptr(backing.Fd())); serr == nil {
 			serr = unix.IoctlLoopSetStatus64(int(lo.Fd()), &info)
 			// AUTOCLEAR would unbind the loop when this setup fd closes
-		// (lo_release fires on the last opener), racing the partition
-		// scan: the p-nodes vanish ~100ms after attach and findParts
-		// polls past the window. Drop the flag and rely on the explicit
-		// LoopDetach (CLR_FD) every caller already defers.
+			// (lo_release fires on the last opener), racing the partition
+			// scan: the p-nodes vanish ~100ms after attach and findParts
+			// polls past the window. Drop the flag and rely on the explicit
+			// LoopDetach (CLR_FD) every caller already defers.
 			if serr == nil {
 				noClear := info
 				noClear.Flags = unix.LO_FLAGS_PARTSCAN

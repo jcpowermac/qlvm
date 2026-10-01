@@ -9,7 +9,7 @@ import (
 // xfsAdminFn is the seam tests replace. xfs_admin is a filesystem
 // utility (not a management CLI) with no Go binding.
 var xfsAdminFn = func(dev string) error {
-	return exec.Command("xfs_admin", "-U", "generate", dev).Run()
+	return exec.Command("xfs_admin", "-U", "generate", dev).Run() // #nosec G204 -- dev is a parsed partition node name
 }
 
 // UniqueXFS gives a reflinked template copy a unique XFS filesystem UUID

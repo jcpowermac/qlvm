@@ -688,7 +688,7 @@ func rootRWMount(ctx context.Context, fs FS, diskPath, fstype string) (string, f
 
 // deploymentEtc returns the deployment /etc overlay dir under a mounted
 // root target.
-func deploymentEtc(ctx context.Context, fs FS, rootTarget string) (string, error) {
+func deploymentEtc(_ context.Context, fs FS, rootTarget string) (string, error) {
 	_, osid, _, err := ostreePath(filepath.Join(rootTarget, "ostree"), fs)
 	if err != nil {
 		return "", err
@@ -700,6 +700,10 @@ func deploymentEtc(ctx context.Context, fs FS, rootTarget string) (string, error
 	return filepath.Join(rootTarget, "ostree", "deploy", osid, "deploy", dep, "etc"), nil
 }
 
+// BakeNetworkd writes the per-VM systemd-networkd config (a MAC-matched
+// 10-bolt.network carrying static IP/gateway/DNS) into the mounted disk's
+// /etc and unmounts — the guest's networking is its own state, not the
+// template's. Used at vm create.
 func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns string) error {
 	if err := ctx.Err(); err != nil {
 		return err
