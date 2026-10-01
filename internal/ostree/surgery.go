@@ -199,7 +199,14 @@ type partMount struct {
 // findParts mounts each partition (ro as given, fstype from the caller),
 // classifies it, and returns the kept mounts. Non-matching partitions are
 // umounted as they are probed; when wantBoot is false the scan stops once
-// the root is found. Every mount is umounted before a failure is returned.
+// the root is found and the /boot probe mount is released immediately
+// (returning a zero boot partMount) — a caller that wants /boot sets
+// wantBoot true. Live H4 defect (2026-09-30): the per-VM bakes
+// (wantBoot=false) left the /boot probe mounted rw with its loop still
+// attached; because the /boot UUID is shared with the template (the image
+// fstab pins it), the next create then failed to mount its own /boot with
+// EINVAL (duplicate XFS UUID). Every mount is umounted before a failure is
+// returned and before a success return.
 func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstype, tag string) (root, boot partMount, rootPart, bootPart string, err error) {
 	if err := ctx.Err(); err != nil {
 		return partMount{}, partMount{}, "", "", err
@@ -238,8 +245,15 @@ func findParts(ctx context.Context, fs FS, loop string, ro, wantBoot bool, fstyp
 			root, rootPart = partMount{target, cleanup}, part
 			kept = append(kept, root)
 		case "boot":
-			boot, bootPart = partMount{target, cleanup}, part
-			kept = append(kept, boot)
+			if wantBoot {
+				boot, bootPart = partMount{target, cleanup}, part
+				kept = append(kept, boot)
+			} else {
+				// Not wanted: release the probe mount now, not via release()
+				// (kept is only for mounts the caller receives).
+				_ = fs.Umount(target)
+				cleanup()
+			}
 		default:
 			_ = fs.Umount(target)
 			cleanup()

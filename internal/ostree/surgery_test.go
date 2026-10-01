@@ -442,6 +442,71 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Len(t, f.umounted, 1)
 }
 
+// bootFirstFS mimics the real bootc disk layout: the /boot partition
+// comes BEFORE the ostree root (live images: p3=/boot, p4=root). Any
+// wantBoot=false scan mounts /boot during probing, so the caller (or
+// findParts) must release it — the live H4 defect (2026-09-30) left that
+// /boot mounted rw with the loop still attached, and the next create
+// hard-failed on the duplicate XFS UUID.
+func bootFirstFS() *fakeFS {
+	f := newFakeFS()
+	f.loops = []string{"/dev/loop3"}
+	f.parts["/dev/loop3"] = []string{"loop3p3", "loop3p4"}
+	f.partRoots = map[string]string{"loop3p3": "b", "loop3p4": "r"}
+	f.dirs = map[string][]string{
+		"b":                          {"ostree"},
+		"b/ostree":                   {"os1"},
+		"b/ostree/os1":               {"initramfs-6.1.0", "vmlinuz-6.1.0"},
+		"r":                          {"ostree"},
+		"r/ostree":                   {"boot.1", "deploy", "repo"},
+		"r/ostree/boot.1":            {"os1"},
+		"r/ostree/boot.1/os1":        {"abc123"},
+		"r/ostree/deploy":            {"os1"},
+		"r/ostree/deploy/os1":        {"deploy"},
+		"r/ostree/deploy/os1/deploy": {"def456.0"},
+	}
+	return f
+}
+
+func assertAllReleased(t *testing.T, f *fakeFS, loop string) {
+	t.Helper()
+	assert.Equal(t, len(f.mounts), len(f.umounted),
+		"every mount (incl. the /boot probe) must be umounted: %v vs %v", f.mounts, f.umounted)
+	assert.Equal(t, []string{loop}, f.detached, "loop must be detached")
+}
+
+func TestBakeNetworkdReleasesBootPartition(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "disk.img")
+	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
+	f := bootFirstFS()
+	require.NoError(t, BakeNetworkd(context.Background(), f, disk, "xfs",
+		"10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1"))
+	// Success path: the /boot probe mount (loop3p3, found before the root)
+	// must be umounted like everything else, and the loop detached.
+	require.Len(t, f.mounts, 2, "/boot and root are both probed rw")
+	assertAllReleased(t, f, "/dev/loop3")
+}
+
+func TestBakeNetworkdReleasesBootPartitionOnWriteFailure(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "disk.img")
+	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
+	f := bootFirstFS()
+	f.writeErr = errors.New("read-only file system")
+	err := BakeNetworkd(context.Background(), f, disk, "xfs",
+		"10.100.0.5", "10.100.0.1", "aa:bb:cc:dd:ee:ff", "1.1.1.1")
+	require.Error(t, err)
+	assertAllReleased(t, f, "/dev/loop3")
+}
+
+func TestBakeMountsReleasesBootPartition(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "disk.img")
+	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
+	f := bootFirstFS()
+	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs",
+		[]SharedMount{{Where: "/var/lib/qvm/data", What: "vm1-0"}}))
+	assertAllReleased(t, f, "/dev/loop3")
+}
+
 func TestSharedMountUnit(t *testing.T) {
 	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qvm/data\n_netdev=true\n"
 	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qvm/data\n"
