@@ -110,5 +110,8 @@ Improve the error text when next touching findParts.
   deleted; foo's disk was destroyed during forensics).
 - /usr/local/bin/qlvm = branch build (21cae57 generation, 22:04) — behaviorally identical
   to post-merge main (later commits docs-only). Rebuild after any code work anyway.
-- The SDD worktree (.worktrees/foo-reboot-uuid-fixes) is removed with this merge;
-  .worktrees/impl (feat/qlvm-impl, old) still exists.
+- The SDD worktree (.worktrees/foo-reboot-uuid-fixes) and its branch are KEPT: the
+  .superpowers/sdd workspace there is local-only (gitignored) and holds the raw evidence
+  (guest journal, console rings, OVN flow dump) that follow-up #5 (upstream Xen filing)
+  cites. Remove worktree + branch once the filing is made; .worktrees/impl
+  (feat/qlvm-impl, old) also still exists.
