@@ -151,11 +151,13 @@ func TestStopCmdWaitsForShutdown(t *testing.T) {
 	require.Empty(t, x.runningSeq, "stopCmd must poll Running until the domain disappears")
 }
 
-func TestStopForcedBothFailSurfacesDestroyError(t *testing.T) {
+func TestStopForcedBothFailSurfacesBothErrors(t *testing.T) {
 	var events []string
+	acpiErr := errors.New("no acpi response")
 	killErr := errors.New("domain already gone")
-	x := &fakeXen{events: &events, running: map[string]bool{"vm1": true}, shutdownErr: errors.New("no acpi response"), destroyErr: killErr}
+	x := &fakeXen{events: &events, running: map[string]bool{"vm1": true}, shutdownErr: acpiErr, destroyErr: killErr}
 	err := stopForced(x, "vm1")
+	require.ErrorIs(t, err, acpiErr, "shutdown error must not be dropped when destroy also fails")
 	require.ErrorIs(t, err, killErr, "destroy error surfaces when both calls fail")
 	require.Equal(t, []string{"shutdown:vm1", "destroy:vm1"}, events)
 }

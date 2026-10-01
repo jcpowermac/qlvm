@@ -119,7 +119,10 @@ var (
 // ACPI, and Shutdown only queues the event — it never waits).
 func stopForced(x xenctl.Xen, name string) error {
 	if err := x.Shutdown(name); err != nil {
-		return x.Destroy(name)
+		if derr := x.Destroy(name); derr != nil {
+			return fmt.Errorf("stop %s: %w; destroy fallback: %w", name, err, derr)
+		}
+		return nil
 	}
 	// Shutdown is fire-and-forget: the ACPI event is queued and libxl
 	// returns immediately, so success proves nothing. Poll until the
