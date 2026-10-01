@@ -240,8 +240,8 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   the guest kernel stops executing, so no in-guest channel reports past
   `machine restart` (the hvc0 ring already captures the kernel's last word).
 - Recovery: `sudo xl destroy <name>` + `qlvm vm start <name>` — and
-  `qlvm vm restart` now performs exactly that (graceful ACPI stop, linger
-  poll ~60 s, force-kill, start): live-verified against a real `---sr-`
+  `qlvm vm restart` automates this (graceful ACPI stop, linger poll ~60 s,
+  force-kill on linger, start): live-verified against a real `---sr-`
   zombie on 2026-09-30 (rc=0 in ~61 s; Task 4b smoke). Loop-forensics on the
   zombie's disk are safe once the domain is gone from `xl list`.
 - **The image's auto-upgrade timer makes the next reboot unattended.**

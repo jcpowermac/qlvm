@@ -240,7 +240,7 @@ will (TDD: integration test runs it twice).
    tree's `/etc/systemd/network/`, umount, detach.
 4. **Domain config** — the full libxl domain configuration (PVH type, name,
    stable UUID, kernel/ramdisk from template dir, `extra` =
-   `root=UUID=… [rootflags] ostree=<path> systemd.default-target=multi-user.target
+   `root=PARTUUID=… [rootflags] ostree=<path> systemd.default-target=multi-user.target
    console=hvc0`, disk `xvda` = `disk.img` (raw, rw), vif `mac=<MAC>,script=vif-ovn`,
    `P9S` entries for each `--mount`) is stored in `meta.toml`, not booted.
    Xen has no such thing as a stopped domain — "stopped" means "not created".
