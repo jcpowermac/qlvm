@@ -24,6 +24,9 @@ type Meta struct {
 	Mounts   []Mount   `toml:"mounts"`
 	UUID     string    `toml:"uuid"`
 	Created  time.Time `toml:"created"`
+	// Token authenticates the waypipe control channel (guest :4711); the
+	// same secret is baked into the guest's /etc/qvm/waypipe-token.
+	Token string `toml:"token"`
 }
 
 // Mount is one p9 share: Host path on dom0, Guest tag inside the VM.

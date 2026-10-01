@@ -100,6 +100,7 @@ func TestEgressRules(t *testing.T) {
 		`rule family="ipv4" port port="53" protocol="tcp" accept`,
 		`rule family="ipv4" port port="443" protocol="tcp" accept`,
 		`rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept`,
+		`rule family="ipv4" destination address="10.100.0.0/16" port port="4711" protocol="tcp" accept`,
 		`rule family="ipv4" protocol value="icmp" accept`,
 		`rule family="ipv4" port port="8080" protocol="tcp" accept`,
 	}
@@ -108,6 +109,8 @@ func TestEgressRules(t *testing.T) {
 	noDNS := m.EgressRules(config.Egress{AllowHTTPS: true}, "10.100.0.0/16")
 	assert.Equal(t, []string{
 		`rule family="ipv4" port port="443" protocol="tcp" accept`,
+		// the waypipe control rule is unconditional
+		`rule family="ipv4" destination address="10.100.0.0/16" port port="4711" protocol="tcp" accept`,
 	}, noDNS)
 }
 
@@ -123,7 +126,7 @@ func TestEnsureIdempotent(t *testing.T) {
 		"PolicyByName:dom0-egress",
 		"AddPolicy:dom0-egress:DROP:100:HOST:ANY",
 		"PolicyRichRules:policy:dom0-egress",
-		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
+		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="4711" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
 		"Reload",
 	}
 	assert.Equal(t, want, f.calls)

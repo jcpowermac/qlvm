@@ -18,17 +18,6 @@ func TestRunWaypipeGuard(t *testing.T) {
 	assert.Contains(t, err.Error(), "WAYLAND_DISPLAY")
 }
 
-func TestWaypipeSSHArgs(t *testing.T) {
-	got := waypipeSSHArgs("10.100.1.10", []string{"firefox", "--no-remote"})
-	want := []string{"ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ServerAliveInterval=15",
-		"-o", "ServerAliveCountMax=3",
-		"user@10.100.1.10", "firefox", "--no-remote"}
-	assert.Equal(t, want, got)
-}
-
 func TestSSHAuthKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -118,6 +118,10 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	if err := ostree.BakeNetworkd(ctx, d.FS, disk, d.FSType, ip, dom.Gateway, mac, dns); err != nil {
 		return fail(fmt.Errorf("networkd bake: %w", err))
 	}
+	token := newToken()
+	if err := ostree.BakeControl(ctx, d.FS, disk, d.FSType, SSHUser, token); err != nil {
+		return fail(fmt.Errorf("control bake: %w", err))
+	}
 	if len(spec.Mounts) > 0 {
 		shares := make([]ostree.SharedMount, 0, len(spec.Mounts))
 		for i, mt := range spec.Mounts {
@@ -144,6 +148,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		Mounts:   spec.Mounts,
 		UUID:     newUUID(),
 		Created:  time.Now(),
+		Token:    token,
 	}
 	if err := m.Save(vmDir); err != nil {
 		return fail(fmt.Errorf("save meta: %w", err))
@@ -201,6 +206,13 @@ func maxDomainHostnum(root, domain string) (int, error) {
 		}
 	}
 	return maxH, nil
+}
+
+// newToken returns 32 hex chars (128 bits) for the waypipe control channel.
+func newToken() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("%x", b[:])
 }
 
 // newUUID returns a random RFC 4122 v4 UUID string (persisted in Meta so the

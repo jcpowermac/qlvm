@@ -62,7 +62,9 @@ func NewSystem() (*Manager, error) {
 
 // EgressRules is the pure rendering of an Egress config as ordered firewalld
 // rich-rule strings: dns (53 udp+tcp), https (443 tcp), ssh-to-VMs (22 tcp
-// to the VM supernet), icmp, then ExtraRules in order.
+// to the VM supernet), waypipe-control (4711 tcp to the VM supernet,
+// unconditional: token-authenticated on the guest and only reachable
+// through the OVN supernet), icmp, then ExtraRules in order.
 func (m *Manager) EgressRules(e config.Egress, supernet string) []string {
 	var rules []string
 	if e.AllowDNS {
@@ -78,6 +80,8 @@ func (m *Manager) EgressRules(e config.Egress, supernet string) []string {
 		rules = append(rules, fmt.Sprintf(
 			`rule family="ipv4" destination address=%q port port="22" protocol="tcp" accept`, supernet))
 	}
+	rules = append(rules, fmt.Sprintf(
+		`rule family="ipv4" destination address=%q port port="4711" protocol="tcp" accept`, supernet))
 	if e.AllowICMP {
 		rules = append(rules, `rule family="ipv4" protocol value="icmp" accept`)
 	}

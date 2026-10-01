@@ -653,6 +653,44 @@ func BakeTemplate(ctx context.Context, fs FS, dir, fstype, sshAuthKeys string) e
 // partition rw (via the FS mounter, fstype from the wiring layer), write
 // 10-bolt.network, umount, detach. An rw mount failure on a shared template
 // image risks a dirty journal, so the error points at xfs_repair -L.
+// rootRWMount loop-attaches diskPath and mounts its root partition rw,
+// returning the mount target and a cleanup (umount + partition release +
+// detach).
+func rootRWMount(ctx context.Context, fs FS, diskPath, fstype string) (string, func(), error) {
+	loop, err := fs.LoopAttach(diskPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("attach %s: %w", diskPath, err)
+	}
+	root, _, _, _, err := findParts(ctx, fs, loop, false, false, fstype,
+		"mount rw (if the filesystem is damaged run xfs_repair -L on a copy of the image and retry)")
+	cleanup := func() {
+		_ = fs.Umount(root.target)
+		root.cleanup()
+		_ = fs.LoopDetach(loop)
+	}
+	if err != nil {
+		// On error findParts returned a zero root (its probe mounts are its
+		// own to release); only the loop is ours to detach here.
+		_ = fs.LoopDetach(loop)
+		return "", nil, err
+	}
+	return root.target, cleanup, nil
+}
+
+// deploymentEtc returns the deployment /etc overlay dir under a mounted
+// root target.
+func deploymentEtc(ctx context.Context, fs FS, rootTarget string) (string, error) {
+	_, osid, _, err := ostreePath(filepath.Join(rootTarget, "ostree"), fs)
+	if err != nil {
+		return "", err
+	}
+	dep, err := deploymentDir(filepath.Join(rootTarget, "ostree"), osid, fs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootTarget, "ostree", "deploy", osid, "deploy", dep, "etc"), nil
+}
+
 func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -660,32 +698,18 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 	if fstype == "" {
 		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
 	}
-	loop, err := fs.LoopAttach(diskPath)
+	root, cleanup, err := rootRWMount(ctx, fs, diskPath, fstype)
 	if err != nil {
-		return fmt.Errorf("attach %s: %w", diskPath, err)
+		return err
 	}
-	defer func() { _ = fs.LoopDetach(loop) }()
+	defer cleanup()
 
-	root, _, _, _, err := findParts(ctx, fs, loop, false, false, fstype,
-		"mount rw (if the filesystem is damaged run xfs_repair -L on a copy of the image and retry)")
+	etc, err := deploymentEtc(ctx, fs, root)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = fs.Umount(root.target)
-		root.cleanup()
-	}()
-
-	_, osid, _, err := ostreePath(filepath.Join(root.target, "ostree"), fs)
-	if err != nil {
-		return err
-	}
-	dep, err := deploymentDir(filepath.Join(root.target, "ostree"), osid, fs)
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", dep, "etc", "systemd", "network")
-	// root.target is a real loop-mount mountpoint: direct os.MkdirAll is
+	dir := filepath.Join(etc, "systemd", "network")
+	// root is a real loop-mount mountpoint: direct os.MkdirAll is
 	// intentional (directory creation has no FS seam method).
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -699,10 +723,119 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 	// instead of managing the symlink — so bake a real file. networkd
 	// sees a regular file ("foreign") and leaves it alone; the DNS= in
 	// the .network unit stays as documentation for LLMNR-less setups.
-	etcDir := filepath.Dir(filepath.Dir(dir)) // .../etc (dir is .../etc/systemd/network)
-	resolv := filepath.Join(etcDir, "resolv.conf")
+	resolv := filepath.Join(etc, "resolv.conf")
 	_ = os.Remove(resolv) // replace the dangling symlink (ENOENT ok on fakes)
 	return fs.WriteFile(resolv, []byte("nameserver "+dns+"\n"), 0o644)
+}
+
+// ControlScript is the guest-side waypipe control relay, baked to
+// /etc/qvm/qvm-ctl. One instance per dom0 connection (systemd oneshot):
+// verify the per-VM token, start the ncat unix->TCP bridge back to the
+// dom0 data port, then run the app under a one-shot waypipe server.
+const ControlScript = `#!/bin/sh
+# qlvm waypipe control relay: stdin is the dom0 control connection
+# (activated by qvm-ctl.socket on tcp:4711). Frame:
+#   <token>\n<data-port>\n<dom0-ip>\n<exec>\n
+IFS= read -r tok || exit 1
+want=$(cat /etc/qvm/waypipe-token 2>/dev/null) || exit 1
+[ -n "$want" ] || exit 1
+[ "$tok" = "$want" ] || exit 1
+IFS= read -r port || exit 1
+IFS= read -r dom0 || exit 1
+IFS= read -r exec || exit 1
+[ -n "$exec" ] || exec="bash -l"
+sock=/run/user/1000/qlvm-waypipe-$$.sock
+ncat -lkU "$sock" --sh-exec "ncat -w 120 $dom0 $port" &
+bridge=$!
+trap 'kill $bridge 2>/dev/null; rm -f "$sock"' EXIT
+# wait for the bridge socket so waypipe's first dial does not race it
+i=0
+while [ ! -S "$sock" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+/usr/bin/waypipe -o -n -s "$sock" --display qvm server -- $exec
+rc=$?
+kill $bridge 2>/dev/null
+wait $bridge 2>/dev/null
+rm -f "$sock"
+exit $rc
+`
+
+// ControlSocketUnit listens on all interfaces: the guest is single-homed
+// on the netfront, and the token (not the network) is the auth boundary.
+const ControlSocketUnit = `[Unit]
+Description=qlvm waypipe control socket (dom0 app projection)
+
+[Socket]
+ListenStream=4711
+
+[Install]
+WantedBy=sockets.target
+`
+
+// ControlServiceUnit runs one relay per connection as the baked VM user;
+// bolt-rundir owns /run/user/1000 in these headless guests. /bin/sh <file>
+// (not direct exec) so SELinux only needs read on the etc_t script.
+func ControlServiceUnit(user string) string {
+	return fmt.Sprintf(`[Unit]
+Description=qlvm waypipe app server (one instance per dom0 run)
+Requires=bolt-rundir.service
+After=bolt-rundir.service
+
+[Service]
+Type=oneshot
+User=%s
+Environment=HOME=/var/home/%s
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/bin/sh /etc/qvm/qvm-ctl
+`, user, user)
+}
+
+// BakeControl bakes the per-VM waypipe control channel: the qvm-ctl relay
+// script + token (0600), the systemd socket/service pair, and the socket
+// enablement symlink. Runs at vm create (same rw mount path as
+// BakeNetworkd).
+func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if fstype == "" {
+		return fmt.Errorf("fstype required (wiring layer supplies image-builder's --bootc-default-fs)")
+	}
+	root, cleanup, err := rootRWMount(ctx, fs, diskPath, fstype)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	etc, err := deploymentEtc(ctx, fs, root)
+	if err != nil {
+		return err
+	}
+	qvm := filepath.Join(etc, "qvm")
+	if err := os.MkdirAll(qvm, 0o750); err != nil {
+		return err
+	}
+	if err := fs.WriteFile(filepath.Join(qvm, "qvm-ctl"), []byte(ControlScript), 0o755); err != nil {
+		return err
+	}
+	if err := fs.WriteFile(filepath.Join(qvm, "waypipe-token"), []byte(token+"\n"), 0o600); err != nil {
+		return err
+	}
+	sysd := filepath.Join(etc, "systemd", "system")
+	if err := os.MkdirAll(sysd, 0o750); err != nil {
+		return err
+	}
+	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.socket"), []byte(ControlSocketUnit), 0o644); err != nil {
+		return err
+	}
+	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.service"), []byte(ControlServiceUnit(user)), 0o644); err != nil {
+		return err
+	}
+	wants := filepath.Join(sysd, "sockets.target.wants")
+	if err := os.MkdirAll(wants, 0o750); err != nil {
+		return err
+	}
+	_ = os.Remove(filepath.Join(wants, "qvm-ctl.socket"))
+	return os.Symlink("../qvm-ctl.socket", filepath.Join(wants, "qvm-ctl.socket"))
 }
 
 // BakeMounts bakes one per-share systemd .mount unit (plus its enablement

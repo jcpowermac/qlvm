@@ -442,6 +442,51 @@ func TestBakeNetworkd(t *testing.T) {
 	assert.Len(t, f.umounted, 1)
 }
 
+func TestBakeControl(t *testing.T) {
+	disk := filepath.Join(t.TempDir(), "disk.img")
+	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
+	f := networkdFS()
+	token := "0123456789abcdef0123456789abcdef"
+	require.NoError(t, BakeControl(context.Background(), f, disk, "xfs", "user", token))
+
+	assert.Equal(t, []string{disk}, f.attached)
+	require.Len(t, f.mounts, 1)
+	assert.False(t, f.mounts[0].ro, "control bake mounts the root rw")
+
+	wrote := map[string]writeCall{}
+	for _, w := range f.wrote {
+		wrote[w.path] = w
+	}
+	const base = "r/ostree/deploy/os1/deploy/def456.0/etc"
+
+	ctl, ok := wrote[base+"/qvm/qvm-ctl"]
+	require.True(t, ok, "relay script must be baked, wrote: %+v", f.wrote)
+	assert.Equal(t, ControlScript, string(ctl.data))
+	assert.Equal(t, os.FileMode(0o755), ctl.mode)
+
+	tok, ok := wrote[base+"/qvm/waypipe-token"]
+	require.True(t, ok)
+	assert.Equal(t, token+"\n", string(tok.data))
+	assert.Equal(t, os.FileMode(0o600), tok.mode, "the token must not be world-readable")
+
+	sock, ok := wrote[base+"/systemd/system/qvm-ctl.socket"]
+	require.True(t, ok)
+	assert.Equal(t, ControlSocketUnit, string(sock.data))
+
+	svc, ok := wrote[base+"/systemd/system/qvm-ctl.service"]
+	require.True(t, ok)
+	assert.Equal(t, ControlServiceUnit("user"), string(svc.data))
+	assert.Contains(t, string(svc.data), "User=user")
+	assert.Contains(t, string(svc.data), "ExecStart=/bin/sh /etc/qvm/qvm-ctl")
+
+	assertAllReleased(t, f, "/dev/loop3")
+	require.Contains(t, f.links, linkRec{
+		// links are recorded target-relative (no partRoot prefix)
+		path:   "ostree/deploy/os1/deploy/def456.0/etc/systemd/system/sockets.target.wants/qvm-ctl.socket",
+		target: "../qvm-ctl.socket",
+	}, "the socket must be enabled in sockets.target.wants")
+}
+
 // bootFirstFS mimics the real bootc disk layout: the /boot partition
 // comes BEFORE the ostree root (live images: p3=/boot, p4=root). Any
 // wantBoot=false scan mounts /boot during probing, so the caller (or

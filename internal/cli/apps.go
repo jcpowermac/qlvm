@@ -7,13 +7,13 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh"
 
 	"github.com/jcpowermac/qlvm/internal/apps"
+	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/projection"
 	"github.com/jcpowermac/qlvm/internal/sshx"
 	"github.com/jcpowermac/qlvm/internal/vm"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
@@ -57,14 +57,12 @@ func appsCmd() *cobra.Command {
 	return cmd
 }
 
-// launchApp runs the ROFI_INFO selection "<vm>|<exec>", starting and
-// waiting for SSH first when the VM is stopped, then waypipe.
+// launchApp runs the ROFI_INFO selection "<vm>|<exec>", starting the VM
+// first when it is stopped, waiting for the guest's control socket, then
+// projecting the app (no SSH in the app path; the control channel is
+// token-authenticated).
 func launchApp(cmd *cobra.Command) error {
 	ctx := cmd.Context()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
 	x, err := xenctl.New()
 	if err != nil {
 		return err
@@ -81,13 +79,22 @@ func launchApp(cmd *cobra.Command) error {
 			if err != nil {
 				return err
 			}
-			return sshx.WaitForSSH(ctx, func() (*ssh.Client, error) {
-				return sshx.Connect(ctx, home, m.IP, vm.SSHUser)
-			}, 60, time.Second)
+			if m.Token == "" {
+				return fmt.Errorf("vm %s predates the waypipe control channel: delete and recreate it (or re-bake the template)", name)
+			}
+			return projection.WaitControl(ctx, m.IP, time.Second, 60*time.Second)
 		},
 		func(name, exec string) error {
-			wpArgs := append([]string{"ssh", name}, strings.Fields(exec)...)
-			return runWaypipe(wpArgs, os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			m, err := vm.LoadMeta(vmDirOf(name))
+			if err != nil {
+				return err
+			}
+			cfg, err := config.Load(defaultConfigPath)
+			if err != nil {
+				return err
+			}
+			return projection.Run(ctx, projection.Deps{Waypipe: runWaypipe}, m, cfg.Network.RouterIP, exec,
+				os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	)
 }
