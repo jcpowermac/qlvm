@@ -161,6 +161,18 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   *deleted* disk.img keeps stale partition nodes and can make the template
   attach fail ("has no ostree root (and /boot) partition pair ... EINVAL").
   `sudo losetup -a`, detach strays, then create.
+- **Guest xfs log vs dom0 xfs (kernel skew, cost a VM 2026-10-02):** the
+  guest kernel (7.2.x) writes an xfs log the older dom0 xfs driver cannot
+  replay — after an unclean guest stop, any dom0 mount of the root
+  partition fails with `log mount/recovery failed: error -22` (both ro and
+  rw), and the *guest itself* then boots into emergency mode (its own log
+  is mid-replay). `xfs_repair` without flags refuses ("valuable metadata
+  changes in a log"). Fix: domain gone from `xl list`, then
+  `sudo xfs_repair -L /dev/loopXp4` (resets the log), then mount rw and
+  re-bake anything the lost log tail held (drop-ins, tokens). A clean
+  ACPI stop (`qlvm vm stop`) replays fine — only unclean stops hit this.
+  Loop-mount forensics reads are otherwise reliable; "empty reads" from a
+  stale mount path were a separate (lost mount) issue, not xfs.
 
 ### Guest SSH / qlvm vm run
 - **`qlvm vm run` is a user-session command** (waypipe needs the desktop's
