@@ -469,8 +469,11 @@ func TestBakeControl(t *testing.T) {
 	assert.Equal(t, ControlScript, string(ctl.data))
 	assert.Equal(t, os.FileMode(0o755), ctl.mode)
 
-	tok, ok := wrote[base+"/qvm/waypipe-token"]
-	require.True(t, ok)
+	// The token lives in the VM user's home on the shared var, not in
+	// /etc/qvm: the service runs unprivileged and cannot read a root-only
+	// /etc/qvm (that EACCES was the status=126 relay failure).
+	tok, ok := wrote["r/ostree/deploy/os1/var/home/user/.qvm/waypipe-token"]
+	require.True(t, ok, "token must be baked under the user home on the shared var, wrote: %+v", f.wrote)
 	assert.Equal(t, token+"\n", string(tok.data))
 	assert.Equal(t, os.FileMode(0o600), tok.mode, "the token must not be world-readable")
 

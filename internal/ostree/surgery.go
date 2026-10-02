@@ -686,6 +686,17 @@ func rootRWMount(ctx context.Context, fs FS, diskPath, fstype string) (string, f
 	return root.target, cleanup, nil
 }
 
+// sharedVarHome returns the VM user's home dir on the osid shared var
+// (bootc layout: <root>/ostree/deploy/<osid>/var carries the deployment
+// var/), the writable /var that survives into every reflinked VM.
+func sharedVarHome(_ context.Context, fs FS, rootTarget, user string) (string, error) {
+	_, osid, _, err := ostreePath(filepath.Join(rootTarget, "ostree"), fs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(rootTarget, "ostree", "deploy", osid, "var", "home", user), nil
+}
+
 // deploymentEtc returns the deployment /etc overlay dir under a mounted
 // root target.
 func deploymentEtc(_ context.Context, fs FS, rootTarget string) (string, error) {
@@ -750,7 +761,7 @@ const ControlScript = `#!/bin/sh
 # (activated by qvm-ctl.socket on tcp:4711). Frame:
 #   <token>\n<data-port>\n<dom0-ip>\n<exec>\n
 IFS= read -r tok || exit 1
-want=$(cat /etc/qvm/waypipe-token 2>/dev/null) || exit 1
+want=$(cat "$HOME/.qvm/waypipe-token" 2>/dev/null) || exit 1
 [ -n "$want" ] || exit 1
 [ "$tok" = "$want" ] || exit 1
 IFS= read -r port || exit 1
@@ -764,7 +775,11 @@ trap 'kill $bridge 2>/dev/null; rm -f "$sock"' EXIT
 # wait for the bridge socket so waypipe's first dial does not race it
 i=0
 while [ ! -S "$sock" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
-/usr/bin/waypipe -o -n -s "$sock" --display qvm server -- $exec
+# --xwls binds X display sockets (xwayland-satellite, in PATH) and sets
+# DISPLAY for X clients like firefox. No -o: --oneshot hands the app
+# WAYLAND_SOCKET + an inherited fd instead of WAYLAND_DISPLAY, which breaks
+# programs that open and close the Wayland connection during init (firefox).
+/usr/bin/waypipe -n --display qvm --xwls -s "$sock" server -- $exec
 rc=$?
 kill $bridge 2>/dev/null
 wait $bridge 2>/dev/null
@@ -782,6 +797,25 @@ ListenStream=4711
 
 [Install]
 WantedBy=sockets.target
+`
+
+// ControlSocketLimitUnit stops the socket from wedging itself: the relay
+// exits 1 on any connection that does not complete the frame (bad token,
+// a closed probe), and a run of such failures trips the service
+// start-limit, which marks the SOCKET unit failed and it then refuses all
+// connections — unrecoverable without a privileged reset-failed (the guest
+// user has no sudo). Zeroed limits keep the socket listening.
+const ControlSocketLimitUnit = `[Socket]
+TriggerLimitIntervalSec=0
+TriggerLimitBurst=0
+`
+
+// ControlServiceLimitUnit zeroes the service start-limit for the same
+// reason: a failed relay run must not take the control socket down with
+// it. The token, not the rate limiter, is the auth boundary.
+const ControlServiceLimitUnit = `[Service]
+StartLimitIntervalSec=0
+StartLimitBurst=0
 `
 
 // ControlServiceUnit runs one relay per connection as the baked VM user;
@@ -823,16 +857,41 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err != nil {
 		return err
 	}
+	// /etc/qvm must be traversable by the unprivileged service user:
+	// 0750 root:root makes /bin/sh hit EACCES (status=126) before the
+	// script ever runs. The token is NOT here — see below.
 	qvm := filepath.Join(etc, "qvm")
-	if err := os.MkdirAll(qvm, 0o750); err != nil {
+	if err := os.MkdirAll(qvm, 0o755); err != nil {
 		return err
 	}
 	if err := fs.WriteFile(filepath.Join(qvm, "qvm-ctl"), []byte(ControlScript), 0o755); err != nil {
 		return err
 	}
-	if err := fs.WriteFile(filepath.Join(qvm, "waypipe-token"), []byte(token+"\n"), 0o600); err != nil {
+	// The token lives in the VM user's home on the shared var: the service
+	// runs as the user, so a root-owned 0600 file in /etc/qvm is unreadable
+	// (the relay exits before it can ever run the app).
+	varHome, err := sharedVarHome(ctx, fs, root, user)
+	if err != nil {
 		return err
 	}
+	tokDir := filepath.Join(varHome, ".qvm")
+	if err := fs.MkdirAll(tokDir, 0o700); err != nil {
+		return err
+	}
+	tok := filepath.Join(tokDir, "waypipe-token")
+	if err := fs.WriteFile(tok, []byte(token+"\n"), 0o600); err != nil {
+		return err
+	}
+	// The relay runs unprivileged: a root-owned 0700 .qvm makes the token
+	// unreadable and the relay exits before waypipe ever runs.
+	if err := chownForUser(tokDir, defaultVMUID); err != nil {
+		return err
+	}
+	if err := chownForUser(tok, defaultVMUID); err != nil {
+		return err
+	}
+	setSELinuxContext(tokDir, "user_u:object_r:home_t:s0")
+	setSELinuxContext(tok, "user_u:object_r:home_t:s0")
 	sysd := filepath.Join(etc, "systemd", "system")
 	if err := os.MkdirAll(sysd, 0o750); err != nil {
 		return err
@@ -842,6 +901,23 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	}
 	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.service"), []byte(ControlServiceUnit(user)), 0o644); err != nil {
 		return err
+	}
+	// Start/trigger-limit drop-ins: a failed relay run must not wedge the
+	// socket (see ControlSocketLimitUnit).
+	for _, d := range []struct {
+		dir string
+		file string
+		body string
+	}{
+		{"qvm-ctl.socket.d", "10-no-trigger-limit.conf", ControlSocketLimitUnit},
+		{"qvm-ctl.service.d", "10-no-start-limit.conf", ControlServiceLimitUnit},
+	} {
+		if err := os.MkdirAll(filepath.Join(sysd, d.dir), 0o750); err != nil {
+			return err
+		}
+		if err := fs.WriteFile(filepath.Join(sysd, d.dir, d.file), []byte(d.body), 0o644); err != nil {
+			return err
+		}
 	}
 	wants := filepath.Join(sysd, "sockets.target.wants")
 	if err := os.MkdirAll(wants, 0o750); err != nil {

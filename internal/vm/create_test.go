@@ -171,7 +171,7 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm1/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach"}
+		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall"}
 		require.Equal(t, want, events, "order: OVN port -> reflink -> UniqueXFS (loopattach) -> networkd bake (loopattach) -> control bake (loopattach) -> (meta save, file on disk)")
 		// The per-VM XFS UUID step must have invoked xfs_admin -U generate on
 		// the root partition only — the image fstab pins the /boot XFS UUID,
@@ -213,7 +213,7 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm2/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "ssh"}
+		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall", "ssh"}
 		require.Equal(t, want, events, "order: OVN -> reflink -> UniqueXFS (loopattach) -> bake (loopattach) -> control bake (loopattach) -> meta save -> ssh config")
 		require.Equal(t, m.Name, sshMeta.Name)
 		got, err := os.ReadFile(filepath.Join(home, ".ssh", "config")) // #nosec G304 -- t.TempDir path
