@@ -60,7 +60,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm vm restart <name>` | Graceful stop, force-kill if it lingers, then start |
 | `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
 | `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
-| `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via `waypipe ssh <vm>` (needs a dom0 Wayland session) |
+| `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via waypipe (needs a dom0 Wayland session). `--connect ssh` (default) \| `tcp` \| `vsock` picks the channel |
 | `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
 | `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into the VM's own state dir (`vms/<name>/`) so a restart picks up a kernel the VM upgraded in place. Per-VM: a sibling VM of the same template keeps its own kernel; the template dir is never touched |
 | `qlvm template [list]` | List baked templates (dir, image, kernel, size, which VMs reference each); warns on incomplete dirs |
@@ -163,7 +163,7 @@ Storage layout:
                                  br-ex --> enp1s0 --> LAN (192.168.1.0/24)
 
  dom0 egress: firewalld rich rules generated from [firewall.egress]
- GUI:         qlvm vm run <vm> <app> -- waypipe ssh <vm> (dom0 Wayland session)
+ GUI:         qlvm vm run <vm> <app> -- waypipe over ssh|tcp|vsock (dom0 Wayland session)
  hotplug:     libxl invokes /etc/xen/scripts/vif-ovn (qlvm-vif), which reads
               xenstore and programs the OVS vif port via libovsdb
 ```

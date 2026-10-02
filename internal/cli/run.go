@@ -29,34 +29,46 @@ var runWaypipe = func(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 }
 
 func runCmd() *cobra.Command {
-	return &cobra.Command{
+	var connect string
+	cmd := &cobra.Command{
 		Use:   "run <vm> [app...]",
-		Short: "Run an app in a VM on the dom0 Wayland session (no SSH: token-authenticated control channel)",
+		Short: "Run an app in a VM on the dom0 Wayland session (--connect ssh|tcp|vsock)",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := projection.ParseConnect(connect)
+			if err != nil {
+				return err
+			}
 			name := args[0]
 			m, err := vm.LoadMeta(vmDirOf(name))
 			if err != nil {
 				return fmt.Errorf("run %s: %w", name, err)
 			}
-			if m.Token == "" {
-				return fmt.Errorf("run %s: meta has no control token — the VM predates the waypipe control channel; delete and recreate it (or re-bake the template)", name)
+			if c != projection.ConnectSSH && m.Token == "" {
+				return fmt.Errorf("run %s: meta has no control token for --connect %s — the VM predates the waypipe control channel; delete and recreate it (or re-bake the template)", name, c)
 			}
-			cfg, err := config.Load(defaultConfigPath)
-			if err != nil {
-				return err
+			dom0IP := ""
+			if c == projection.ConnectTCP {
+				cfg, err := config.Load(defaultConfigPath)
+				if err != nil {
+					return err
+				}
+				dom0IP = cfg.Network.RouterIP
 			}
 			// args[1:] joined verbatim is the guest-side command line;
 			// empty means the guest defaults to a login shell (parity with
 			// the old `waypipe ssh` behavior).
 			if err := projection.Run(cmd.Context(), projection.Deps{Waypipe: runWaypipe},
-				m, cfg.Network.RouterIP, strings.Join(args[1:], " "),
+				m, c, dom0IP, strings.Join(args[1:], " "),
 				os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&connect, "connect", string(projection.ConnectSSH),
+		"waypipe channel: ssh (default, waypipe ssh over the VM's sshd), tcp (token control channel + TCP data port), vsock (AF_VSOCK; needs xen-vsock in both kernels)")
+	return cmd
 }
 
 func init() {

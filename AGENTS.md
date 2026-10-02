@@ -36,6 +36,31 @@ Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
 - Dom0 hardening guide: `docs/hardening.md` (rpm-ostree-based)
 - Build/usage: `README.md` (Quick start, Development sections)
 
+### Waypipe control channel (`vm run --connect ssh|tcp|vsock`)
+- **`--connect` picks the channel** (default `ssh`): ssh = `waypipe ssh`
+  over the VM's sshd (works on every template, no relay needed); tcp =
+  token control frame to the guest's qvm-ctl relay + ephemeral TCP data
+  port; vsock = waypipe `--vsock` (guest relay dials the dom0's vsock
+  port). vsock is wired end-to-end but needs the `xen-vsock` transport in
+  **both** dom0 and guest kernels — stock Fedora 44 has none on either
+  side (the guest loads only vmw/vsock_loopback), so vsock fails until a
+  kernel with `CONFIG_XEN_VSOCKETS` is on both ends.
+- **The relay is an ncat listener, not systemd socket activation.** A
+  socket-activated service receives the connection on **fd 3** (via
+  LISTEN_FDS), NOT stdin — the relay's `read -r tok` from stdin got
+  /dev/null EOF and the frame was never consumed (CLOSE-WAIT pileup on
+  4711, dom0 hung forever). `ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl`
+  hands each connection to the script as fd 0. ncat `--sh-exec` takes
+  exactly ONE argument, so it points at the executable script path, not a
+  split command line. A failed relay now kills only its child; no
+  start-limit wedge class exists.
+- **Control frame is 5 lines**: `<token>\n<mode>\n<port>\n<dom0-ip>\n<exec>\n`
+  (mode tcp|vsock). Dom0 and relay must match — a 4-line relay reads the
+  mode line as the port and mis-runs; re-bake or loop-patch after changes.
+- **waypipe CLI**: global options go BEFORE the mode word (`waypipe
+  --xwls ssh ...`); `waypipe ssh --xwls` fails (the parser treats the
+  first bare word after `ssh` as the destination).
+
 ## Live-smoke pitfalls (learned against the real dom0, 2026-09)
 
 Unit fakes and the in-memory ovsdb server cannot catch these; each cost a

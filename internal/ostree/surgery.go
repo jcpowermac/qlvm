@@ -753,21 +753,30 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 }
 
 // ControlScript is the guest-side waypipe control relay, baked to
-// /etc/qvm/qvm-ctl. One instance per dom0 connection (systemd oneshot):
-// verify the per-VM token, start the ncat unix->TCP bridge back to the
-// dom0 data port, then run the app under a one-shot waypipe server.
+// /etc/qvm/qvm-ctl. One instance per dom0 connection (forked by the
+// ncat listener in qvm-ctl.service): verify the per-VM token, start the
+// ncat unix->TCP bridge back to the dom0 data port, then run the app
+// under a one-shot waypipe server.
 const ControlScript = `#!/bin/sh
 # qlvm waypipe control relay: stdin is the dom0 control connection
-# (activated by qvm-ctl.socket on tcp:4711). Frame:
-#   <token>\n<data-port>\n<dom0-ip>\n<exec>\n
+# (one connection per fork of the ncat listener on tcp:4711). Frame:
+#   <token>\n<mode>\n<port>\n<dom0-ip>\n<exec>\n
+# mode: tcp (bridge the unix waypipe socket back to the dom0 data port)
+# or vsock (waypipe carries the data over AF_VSOCK itself; dom0-ip
+# unused). Requires the xen-vsock transport in both kernels.
 IFS= read -r tok || exit 1
 want=$(cat "$HOME/.qvm/waypipe-token" 2>/dev/null) || exit 1
 [ -n "$want" ] || exit 1
 [ "$tok" = "$want" ] || exit 1
+IFS= read -r mode || exit 1
 IFS= read -r port || exit 1
 IFS= read -r dom0 || exit 1
 IFS= read -r exec || exit 1
 [ -n "$exec" ] || exec="bash -l"
+if [ "$mode" = vsock ]; then
+  /usr/bin/waypipe -n --display qvm --vsock -s "$port" --xwls server -- $exec
+  exit $?
+fi
 sock=/run/user/1000/qlvm-waypipe-$$.sock
 ncat -lkU "$sock" --sh-exec "ncat -w 120 $dom0 $port" &
 bridge=$!
@@ -787,52 +796,37 @@ rm -f "$sock"
 exit $rc
 `
 
-// ControlSocketUnit listens on all interfaces: the guest is single-homed
-// on the netfront, and the token (not the network) is the auth boundary.
-const ControlSocketUnit = `[Unit]
-Description=qlvm waypipe control socket (dom0 app projection)
-
-[Socket]
-ListenStream=4711
-
-[Install]
-WantedBy=sockets.target
-`
-
-// ControlSocketLimitUnit stops the socket from wedging itself: the relay
-// exits 1 on any connection that does not complete the frame (bad token,
-// a closed probe), and a run of such failures trips the service
-// start-limit, which marks the SOCKET unit failed and it then refuses all
-// connections — unrecoverable without a privileged reset-failed (the guest
-// user has no sudo). Zeroed limits keep the socket listening.
-const ControlSocketLimitUnit = `[Socket]
-TriggerLimitIntervalSec=0
-TriggerLimitBurst=0
-`
-
-// ControlServiceLimitUnit zeroes the service start-limit for the same
-// reason: a failed relay run must not take the control socket down with
-// it. The token, not the rate limiter, is the auth boundary.
-const ControlServiceLimitUnit = `[Service]
-StartLimitIntervalSec=0
-StartLimitBurst=0
-`
-
-// ControlServiceUnit runs one relay per connection as the baked VM user;
-// bolt-rundir owns /run/user/1000 in these headless guests. /bin/sh <file>
-// (not direct exec) so SELinux only needs read on the etc_t script.
+// ControlServiceUnit is a persistent ncat listener on tcp:4711 that forks
+// one relay per connection, with the connection wired to the relay's
+// stdin. Why ncat and not systemd socket-activation: a socket-activated
+// service receives the accepted connection on fd 3 (via LISTEN_FDS), NOT
+// on stdin — the relay reads the frame from stdin, which under socket
+// activation is /dev/null, so it exited 1 on the first read without ever
+// touching the frame (the connection sat in CLOSE-WAIT, unread). ncat
+// --sh-exec hands each connection to the script as fd 0, which is the
+// model the relay is written around. A failed relay (bad token, closed
+// probe) now kills only that connection's child; ncat keeps listening, so
+// there is no systemd start-limit wedge to reset.
+//
+// --sh-exec takes exactly ONE argument, so it points at the executable
+// script path (no spaces to split) rather than "sh /etc/qvm/qvm-ctl".
 func ControlServiceUnit(user string) string {
 	return fmt.Sprintf(`[Unit]
-Description=qlvm waypipe app server (one instance per dom0 run)
+Description=qlvm waypipe control listener (one relay per connection)
 Requires=bolt-rundir.service
 After=bolt-rundir.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=%s
 Environment=HOME=/var/home/%s
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/bin/sh /etc/qvm/qvm-ctl
+ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
 `, user, user)
 }
 
@@ -896,35 +890,29 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err := os.MkdirAll(sysd, 0o750); err != nil {
 		return err
 	}
-	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.socket"), []byte(ControlSocketUnit), 0o644); err != nil {
-		return err
-	}
 	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.service"), []byte(ControlServiceUnit(user)), 0o644); err != nil {
 		return err
 	}
-	// Start/trigger-limit drop-ins: a failed relay run must not wedge the
-	// socket (see ControlSocketLimitUnit).
-	for _, d := range []struct {
-		dir string
-		file string
-		body string
-	}{
-		{"qvm-ctl.socket.d", "10-no-trigger-limit.conf", ControlSocketLimitUnit},
-		{"qvm-ctl.service.d", "10-no-start-limit.conf", ControlServiceLimitUnit},
+	// Remove pre-ncat socket-activation leftovers so a template re-baked in
+	// place does not keep triggering the broken socket path (the relay
+	// read stdin, which socket activation leaves as /dev/null).
+	for _, stale := range []string{
+		"qvm-ctl.socket",
+		"qvm-ctl.socket.d/10-no-trigger-limit.conf",
+		"qvm-ctl.service.d/10-no-start-limit.conf",
+		"qvm-ctl.service.d/20-debug.conf",
+		"sockets.target.wants/qvm-ctl.socket",
 	} {
-		if err := os.MkdirAll(filepath.Join(sysd, d.dir), 0o750); err != nil {
-			return err
-		}
-		if err := fs.WriteFile(filepath.Join(sysd, d.dir, d.file), []byte(d.body), 0o644); err != nil {
-			return err
-		}
+		_ = os.Remove(filepath.Join(sysd, stale))
 	}
-	wants := filepath.Join(sysd, "sockets.target.wants")
+	_ = os.RemoveAll(filepath.Join(sysd, "qvm-ctl.socket.d"))
+	_ = os.RemoveAll(filepath.Join(sysd, "qvm-ctl.service.d"))
+	wants := filepath.Join(sysd, "multi-user.target.wants")
 	if err := os.MkdirAll(wants, 0o750); err != nil {
 		return err
 	}
-	_ = os.Remove(filepath.Join(wants, "qvm-ctl.socket"))
-	return os.Symlink("../qvm-ctl.socket", filepath.Join(wants, "qvm-ctl.socket"))
+	_ = os.Remove(filepath.Join(wants, "qvm-ctl.service"))
+	return os.Symlink("../qvm-ctl.service", filepath.Join(wants, "qvm-ctl.service"))
 }
 
 // BakeMounts bakes one per-share systemd .mount unit (plus its enablement

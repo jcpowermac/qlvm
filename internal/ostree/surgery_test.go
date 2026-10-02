@@ -477,22 +477,22 @@ func TestBakeControl(t *testing.T) {
 	assert.Equal(t, token+"\n", string(tok.data))
 	assert.Equal(t, os.FileMode(0o600), tok.mode, "the token must not be world-readable")
 
-	sock, ok := wrote[base+"/systemd/system/qvm-ctl.socket"]
-	require.True(t, ok)
-	assert.Equal(t, ControlSocketUnit, string(sock.data))
-
+	// The control channel is a persistent ncat listener service, not systemd
+	// socket activation: a socket-activated service gets the connection on
+	// fd 3 (LISTEN_FDS), not stdin, so the relay's first read hit /dev/null
+	// and the frame was never consumed (CLOSE-WAIT on 4711).
 	svc, ok := wrote[base+"/systemd/system/qvm-ctl.service"]
 	require.True(t, ok)
 	assert.Equal(t, ControlServiceUnit("user"), string(svc.data))
 	assert.Contains(t, string(svc.data), "User=user")
-	assert.Contains(t, string(svc.data), "ExecStart=/bin/sh /etc/qvm/qvm-ctl")
+	assert.Contains(t, string(svc.data), "ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl")
 
 	assertAllReleased(t, f, "/dev/loop3")
 	require.Contains(t, f.links, linkRec{
 		// links are recorded target-relative (no partRoot prefix)
-		path:   "ostree/deploy/os1/deploy/def456.0/etc/systemd/system/sockets.target.wants/qvm-ctl.socket",
-		target: "../qvm-ctl.socket",
-	}, "the socket must be enabled in sockets.target.wants")
+		path:   "ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/qvm-ctl.service",
+		target: "../qvm-ctl.service",
+	}, "the listener service must be enabled in multi-user.target.wants")
 }
 
 // bootFirstFS mimics the real bootc disk layout: the /boot partition

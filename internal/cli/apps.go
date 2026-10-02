@@ -31,11 +31,16 @@ const desktopGlob = "/usr/share/applications/*.desktop"
 // appsCmd is the rofi mode — bare `apps` driven by the ROFI_RETV/ROFI_INFO
 // env like the former bash appmenu helper — and the parent of `apps sync`.
 func appsCmd() *cobra.Command {
+	var connect string
 	cmd := &cobra.Command{
 		Use:   "apps",
 		Short: "Desktop app launcher: serve a rofi menu of the cached VM desktops (run rofi with -field 4, so ROFI_INFO carries the selected <vm>|<exec>)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := projection.ParseConnect(connect)
+			if err != nil {
+				return err
+			}
 			switch os.Getenv("ROFI_RETV") {
 			case "0":
 				out, err := apps.EmitRofi(appsCacheDir)
@@ -44,7 +49,7 @@ func appsCmd() *cobra.Command {
 				}
 				_, _ = io.WriteString(cmd.OutOrStdout(), out)
 			case "1":
-				if err := launchApp(cmd); err != nil {
+				if err := launchApp(cmd, c); err != nil {
 					return err
 				}
 			default:
@@ -53,6 +58,8 @@ func appsCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&connect, "connect", string(projection.ConnectSSH),
+		"waypipe channel for launched apps: ssh (default), tcp, vsock (see 'qlvm vm run')")
 	cmd.AddCommand(appsSyncCmd())
 	return cmd
 }
@@ -61,7 +68,7 @@ func appsCmd() *cobra.Command {
 // first when it is stopped, waiting for the guest's control socket, then
 // projecting the app (no SSH in the app path; the control channel is
 // token-authenticated).
-func launchApp(cmd *cobra.Command) error {
+func launchApp(cmd *cobra.Command, c projection.Connect) error {
 	ctx := cmd.Context()
 	x, err := xenctl.New()
 	if err != nil {
@@ -79,21 +86,25 @@ func launchApp(cmd *cobra.Command) error {
 			if err != nil {
 				return err
 			}
-			if m.Token == "" {
+			if c != projection.ConnectSSH && m.Token == "" {
 				return fmt.Errorf("vm %s predates the waypipe control channel: delete and recreate it (or re-bake the template)", name)
 			}
-			return projection.WaitControl(ctx, m.IP, time.Second, 60*time.Second)
+			return projection.WaitControl(ctx, m.IP, c, time.Second, 60*time.Second)
 		},
 		func(name, exec string) error {
 			m, err := vm.LoadMeta(vmDirOf(name))
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load(defaultConfigPath)
-			if err != nil {
-				return err
+			dom0IP := ""
+			if c == projection.ConnectTCP {
+				cfg, err := config.Load(defaultConfigPath)
+				if err != nil {
+					return err
+				}
+				dom0IP = cfg.Network.RouterIP
 			}
-			return projection.Run(ctx, projection.Deps{Waypipe: runWaypipe}, m, cfg.Network.RouterIP, exec,
+			return projection.Run(ctx, projection.Deps{Waypipe: runWaypipe}, m, c, dom0IP, exec,
 				os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	)

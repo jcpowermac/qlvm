@@ -104,8 +104,9 @@ func TestRun(t *testing.T) {
 				// test read would race its copy goroutine. Byte movement is
 				// stdlib io.Copy; the live smoke exercises it for real.
 				f := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-				require.Len(t, f, 4)
-				dc, err := net.DialTimeout("tcp4", "127.0.0.1:"+f[1], 5*time.Second)
+				require.Len(t, f, 5)
+				require.Equal(t, "tcp", f[1])
+				dc, err := net.DialTimeout("tcp4", "127.0.0.1:"+f[2], 5*time.Second)
 				if err != nil {
 					return
 				}
@@ -118,7 +119,7 @@ func TestRun(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(context.Background(), d, meta, dom0IP, "firefox --private", strings.NewReader(""), io.Discard, io.Discard)
+		done <- Run(context.Background(), d, meta, ConnectTCP, dom0IP, "firefox --private", strings.NewReader(""), io.Discard, io.Discard)
 	}()
 	select {
 	case err := <-done:
@@ -131,11 +132,12 @@ func TestRun(t *testing.T) {
 	assert.Equal(t, "10.100.1.5:4711", f.addr, "control dial must target the guest IP on the control port")
 	lines := strings.Split(strings.TrimRight(f.body, "\n"), "\n")
 	assert.Equal(t, "tok-tok-tok", lines[0], "line 1: token")
-	port, err := strconv.Atoi(lines[1])
+	assert.Equal(t, "tcp", lines[1], "line 2: mode")
+	port, err := strconv.Atoi(lines[2])
 	require.NoError(t, err)
-	assert.Greater(t, port, 0, "line 2: data port")
-	assert.Equal(t, dom0IP, lines[2], "line 3: dom0 return IP")
-	assert.Equal(t, "firefox --private", lines[3], "line 4: exec string")
+	assert.Greater(t, port, 0, "line 3: data port")
+	assert.Equal(t, dom0IP, lines[3], "line 4: dom0 return IP")
+	assert.Equal(t, "firefox --private", lines[4], "line 5: exec string")
 
 	socks, _ := os.ReadDir(d.TempDir)
 	assert.Len(t, socks, 0, "the waypipe socket must be cleaned up")
@@ -146,10 +148,41 @@ func TestWaitControl(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = ln.Close() }()
 
-	require.NoError(t, WaitControl(context.Background(), "127.0.0.1", 10*time.Millisecond, 2*time.Second))
+	require.NoError(t, WaitControl(context.Background(), "127.0.0.1", ConnectTCP, 10*time.Millisecond, 2*time.Second))
 
 	// TEST-NET-1: unroutable, must time out with a clean error.
-	err = WaitControl(context.Background(), "192.0.2.1", 10*time.Millisecond, 300*time.Millisecond)
+	err = WaitControl(context.Background(), "192.0.2.1", ConnectTCP, 10*time.Millisecond, 300*time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "4711")
+}
+
+func TestWaitPort(t *testing.T) {
+	assert.Equal(t, 22, waitPort(ConnectSSH))
+	assert.Equal(t, ControlPort, waitPort(ConnectTCP))
+	assert.Equal(t, ControlPort, waitPort(ConnectVsock))
+}
+
+func TestParseConnect(t *testing.T) {
+	for _, want := range []Connect{ConnectSSH, ConnectTCP, ConnectVsock} {
+		c, err := ParseConnect(string(want))
+		require.NoError(t, err)
+		assert.Equal(t, want, c)
+	}
+	_, err := ParseConnect("carrier-pigeon")
+	require.Error(t, err)
+}
+
+func TestSSHArgs(t *testing.T) {
+	args := SSHArgs("10.100.1.5", "firefox --private")
+	assert.Equal(t, []string{"--xwls", "ssh",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"user@10.100.1.5", "firefox", "--private"}, args)
+
+	// Empty exec: waypipe ssh with no command (remote login shell), the
+	// pre-control-channel behavior.
+	args = SSHArgs("10.100.1.5", "")
+	assert.Equal(t, "user@10.100.1.5", args[len(args)-1])
 }
