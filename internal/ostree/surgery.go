@@ -402,11 +402,18 @@ const rundirUnit = "[Unit]\n" +
 	"WantedBy=multi-user.target\n"
 
 // bakeHeadlessUnits bakes the spec §6.1 headless units into the deployment
-// /etc overlay: the bolt-rundir unit, a NetworkManager mask, and enables for
-// bolt-rundir + systemd-networkd. On stock bootc images NetworkManager is
-// enabled and would own the NIC before the baked 10-bolt.network could
-// apply, so networkd must be the unit that is enabled. (The resolved mask is
-// kept separately: networkd owns DNS.)
+// /etc overlay: the bolt-rundir unit, a NetworkManager mask, a bootc
+// auto-upgrade timer mask, and enables for bolt-rundir + systemd-networkd.
+// On stock bootc images NetworkManager is enabled and would own the NIC
+// before the baked 10-bolt.network could apply, so networkd must be the
+// unit that is enabled. (The resolved mask is kept separately: networkd
+// owns DNS.) The bootc-fetch-apply-updates.timer ships enabled in the
+// fedora-bootc base image: ~1-3h after boot it stages an upgrade and the
+// resulting "restart required" is a trap for qlvm VMs — the boot path is
+// owned by qlvm (per-VM kernel, template ostree= cmdline), so in-guest
+// upgrades never take effect, and the in-guest reboot they suggest
+// deterministically zombies the domain in ---sr- (no dom0 libxl event
+// handler). Mask it; kernel refresh belongs to `qlvm vm sync-kernel`.
 func bakeHeadlessUnits(fs FS, etc string) error {
 	dir := filepath.Join(etc, "systemd", "system")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -434,7 +441,10 @@ func bakeHeadlessUnits(fs FS, etc string) error {
 			return err
 		}
 	}
-	return maskUnit(dir, "NetworkManager.service")
+	if err := maskUnit(dir, "NetworkManager.service"); err != nil {
+		return err
+	}
+	return maskUnit(dir, "bootc-fetch-apply-updates.timer")
 }
 
 // SharedMount is one 9p share to bake into the VM guest as a systemd .mount
@@ -778,7 +788,7 @@ if [ "$mode" = vsock ]; then
   exit $?
 fi
 sock=/run/user/1000/qlvm-waypipe-$$.sock
-ncat -lkU "$sock" --sh-exec "ncat -w 120 $dom0 $port" &
+ncat -lkU "$sock" --sh-exec "ncat -w 120s $dom0 $port" &
 bridge=$!
 trap 'kill $bridge 2>/dev/null; rm -f "$sock"' EXIT
 # wait for the bridge socket so waypipe's first dial does not race it

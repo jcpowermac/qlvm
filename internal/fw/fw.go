@@ -7,6 +7,7 @@ package fw
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -25,6 +26,9 @@ const (
 	Dom0Zone = "dom0"
 	// Dom0Policy is the rich-rule egress policy applied to dom0.
 	Dom0Policy = "dom0-egress"
+	// DataInPolicy is the ingress policy admitting the waypipe TCP data
+	// channel (guest -> dom0 ephemeral data port, --connect tcp).
+	DataInPolicy = "dom0-data-in"
 )
 
 // Conn is the narrow firewalld 2.x surface Manager uses. Method names
@@ -88,10 +92,28 @@ func (m *Manager) EgressRules(e config.Egress, supernet string) []string {
 	return append(rules, e.ExtraRules...)
 }
 
-// Ensure creates the dom0 zone (ssh service) and the dom0-egress policy
-// (target DROP, priority 100, ingress host, egress any, egress rich rules),
-// skipping anything that already exists, then reloads if anything changed
-// (config-manager changes are permanent and take effect on reload).
+// DataInRules render the rich rules admitting the waypipe TCP data channel:
+// the guest's bridge dials the dom0's ephemeral data port, so allow TCP
+// from the VM supernet into the default ip_local_port_range. The OVN
+// gateway router SNATs all VM traffic to router_ip, so rules match BOTH
+// the supernet (no-SNAT fallback) and the router IP (SNAT in effect). The
+// port range is Linux's default ip_local_port_range — ponytail: if the
+// dom0 re-tunes that sysctl, widen the range or pin the data port.
+func DataInRules(supernet, routerIP string) []string {
+	port := `port port="32768-60999" protocol="tcp" accept`
+	rules := []string{fmt.Sprintf(`rule family="ipv4" source address="%s" %s`, supernet, port)}
+	if routerIP != "" {
+		rules = append(rules, fmt.Sprintf(`rule family="ipv4" source address="%s" %s`, routerIP, port))
+	}
+	return rules
+}
+
+// Ensure creates the dom0 zone (ssh service), the dom0-egress policy
+// (target DROP, priority 100, ingress host, egress any, egress rich rules)
+// and the dom0-data-in policy (target CONTINUE, ingress any, egress host,
+// data-channel rich rule), skipping anything that already exists, then
+// reloads if anything changed (config-manager changes are permanent and
+// take effect on reload).
 func (m *Manager) Ensure(ctx context.Context, cfg *config.Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -155,6 +177,34 @@ func (m *Manager) Ensure(ctx context.Context, cfg *config.Config) error {
 		changed = true
 	}
 
+	dpath, err := m.conn.PolicyByName(DataInPolicy)
+	if err != nil {
+		return err
+	}
+	if dpath == "" {
+		dpath, err = m.conn.AddPolicy(DataInPolicy, "CONTINUE", 0, []string{"ANY"}, []string{"HOST"})
+		if err != nil {
+			return err
+		}
+		changed = true
+	}
+	dhave, err := m.conn.PolicyRichRules(dpath)
+	if err != nil {
+		return err
+	}
+	var dmissing []string
+	for _, r := range DataInRules(cfg.VMSupernet(), cfg.Network.RouterIP) {
+		if !slices.Contains(dhave, r) {
+			dmissing = append(dmissing, r)
+		}
+	}
+	if len(dmissing) > 0 {
+		if err := m.conn.PolicySetRichRules(dpath, append(dhave, dmissing...)); err != nil {
+			return err
+		}
+		changed = true
+	}
+
 	if changed {
 		return m.conn.Reload()
 	}
@@ -178,9 +228,9 @@ func zoneSettingsDict(zone string) map[string]dbus.Variant {
 	var forwardPorts [][4]string
 	var sourcePorts [][2]string
 	return map[string]dbus.Variant{
-		"version":              dbus.MakeVariant(""),
-		"short":                dbus.MakeVariant(zone),
-		"description":          dbus.MakeVariant(""),
+		"version":     dbus.MakeVariant(""),
+		"short":       dbus.MakeVariant(zone),
+		"description": dbus.MakeVariant(""),
 		// The dom0 zone allows; egress control lives in the
 		// dom0-egress policy, not the zone target.
 		"target":               dbus.MakeVariant("ACCEPT"),

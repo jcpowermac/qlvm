@@ -76,6 +76,7 @@ func (f *fakeConn) Reload() error { f.log("Reload"); return nil }
 func testConfig() *config.Config {
 	return &config.Config{
 		Domains: []config.Domain{{Name: "alpha", Subnet: "10.100.1"}},
+		Network: config.Network{RouterIP: "192.0.2.1"},
 		Firewall: config.Firewall{Egress: config.Egress{
 			AllowDNS:      true,
 			AllowHTTPS:    true,
@@ -127,6 +128,10 @@ func TestEnsureIdempotent(t *testing.T) {
 		"AddPolicy:dom0-egress:DROP:100:HOST:ANY",
 		"PolicyRichRules:policy:dom0-egress",
 		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="4711" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
+		"PolicyByName:dom0-data-in",
+		"AddPolicy:dom0-data-in:CONTINUE:0:ANY:HOST",
+		"PolicyRichRules:policy:dom0-data-in",
+		`PolicySetRichRules:policy:dom0-data-in:rule family="ipv4" source address="10.100.0.0/16" port port="32768-60999" protocol="tcp" accept|rule family="ipv4" source address="192.0.2.1" port port="32768-60999" protocol="tcp" accept`,
 		"Reload",
 	}
 	assert.Equal(t, want, f.calls)
@@ -139,6 +144,8 @@ func TestEnsureIdempotent(t *testing.T) {
 		"ZoneQueryService:zone:dom0:ssh",
 		"PolicyByName:dom0-egress",
 		"PolicyRichRules:policy:dom0-egress",
+		"PolicyByName:dom0-data-in",
+		"PolicyRichRules:policy:dom0-data-in",
 	}, f.calls)
 }
 

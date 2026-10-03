@@ -293,6 +293,8 @@ func TestInstallStepOrder(t *testing.T) {
 		"ovn:apply",
 		"fw:PolicyRichRules:read",
 		"fw:PolicySetRichRules",
+		"fw:PolicyRichRules:read",
+		"fw:PolicySetRichRules",
 		"fw:Reload",
 		"nm:ConnZone:br-ex-iface",
 		"nm:zone:br-ex-iface",

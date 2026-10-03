@@ -23,11 +23,16 @@ type Config struct {
 
 // Network describes the dom0 physical LAN side of the config.
 type Network struct {
-	NIC           string   `toml:"nic"`
-	NICConnection string   `toml:"nic_connection"`
-	Gateway       string   `toml:"gateway"`
-	RouterIP      string   `toml:"router_ip"`
-	DNS           []string `toml:"dns"`
+	NIC           string `toml:"nic"`
+	NICConnection string `toml:"nic_connection"`
+	Gateway       string `toml:"gateway"`
+	RouterIP      string `toml:"router_ip"`
+	// Dom0IP is the dom0's uplink address (e.g. br-ex) that VMs dial
+	// back to for the waypipe TCP data channel. RouterIP is NOT this:
+	// it is the OVN gateway router IP, which does not forward to dom0
+	// host ports.
+	Dom0IP string   `toml:"dom0_ip"`
+	DNS    []string `toml:"dns"`
 }
 
 // Domain is one isolation domain; Subnet holds the first three octets (e.g. "10.100.1").
@@ -101,6 +106,9 @@ func (c *Config) Validate() error {
 		problems = append(problems, "network.router_ip is empty")
 	} else if net.ParseIP(c.Network.RouterIP) == nil {
 		problems = append(problems, fmt.Sprintf("network.router_ip %q is not a valid IP", c.Network.RouterIP))
+	}
+	if c.Network.Dom0IP != "" && net.ParseIP(c.Network.Dom0IP) == nil {
+		problems = append(problems, fmt.Sprintf("network.dom0_ip %q is not a valid IP", c.Network.Dom0IP))
 	}
 	if len(c.Network.DNS) == 0 {
 		problems = append(problems, "network.dns is empty")

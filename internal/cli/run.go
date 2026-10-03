@@ -53,7 +53,10 @@ func runCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				dom0IP = cfg.Network.RouterIP
+				if cfg.Network.Dom0IP == "" {
+					return fmt.Errorf("run %s: --connect tcp needs the dom0's uplink address — set network.dom0_ip in %s (the IP the VM dials for waypipe data; router_ip is the OVN gateway and does not forward to dom0 host ports)", name, defaultConfigPath)
+				}
+				dom0IP = cfg.Network.Dom0IP
 			}
 			// args[1:] joined verbatim is the guest-side command line;
 			// empty means the guest defaults to a login shell (parity with
