@@ -15,6 +15,38 @@ import (
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
+// assertVMRunning refuses to launch a waypipe session for a VM whose
+// domain is absent or not serving (dying zombie, paused, …) — otherwise
+// waypipe sits on a dead connection until its own timeout. running and
+// blocked are alive states (an idle HVM guest normally shows blocked).
+// A Xen open failure is tolerated (stub builds have no libxl; plain-ssh
+// projection still works without the check).
+func assertVMRunning(name string) error {
+	x, err := xenctlNew()
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = x.Close() }()
+	infos, err := x.List()
+	if err != nil {
+		return fmt.Errorf("run %s: cannot check VM state: %w", name, err)
+	}
+	for _, d := range infos {
+		if d.Name != name {
+			continue
+		}
+		switch d.State {
+		case "running", "blocked":
+			return nil
+		case "dying":
+			return fmt.Errorf("run %s: VM is a zombie (dying, never answers ACPI) — recover it with: qlvm vm restart %s", name, name)
+		default:
+			return fmt.Errorf("run %s: VM is %s — start it first: qlvm vm start %s", name, d.State, name)
+		}
+	}
+	return fmt.Errorf("run %s: VM is not running — start it first: qlvm vm start %s", name, name)
+}
+
 // runWaypipe execs waypipe — the only local process qlvm is allowed to
 // launch (design spec): `waypipe --socket <sock> client` receives the
 // guest's app GUI on the caller's Wayland session, so dom0's
@@ -43,6 +75,9 @@ func runCmd() *cobra.Command {
 			m, err := vm.LoadMeta(vmDirOf(name))
 			if err != nil {
 				return fmt.Errorf("run %s: %w", name, err)
+			}
+			if err := assertVMRunning(name); err != nil {
+				return err
 			}
 			if c != projection.ConnectSSH && m.Token == "" {
 				return fmt.Errorf("run %s: meta has no control token for --connect %s — the VM predates the waypipe control channel; delete and recreate it (or re-bake the template)", name, c)

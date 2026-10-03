@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jcpowermac/qlvm/internal/xenctl"
 )
 
 func TestRunWaypipeGuard(t *testing.T) {
@@ -16,6 +19,42 @@ func TestRunWaypipeGuard(t *testing.T) {
 	err := runWaypipe([]string{"ssh", "alpha"}, bytes.NewReader(nil), io.Discard, io.Discard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "WAYLAND_DISPLAY")
+}
+
+func TestAssertVMRunning(t *testing.T) {
+	old := xenctlNew
+	t.Cleanup(func() { xenctlNew = old })
+	domains := []xenctl.DomainInfo{
+		{Name: "alpha", State: "running"},
+		{Name: "beta", State: "blocked"},  // idle vCPU — the guest is alive
+		{Name: "gamma", State: "dying"},   // the ---sr- zombie
+		{Name: "delta", State: "paused"},
+	}
+	xenctlNew = func() (xenctl.Xen, error) {
+		return &fakeXen{domains: domains}, nil
+	}
+	require.NoError(t, assertVMRunning("alpha"), "running domain is allowed")
+	require.NoError(t, assertVMRunning("beta"), "blocked (idle) domain is alive")
+
+	err := assertVMRunning("zeta")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not running")
+	assert.Contains(t, err.Error(), "qlvm vm start zeta")
+
+	err = assertVMRunning("gamma")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "zombie")
+	assert.Contains(t, err.Error(), "qlvm vm restart gamma")
+
+	err = assertVMRunning("delta")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "paused")
+
+	// Stub build (New fails) skips the check — waypipe-over-ssh still works.
+	xenctlNew = func() (xenctl.Xen, error) {
+		return nil, errors.New("no libxl")
+	}
+	require.NoError(t, assertVMRunning("zeta"))
 }
 
 func TestSSHAuthKeys(t *testing.T) {

@@ -21,6 +21,7 @@ type fakeXen struct {
 	runningErr  error
 	shutdownErr error
 	destroyErr  error
+	domains     []xenctl.DomainInfo // List() returns this
 }
 
 func (f *fakeXen) CreateDomain(*vm.DomainSpec) error { return nil }
@@ -33,7 +34,7 @@ func (f *fakeXen) Shutdown(name string) error {
 	*f.events = append(*f.events, "shutdown:"+name)
 	return f.shutdownErr
 }
-func (f *fakeXen) List() ([]xenctl.DomainInfo, error) { return nil, nil }
+func (f *fakeXen) List() ([]xenctl.DomainInfo, error) { return f.domains, nil }
 func (f *fakeXen) Running(name string) (bool, error) {
 	if f.runningErr != nil {
 		return false, f.runningErr
