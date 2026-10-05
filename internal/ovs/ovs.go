@@ -592,6 +592,65 @@ func (r *Reconciler) DelVifPort(ctx context.Context, dev string) error {
 	})
 }
 
+// DropEx tears down the br-ex underlay topology (bridge, its ports and
+// interfaces, and the NIC's system port). Deleting the NIC's port makes
+// ovs-vswitchd release the NIC, returning it to plain netdev status so
+// networkd can DHCP it again — the migration failback path.
+func (r *Reconciler) DropEx(ctx context.Context, nic string) error {
+	var ops []ovsdb.Operation
+	del := func(m model.Model) error {
+		d, err := r.client.Where(m).Delete()
+		if err != nil {
+			return err
+		}
+		ops = append(ops, d...)
+		return nil
+	}
+	if p, ok := r.portByName(ctx, BrEx+"-port"); ok {
+		if err := del(&Port{UUID: p.UUID}); err != nil {
+			return fmt.Errorf("delete port %s: %w", BrEx+"-port", err)
+		}
+	}
+	if p, ok := r.portByName(ctx, nic+"-port"); ok {
+		if err := del(&Port{UUID: p.UUID}); err != nil {
+			return fmt.Errorf("delete port %s: %w", nic+"-port", err)
+		}
+	}
+	if b, ok := r.bridgeByName(ctx, BrEx); ok {
+		if err := del(&Bridge{UUID: b.UUID}); err != nil {
+			return fmt.Errorf("delete bridge %s: %w", BrEx, err)
+		}
+	}
+	var ifRows []Interface
+	if err := r.client.List(ctx, &ifRows); err != nil {
+		return err
+	}
+	for _, name := range []string{BrEx, nic} {
+		for _, i := range ifRows {
+			if i.Name == name {
+				if err := del(&Interface{UUID: i.UUID}); err != nil {
+					return fmt.Errorf("delete interface %s: %w", name, err)
+				}
+			}
+		}
+	}
+	send, err := expandOps(ops)
+	if err != nil {
+		return err
+	}
+	reply, err := r.client.Transact(ctx, send...)
+	if err != nil {
+		return err
+	}
+	if _, err := ovsdb.CheckOperationResults(reply, ops); err != nil {
+		return err
+	}
+	return r.waitForCache(ctx, func() bool {
+		_, ok := r.bridgeByName(ctx, BrEx)
+		return !ok
+	})
+}
+
 // StaleVifPorts returns the vif* ports attached to br-int whose interface
 // external-ids iface-id equals ifaceID but whose netdev no longer exists
 // on the dom0. Non-vif ports are ignored.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/fw"
-	"github.com/jcpowermac/qlvm/internal/nm"
+	"github.com/jcpowermac/qlvm/internal/netd"
 	"github.com/jcpowermac/qlvm/internal/ovn"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/setup"
@@ -54,7 +54,7 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 	if err != nil {
 		return nil, err
 	}
-	nmMgr, err := nm.NewSystem()
+	netdMgr, err := netd.NewSystem()
 	if err != nil {
 		return nil, err
 	}
@@ -79,9 +79,9 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 	return &setup.Plan{
 		OVN: nb,
 		OVS: ovsDB,
-		FW:  fwMgr,
-		NM:  nmMgr,
-		SD:  sdMgr,
+		FW:   fwMgr,
+		Netd: netdMgr,
+		SD:   sdMgr,
 		// ponytail: plain-dir fallback (spec §5.2); upgrade to a btrfs
 		// subvolume via an x/sys BTRFS_IOC_SUBVOL_CREATE ioctl if the
 		// subvolume's snapshot/usage isolation ever matters.

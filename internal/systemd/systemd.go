@@ -6,6 +6,7 @@ package systemd
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -26,9 +27,14 @@ type Conn interface {
 	// "static", "disabled").
 	UnitFileState(unit string) (string, error)
 	StartUnit(unit string) error
+	// StopUnit stops the unit (mode "replace").
+	StopUnit(unit string) error
 	// EnableUnit enables the unit's unit file (wraps Manager.EnableUnitFiles
 	// on live systemd, where the EnableUnit alias is gone).
 	EnableUnit(unit string) error
+	// MaskUnit masks the unit system-wide (wraps Manager.MaskUnitFiles):
+	// it may never be started, even by a dependent pull.
+	MaskUnit(unit string) error
 }
 
 // Manager drives units toward started-and-enabled.
@@ -85,6 +91,25 @@ func (m *Manager) EnableStart(ctx context.Context, unit string) error {
 	return nil
 }
 
+// EnsureMasked stops the unit and masks it system-wide, skipping the
+// work when it is already masked so a re-run is a no-op.
+func (m *Manager) EnsureMasked(ctx context.Context, unit string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, err := m.conn.UnitFileState(unit)
+	if err != nil {
+		return err
+	}
+	if state == "masked" {
+		return nil
+	}
+	if err := m.conn.StopUnit(unit); err != nil {
+		return fmt.Errorf("stop %s: %w", unit, err)
+	}
+	return m.conn.MaskUnit(unit)
+}
+
 // busConn is the godbus-backed Conn for a live bus (session or system).
 type busConn struct {
 	bus *dbus.Conn
@@ -126,6 +151,29 @@ func (s *busConn) StartUnit(unit string) error {
 	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
 		Call(sdService+".Manager.StartUnit", 0, unit, "replace").Store(&p)
 	return err
+}
+
+func (s *busConn) StopUnit(unit string) error {
+	var p dbus.ObjectPath
+	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
+		Call(sdService+".Manager.StopUnit", 0, unit, "replace").Store(&p)
+	return err
+}
+
+func (s *busConn) MaskUnit(unit string) error {
+	type maskResult struct{ Result, Name, Linked string }
+	var results []maskResult
+	err := s.bus.Object(sdService, dbus.ObjectPath(sdObject)).
+		Call(sdService+".Manager.MaskUnitFiles", 0, []string{unit}, false, true).Store(&results)
+	if err != nil {
+		return err
+	}
+	for _, r := range results {
+		if r.Result == "error" {
+			return fmt.Errorf("mask %s: %s", unit, r.Name)
+		}
+	}
+	return nil
 }
 
 func (s *busConn) EnableUnit(unit string) error {

@@ -1,6 +1,5 @@
 [network]
 nic = "enp1s0"                 # physical NIC
-nic_connection = "Wired connection 1"
 gateway = "192.168.1.1"        # physical LAN gateway
 router_ip = "192.168.1.200"    # unused LAN IP for the OVN SNAT router
 dns = ["1.1.1.1", "1.0.0.1"]

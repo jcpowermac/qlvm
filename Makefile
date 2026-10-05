@@ -63,7 +63,7 @@ container-build: container-builder
 	@mkdir -p $(HOME)/.cache/qlvm-build $(OUT)
 	podman rm -f qlvm-bld 2>/dev/null || true
 	podman create --name qlvm-bld \
-		-v $(CURDIR):/src:ro \
+		-v $(CURDIR):/src:z,ro \
 		-v $(HOME)/.cache/qlvm-build:/gc:z \
 		-e GOPATH=/gc -e GOCACHE=/gc/cache -e GOMODCACHE=/gc/pkg/mod \
 		-e 'CGO_LDFLAGS=-Wl,-rpath,$$ORIGIN' \

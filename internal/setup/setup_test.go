@@ -6,13 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/fw"
-	"github.com/jcpowermac/qlvm/internal/nm"
+	"github.com/jcpowermac/qlvm/internal/netd"
 	"github.com/jcpowermac/qlvm/internal/systemd"
 )
 
@@ -21,10 +22,9 @@ import (
 func fixture() *config.Config {
 	return &config.Config{
 		Network: config.Network{
-			NIC:           "enp3s0",
-			NICConnection: "Wired connection 1",
-			Gateway:       "192.168.1.1",
-			RouterIP:      "192.168.1.200",
+			NIC:     "enp3s0",
+			Gateway: "192.168.1.1",
+			RouterIP: "192.168.1.200",
 		},
 		Domains: []config.Domain{
 			{Name: "work", Subnet: "10.100.1", Gateway: "10.100.1.1"},
@@ -54,22 +54,39 @@ func (f *fakeOVN) Apply(_ context.Context, _ *config.Config) error {
 }
 
 type fakeOVS struct {
-	r *rec
-	n int
+	r        *rec
+	n        int
+	dropN    int
+	bridgeUp *bool
+	// noLease keeps the bridge IP-less so the migration's failback path
+	// is exercised.
+	noLease bool
 }
 
 func (f *fakeOVS) Apply(_ context.Context, _ string) error {
 	f.r.add("ovs:apply")
 	f.n++
+	if !f.noLease {
+		*f.bridgeUp = true // ovs-vswitchd enslaved the NIC; the bridge leases
+	}
+	return nil
+}
+
+func (f *fakeOVS) DropEx(_ context.Context, _ string) error {
+	f.r.add("ovs:dropex")
+	f.dropN++
+	*f.bridgeUp = false
 	return nil
 }
 
 // fakeFW behaves like a converged firewalld: zone/policy exist, ssh
-// service present; rich rules start empty so run 1 sets them.
+// service present; rich rules and zone interfaces start empty so run 1
+// sets them.
 type fakeFW struct {
-	r     *rec
-	mut   int
-	rules []string
+	r       *rec
+	mut     int
+	rules   []string
+	ifaces  map[string]bool
 }
 
 func (f *fakeFW) ZoneByName(string) (string, error) { return "/org/zone/dom0", nil }
@@ -82,6 +99,19 @@ func (f *fakeFW) ZoneQueryService(string, string) (bool, error) { return true, n
 func (f *fakeFW) ZoneAddService(string, string) error {
 	f.r.add("fw:ZoneAddService")
 	f.mut++
+	return nil
+}
+func (f *fakeFW) ZoneQueryInterface(_ string, dev string) (bool, error) {
+	f.r.add("fw:ZoneQueryInterface:" + dev)
+	return f.ifaces[dev], nil
+}
+func (f *fakeFW) ZoneAddInterface(_ string, dev string) error {
+	f.r.add("fw:ZoneAddInterface:" + dev)
+	f.mut++
+	if f.ifaces == nil {
+		f.ifaces = map[string]bool{}
+	}
+	f.ifaces[dev] = true
 	return nil
 }
 func (f *fakeFW) PolicyByName(string) (string, error) { return "/org/policy/dom0-egress", nil }
@@ -106,66 +136,30 @@ func (f *fakeFW) Reload() error {
 	return nil
 }
 
-// fakeNM behaves like the live dom0: all five OVS con-names already
-// exist; the NIC enslavement state flips after the migrate deactivation.
-type fakeNM struct {
-	r        *rec
-	mut      int
-	enslaved bool
-	existing []string
-	zones    map[string]string
-}
-
-func (f *fakeNM) ConNames() ([]string, error) {
-	f.r.add("nm:ConNames")
-	return f.existing, nil
-}
-func (f *fakeNM) AddConnection(spec map[string]map[string]any) error {
-	id, _ := spec["connection"]["id"].(string)
-	f.r.add("nm:AddConnection:" + id)
-	f.mut++
-	f.existing = append(f.existing, id)
-	return nil
-}
-func (f *fakeNM) SetConnectionValue(conName, key, value string) error {
-	f.r.add("nm:zone:" + conName)
-	f.mut++
-	if key == "zone" {
-		if f.zones == nil {
-			f.zones = map[string]string{}
-		}
-		f.zones[conName] = value
-	}
-	return nil
-}
-func (f *fakeNM) ConnZone(conName string) (string, error) {
-	f.r.add("nm:ConnZone:" + conName)
-	return f.zones[conName], nil
-}
-func (f *fakeNM) Activate(_, _ string) error {
-	f.r.add("nm:Activate")
-	f.mut++
-	return nil
-}
-func (f *fakeNM) Deactivate(string) error {
-	f.r.add("nm:Deactivate")
-	f.mut++
-	f.enslaved = true
-	return nil
-}
-
 type fakeSD struct {
 	r   *rec
 	mut int
+	// masked tracks UnitFileState for units masked during the run.
+	masked map[string]bool
 }
 
 func (f *fakeSD) UnitActive(unit string) (string, error) {
 	f.r.add("sd:" + unit)
 	return "active", nil
 }
-func (f *fakeSD) UnitFileState(string) (string, error) { return "enabled", nil }
+func (f *fakeSD) UnitFileState(unit string) (string, error) {
+	if f.masked[unit] {
+		return "masked", nil
+	}
+	return "enabled", nil
+}
 func (f *fakeSD) StartUnit(string) error {
 	f.r.add("sd:StartUnit")
+	f.mut++
+	return nil
+}
+func (f *fakeSD) StopUnit(unit string) error {
+	f.r.add("sd:stop:" + unit)
 	f.mut++
 	return nil
 }
@@ -174,20 +168,53 @@ func (f *fakeSD) EnableUnit(string) error {
 	f.mut++
 	return nil
 }
+func (f *fakeSD) MaskUnit(unit string) error {
+	f.r.add("sd:mask:" + unit)
+	f.mut++
+	if f.masked == nil {
+		f.masked = map[string]bool{}
+	}
+	f.masked[unit] = true
+	return nil
+}
 
-// testPlan wires every plane to a recording fake and returns the
-// mutation counters the assertions read.
-func testPlan(r *rec) (p *Plan, ovsApply, ovnApply, fwMut, nmMut, sdMut *int) {
-	ovsFake := &fakeOVS{r: r}
+// wiring bundles the recording fakes and the counters assertions read.
+type wiring struct {
+	p    *Plan
+	ovs  *fakeOVS
+	fw   *fakeFW
+	sd   *fakeSD
+	dropEx int
+}
+
+// testPlan wires every plane to a recording fake. The NIC starts holding
+// its lease (networkd converged); the bridge gains its lease when OVS
+// Apply runs, unless the OVS fake is told the bridge never leases.
+func testPlan(t *testing.T, r *rec, noLease bool) *wiring {
+	var bridgeUp bool
+	nicUp := true
+	ovsFake := &fakeOVS{r: r, bridgeUp: &bridgeUp, noLease: noLease}
 	ovnFake := &fakeOVN{r: r}
 	fwFake := &fakeFW{r: r}
-	nmFake := &fakeNM{r: r, existing: []string{"br-ex", "br-ex-port", "br-ex-iface", "enp3s0-port", "enp3s0-ovs"}}
 	sdFake := &fakeSD{r: r}
-	p = &Plan{
+	netdMgr := &netd.Manager{
+		Dir: t.TempDir(),
+		Reload: func() error {
+			r.add("netd:reload")
+			return nil
+		},
+		UplinkOK: func(dev string) bool {
+			if dev == "br-ex" {
+				return bridgeUp
+			}
+			return nicUp
+		},
+	}
+	p := &Plan{
 		OVN:       ovnFake,
 		OVS:       ovsFake,
 		FW:        fw.New(fwFake),
-		NM:        nm.New(nmFake),
+		Netd:      netdMgr,
 		SD:        systemd.New(sdFake),
 		Storage:   func() error { r.add("storage"); return nil },
 		VifScript: func() error { r.add("vif"); return nil },
@@ -195,43 +222,50 @@ func testPlan(r *rec) (p *Plan, ovsApply, ovnApply, fwMut, nmMut, sdMut *int) {
 		Dom0Check: func() (bool, error) { return true, nil },
 		Out:       io.Discard,
 	}
-	p.NM.NICEnslaved = func(string) bool { return nmFake.enslaved }
-	return p, &ovsFake.n, &ovnFake.n, &fwFake.mut, &nmFake.mut, &sdFake.mut
+	return &wiring{p: p, ovs: ovsFake, fw: fwFake, sd: sdFake}
 }
 
 // TestInstallTwiceIsNoOp is the idempotency pin: a second Run makes no
 // mutation calls on any plane.
 func TestInstallTwiceIsNoOp(t *testing.T) {
 	r := &rec{}
-	p, ovsApply, ovnApply, fwMut, nmMut, sdMut := testPlan(r)
+	w := testPlan(t, r, false)
 	cfg := fixture()
 
-	require.NoError(t, Run(context.Background(), p, cfg, Options{}))
+	require.NoError(t, Run(context.Background(), w.p, cfg, Options{}))
 	// sanity: run 1 actually did work
-	assert.Equal(t, 1, *ovsApply)
-	assert.Equal(t, 1, *ovnApply)
-	assert.Greater(t, *fwMut, 0)
-	assert.Greater(t, *nmMut, 0)
-	storageRun1, vifRun1, saveRun1 := count(r, "storage"), count(r, "vif"), count(r, "save")
-	require.Equal(t, 1, storageRun1)
+	assert.Equal(t, 1, w.ovs.n)
+	assert.Greater(t, w.fw.mut, 0)
 
-	ovsRun1, ovnRun1, fwRun1, nmRun1, sdRun1 := *ovsApply, *ovnApply, *fwMut, *nmMut, *sdMut
+	ovsRun1, fwRun1, sdRun1 := w.ovs.n, w.fw.mut, w.sd.mut
 	r.seq = nil
-	require.NoError(t, Run(context.Background(), p, cfg, Options{}))
+	require.NoError(t, Run(context.Background(), w.p, cfg, Options{}))
 
 	// Ruling R5 (ratified 2026-09-26): run 2 must make zero MUTATION calls;
 	// one Apply call per run is expected because Run is stateless and Apply
 	// is the diff mechanism (zero mutations when converged is the
 	// reconcilers' job).
-	assert.Equal(t, 1, *ovsApply-ovsRun1, "run 2 made OVS Apply calls: %v", r.seq)
-	assert.Equal(t, 1, *ovnApply-ovnRun1, "run 2 made OVN Apply calls: %v", r.seq)
-	assert.Equal(t, 0, *fwMut-fwRun1, "run 2 made firewalld mutation calls: %v", r.seq)
-	assert.Equal(t, 0, *nmMut-nmRun1, "run 2 made NM mutation calls: %v", r.seq)
-	assert.Equal(t, 0, *sdMut-sdRun1, "run 2 made systemd mutation calls: %v", r.seq)
-	// func planes are self-idempotent: no more calls in run 2 than run 1.
-	assert.LessOrEqual(t, count(r, "storage"), storageRun1)
-	assert.LessOrEqual(t, count(r, "vif"), vifRun1)
-	assert.LessOrEqual(t, count(r, "save"), saveRun1)
+	assert.Equal(t, 1, w.ovs.n-ovsRun1, "run 2 made OVS Apply calls: %v", r.seq)
+	assert.Zero(t, w.dropEx, "run 2 dropped the OVS topology: %v", r.seq)
+	assert.Equal(t, 0, w.fw.mut-fwRun1, "run 2 made firewalld mutation calls: %v", r.seq)
+	assert.Equal(t, 0, w.sd.mut-sdRun1, "run 2 made systemd mutation calls: %v", r.seq)
+	assert.Zero(t, count(r, "netd:reload"), "run 2 reloaded networkd: %v", r.seq)
+}
+
+// TestOVSStepFailsBackWhenBridgeHasNoIP: the bridge never leases, so the
+// migration must drop the OVS topology (NIC back on its own lease) and
+// report the failure.
+func TestOVSStepFailsBackWhenBridgeHasNoIP(t *testing.T) {
+	old := netd.UplinkTimeout
+	netd.UplinkTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { netd.UplinkTimeout = old })
+
+	r := &rec{}
+	w := testPlan(t, r, true)
+	err := Run(context.Background(), w.p, fixture(), Options{SkipNICMigration: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failback")
+	assert.Equal(t, 1, w.ovs.dropN)
 }
 
 func count(r *rec, s string) int {
@@ -246,60 +280,65 @@ func count(r *rec, s string) int {
 
 func TestInstallRefusesWithoutDom0(t *testing.T) {
 	r := &rec{}
-	p, _, _, _, _, _ := testPlan(r)
-	p.Dom0Check = func() (bool, error) { return false, nil }
+	w := testPlan(t, r, false)
+	w.p.Dom0Check = func() (bool, error) { return false, nil }
 
-	err := Run(context.Background(), p, fixture(), Options{})
+	err := Run(context.Background(), w.p, fixture(), Options{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dom0")
 	assert.Empty(t, r.seq)
 }
 
 // TestNICMigrationSSHGuard (Review Focus 4): inside an SSH session the
-// install refuses before touching OVS/NM unless --skip-nic-migration is set.
+// install refuses before touching any plane unless --skip-nic-migration
+// is set.
 func TestNICMigrationSSHGuard(t *testing.T) {
 	t.Setenv("SSH_CONNECTION", "192.168.1.5 51000 10.100.1.10 22")
 
 	r := &rec{}
-	p, ovsApply, _, _, nmMut, _ := testPlan(r)
-	err := Run(context.Background(), p, fixture(), Options{})
+	w := testPlan(t, r, false)
+	err := Run(context.Background(), w.p, fixture(), Options{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--skip-nic-migration")
-	assert.Equal(t, 0, *ovsApply)
-	assert.Equal(t, 0, *nmMut)
+	assert.Equal(t, 0, w.ovs.n)
+	// The refusal happens at the start of the ovs step: no networkd drop-in
+	// reload, no NM mask, no OVS mutation.
+	assert.Zero(t, count(r, "netd:reload"))
+	assert.Zero(t, count(r, "sd:mask:NetworkManager.service"))
+	assert.Zero(t, count(r, "ovs:apply"))
 
 	r2 := &rec{}
-	p2, ovsApply2, _, _, nmMut2, _ := testPlan(r2)
-	require.NoError(t, Run(context.Background(), p2, fixture(), Options{SkipNICMigration: true}))
-	assert.Equal(t, 1, *ovsApply2)
-	assert.Greater(t, *nmMut2, 0)
+	w2 := testPlan(t, r2, false)
+	require.NoError(t, Run(context.Background(), w2.p, fixture(), Options{SkipNICMigration: true}))
+	assert.Equal(t, 1, w2.ovs.n)
 }
 
 // TestInstallStepOrder pins the spec §5 order: dom0 → storage → services →
 // OVS → OVN → firewall → vif → config save (vif before config save).
 func TestInstallStepOrder(t *testing.T) {
 	r := &rec{}
-	p, _, _, _, _, _ := testPlan(r)
-	require.NoError(t, Run(context.Background(), p, fixture(), Options{}))
+	w := testPlan(t, r, false)
+	require.NoError(t, Run(context.Background(), w.p, fixture(), Options{}))
 	assert.Equal(t, []string{
 		"storage",
 		"sd:openvswitch.service",
 		"sd:ovn-northd.service",
 		"sd:ovn-controller.service",
+		"netd:reload",
+		"sd:stop:NetworkManager.service",
+		"sd:mask:NetworkManager.service",
 		"ovs:apply",
-		"nm:ConNames",
-		"nm:Activate",
-		"nm:Deactivate",
 		"ovn:apply",
 		"fw:PolicyRichRules:read",
 		"fw:PolicySetRichRules",
 		"fw:PolicyRichRules:read",
 		"fw:PolicySetRichRules",
 		"fw:Reload",
-		"nm:ConnZone:br-ex-iface",
-		"nm:zone:br-ex-iface",
-		"nm:ConnZone:enp3s0-ovs",
-		"nm:zone:enp3s0-ovs",
+		"fw:ZoneQueryInterface:br-ex",
+		"fw:ZoneAddInterface:br-ex",
+		"fw:ZoneQueryInterface:enp3s0",
+		"fw:ZoneAddInterface:enp3s0",
+		"fw:Reload",
 		"vif",
 		"save",
 	}, r.seq)

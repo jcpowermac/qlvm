@@ -179,20 +179,25 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   - Permanent state lives in `/etc/firewalld/{zones,policies}/*.xml` and
     survives daemon restarts: a broken permanent policy + `reload` is what
     severs egress. Rollback path: stop firewalld, move the XML aside, start.
-- **NetworkManager** (≥1.4x):
-  - Connection objects: `/org/freedesktop/NetworkManager/Settings/<n>`
-    (NOT `.../Settings/Connection/<n>`).
-  - `Settings.Connection.Update` takes **`a{sa{sv}}`** (setting name →
-    full property dict), not `a{sv}`; it replaces whole settings and
-    re-validates the connection, so partial dicts fail
-    ("connection.id/type: property is missing") and type-specific settings
-    (e.g. `ovs-interface`) are required for that connection type.
-  - `GetSetting`/`UpdateSetting`/`CommitChanges` are **gone** in current NM.
-  - Settings round-tripped through `map[string]dbus.Variant` lose structured
-    types (`ipv6.addresses` is `a(ayuay)` → rejected as `aav`).
-  - **Working path for a single property (zone): edit the keyfile in
-    `/etc/NetworkManager/system-connections/*.nmconnection` and call
-    `org.freedesktop.NetworkManager.Reload(1)`** (connections-only flag).
+- **dom0 networking: networkd, not NetworkManager (2026-10-05).** The
+  dom0 IP config is owned by systemd-networkd: install writes
+  `/etc/systemd/network/90-qlvm-{nic,br-ex}.network` (plain `DHCP=ipv4`
+  for the bare NIC and for br-ex), masks NetworkManager, and OVS
+  (ovsdb-native) enslaves the NIC into br-ex; whichever device holds the
+  uplink carries the dom0's single LAN address. Failback is
+  `ovs.Reconciler.DropEx` (remove the OVS topology; the NIC's own lease
+  resumes). NM was removed because its OVS plugin fights ovs-vswitchd:
+  it blocks system ports NM did not create, marks externally created
+  bridges unmanaged, and its connection validation is a black box (the
+  ethernet D-Bus type string is `802-3-ethernet`, not `ethernet`).
+  Known wart: the enslaved NIC still holds its own DHCP lease (networkd
+  has no match condition on kernel master), so the LAN sees a double
+  lease — harmless, and it makes failback instant.
+  - NM D-Bus history (why the old path died): `Settings.Connection.Update`
+    takes `a{sa{sv}}` and re-validates the whole connection; structured
+    types round-trip through `map[string]dbus.Variant` lose their
+    signatures; `GetSetting`/`UpdateSetting`/`CommitChanges` are gone in
+    current NM. Each of these cost a failed migration — see git history.
 
 ### OVN / guest network
 - **How it works (live-verified 2026-09-28).** Guest side: no DHCP, no

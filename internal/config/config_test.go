@@ -11,7 +11,6 @@ import (
 const baseTOML = `
 [network]
 nic = "enp1s0"
-nic_connection = "Wired connection 1"
 gateway = "192.168.1.1"
 router_ip = "192.168.1.200"
 dns = ["1.1.1.1", "1.0.0.1"]
@@ -62,8 +61,7 @@ func TestLoadFixture(t *testing.T) {
 	}
 
 	wantNet := Network{
-		NIC:           "enp1s0",
-		NICConnection: "Wired connection 1",
+		NIC:     "enp1s0",
 		Gateway:       "192.168.1.1",
 		RouterIP:      "192.168.1.200",
 		DNS:           []string{"1.1.1.1", "1.0.0.1"},

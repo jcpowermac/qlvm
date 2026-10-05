@@ -24,7 +24,7 @@ type Config struct {
 // Network describes the dom0 physical LAN side of the config.
 type Network struct {
 	NIC           string `toml:"nic"`
-	NICConnection string `toml:"nic_connection"`
+
 	Gateway       string `toml:"gateway"`
 	RouterIP      string `toml:"router_ip"`
 	// Dom0IP is the dom0's uplink address (e.g. br-ex) that VMs dial

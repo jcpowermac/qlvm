@@ -27,8 +27,17 @@ func (f *fakeConn) StartUnit(unit string) error {
 	f.calls = append(f.calls, "StartUnit:"+unit)
 	return nil
 }
+func (f *fakeConn) StopUnit(unit string) error {
+	f.calls = append(f.calls, "StopUnit:"+unit)
+	return nil
+}
 func (f *fakeConn) EnableUnit(unit string) error {
 	f.calls = append(f.calls, "EnableUnit:"+unit)
+	return nil
+}
+func (f *fakeConn) MaskUnit(unit string) error {
+	f.calls = append(f.calls, "MaskUnit:"+unit)
+	f.fileState = "masked"
 	return nil
 }
 
@@ -62,4 +71,22 @@ func TestEnableStartStartsAndEnables(t *testing.T) {
 		"StartUnit:qlvm-ovs.service",
 		"EnableUnit:qlvm-ovs.service",
 	}, f.calls)
+}
+
+func TestEnsureMaskedStopsAndMasks(t *testing.T) {
+	f := &fakeConn{active: "active", fileState: "enabled"}
+	m := New(f)
+	require.NoError(t, m.EnsureMasked(context.Background(), "NetworkManager.service"))
+	assert.Equal(t, []string{
+		"UnitFileState:NetworkManager.service",
+		"StopUnit:NetworkManager.service",
+		"MaskUnit:NetworkManager.service",
+	}, f.calls)
+}
+
+func TestEnsureMaskedSkipsWhenMasked(t *testing.T) {
+	f := &fakeConn{fileState: "masked"}
+	m := New(f)
+	require.NoError(t, m.EnsureMasked(context.Background(), "NetworkManager.service"))
+	assert.Equal(t, []string{"UnitFileState:NetworkManager.service"}, f.calls)
 }

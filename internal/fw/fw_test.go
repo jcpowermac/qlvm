@@ -18,9 +18,10 @@ import (
 type fakeConn struct {
 	calls    []string
 	zones    map[string]string // name -> object path
-	services map[string]bool   // zonePath+":"+svc
+	services   map[string]bool   // zonePath+":"+svc
 	policies map[string]string // name -> object path
-	rules    map[string][]string
+	rules      map[string][]string
+	zoneIfaces map[string]bool   // dev
 }
 
 func newFake() *fakeConn {
@@ -46,6 +47,18 @@ func (f *fakeConn) AddZone(zone string) (string, error) {
 func (f *fakeConn) ZoneQueryService(zonePath, svc string) (bool, error) {
 	f.log("ZoneQueryService:" + zonePath + ":" + svc)
 	return f.services[zonePath+":"+svc], nil
+}
+func (f *fakeConn) ZoneQueryInterface(zonePath, dev string) (bool, error) {
+	f.log("ZoneQueryInterface:" + dev)
+	return f.zoneIfaces[dev], nil
+}
+func (f *fakeConn) ZoneAddInterface(zonePath, dev string) error {
+	f.log("ZoneAddInterface:" + dev)
+	if f.zoneIfaces == nil {
+		f.zoneIfaces = map[string]bool{}
+	}
+	f.zoneIfaces[dev] = true
+	return nil
 }
 func (f *fakeConn) ZoneAddService(zonePath, svc string) error {
 	f.log("ZoneAddService:" + zonePath + ":" + svc)
@@ -129,7 +142,7 @@ func TestEnsureIdempotent(t *testing.T) {
 		"PolicyRichRules:policy:dom0-egress",
 		`PolicySetRichRules:policy:dom0-egress:rule family="ipv4" port port="53" protocol="udp" accept|rule family="ipv4" port port="53" protocol="tcp" accept|rule family="ipv4" port port="443" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="22" protocol="tcp" accept|rule family="ipv4" destination address="10.100.0.0/16" port port="4711" protocol="tcp" accept|rule family="ipv4" protocol value="icmp" accept|rule family="ipv4" port port="8080" protocol="tcp" accept`,
 		"PolicyByName:dom0-data-in",
-		"AddPolicy:dom0-data-in:CONTINUE:0:ANY:HOST",
+		"AddPolicy:dom0-data-in:CONTINUE:10:ANY:HOST",
 		"PolicyRichRules:policy:dom0-data-in",
 		`PolicySetRichRules:policy:dom0-data-in:rule family="ipv4" source address="10.100.0.0/16" port port="32768-60999" protocol="tcp" accept|rule family="ipv4" source address="192.0.2.1" port port="32768-60999" protocol="tcp" accept`,
 		"Reload",
@@ -155,4 +168,29 @@ func TestNotFoundErr(t *testing.T) {
 	require.Error(t, notFoundErr(e, "INVALID_POLICY"))
 	require.Error(t, notFoundErr(fmt.Errorf("boom"), "INVALID_ZONE"))
 	require.NoError(t, notFoundErr(nil, "INVALID_ZONE"))
+}
+
+// TestZoneInterfaces: first call attaches both devices and reloads; a
+// second call with the same devices is a no-op (queries only).
+func TestZoneInterfaces(t *testing.T) {
+	f := newFake()
+	f.zones["dom0"] = "zone:dom0"
+	m := New(f)
+	require.NoError(t, m.ZoneInterfaces(context.Background(), "dom0", []string{"br-ex", "enp3s0"}))
+	assert.Equal(t, []string{
+		"ZoneByName:dom0",
+		"ZoneQueryInterface:br-ex",
+		"ZoneAddInterface:br-ex",
+		"ZoneQueryInterface:enp3s0",
+		"ZoneAddInterface:enp3s0",
+		"Reload",
+	}, f.calls)
+
+	f.calls = nil
+	require.NoError(t, m.ZoneInterfaces(context.Background(), "dom0", []string{"br-ex", "enp3s0"}))
+	assert.Equal(t, []string{
+		"ZoneByName:dom0",
+		"ZoneQueryInterface:br-ex",
+		"ZoneQueryInterface:enp3s0",
+	}, f.calls)
 }

@@ -92,7 +92,7 @@ Adjust the compositor/greeter combination to what you installed. Reboot
 ## What this is not
 
 - qlvm does not automate hardening; `install` reconciles only the planes
-  it owns (OVS, OVN, firewalld, NetworkManager, services, storage, the
+  it owns (OVS, OVN, firewalld, systemd-networkd, services, storage, the
   vif-ovn script).
 - The `[firewall.egress]` section of `qlvm.toml` is the dom0 *egress*
   policy; this document covers *host* hardening (what runs on dom0 at

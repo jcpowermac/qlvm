@@ -40,6 +40,8 @@ type Conn interface {
 	AddZone(zone string) (string, error)
 	ZoneQueryService(zonePath, svc string) (bool, error)
 	ZoneAddService(zonePath, svc string) error
+	ZoneQueryInterface(zonePath, dev string) (bool, error)
+	ZoneAddInterface(zonePath, dev string) error
 	PolicyByName(name string) (string, error)
 	AddPolicy(name, target string, priority int32, ingressZones, egressZones []string) (string, error)
 	PolicyRichRules(policyPath string) ([]string, error)
@@ -54,6 +56,41 @@ type Manager struct {
 
 // New wraps a firewalld Conn.
 func New(c Conn) *Manager { return &Manager{conn: c} }
+
+// ZoneInterfaces attaches dev names to zone's interface list so firewalld
+// applies the zone's rules to those kernel devices. With systemd-networkd
+// owning the addresses there are no NM connection zones to lean on: the
+// OVS bridge (migrated state) and the NIC (pre-migration/failback state)
+// must both sit in the dom0 zone or inbound ssh to either address is
+// filtered by whatever zone claims them by default. Reloads so the change
+// is permanent and live; no-op when every device is already attached.
+func (m *Manager) ZoneInterfaces(ctx context.Context, zone string, devs []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	zpath, err := m.conn.ZoneByName(zone)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, dev := range devs {
+		has, err := m.conn.ZoneQueryInterface(zpath, dev)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if err := m.conn.ZoneAddInterface(zpath, dev); err != nil {
+			return fmt.Errorf("attach %s to zone %s: %w", dev, zone, err)
+		}
+		changed = true
+	}
+	if changed {
+		return m.conn.Reload()
+	}
+	return nil
+}
 
 // NewSystem wires Manager to the live firewalld on the system bus.
 func NewSystem() (*Manager, error) {
@@ -110,10 +147,15 @@ func DataInRules(supernet, routerIP string) []string {
 
 // Ensure creates the dom0 zone (ssh service), the dom0-egress policy
 // (target DROP, priority 100, ingress host, egress any, egress rich rules)
-// and the dom0-data-in policy (target CONTINUE, ingress any, egress host,
-// data-channel rich rule), skipping anything that already exists, then
-// reloads if anything changed (config-manager changes are permanent and
-// take effect on reload).
+// and the dom0-data-in policy (target CONTINUE, priority 10, ingress any,
+// egress host, data-channel rich rule), skipping anything that already
+// exists, then reloads if anything changed (config-manager changes are
+// permanent and take effect on reload).
+//
+// Priorities: firewalld 2.x evaluates policies lowest-number first and
+// reserves 0 (INVALID_PRIORITY otherwise), so data-in must sit below
+// dom0-egress's 100 — its ACCEPT for the VM data channels has to land
+// before the egress DROP allowlist gets the packet.
 func (m *Manager) Ensure(ctx context.Context, cfg *config.Config) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -182,7 +224,7 @@ func (m *Manager) Ensure(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	if dpath == "" {
-		dpath, err = m.conn.AddPolicy(DataInPolicy, "CONTINUE", 0, []string{"ANY"}, []string{"HOST"})
+		dpath, err = m.conn.AddPolicy(DataInPolicy, "CONTINUE", 10, []string{"ANY"}, []string{"HOST"})
 		if err != nil {
 			return err
 		}
@@ -312,6 +354,18 @@ func (s *systemConn) ZoneQueryService(zonePath, svc string) (bool, error) {
 func (s *systemConn) ZoneAddService(zonePath, svc string) error {
 	return s.bus.Object(fwService, dbus.ObjectPath(zonePath)).
 		Call(fwZoneIface+".addService", 0, svc).Store()
+}
+
+func (s *systemConn) ZoneQueryInterface(zonePath, dev string) (bool, error) {
+	var has bool
+	err := s.bus.Object(fwService, dbus.ObjectPath(zonePath)).
+		Call(fwZoneIface+".queryInterface", 0, dev).Store(&has)
+	return has, err
+}
+
+func (s *systemConn) ZoneAddInterface(zonePath, dev string) error {
+	return s.bus.Object(fwService, dbus.ObjectPath(zonePath)).
+		Call(fwZoneIface+".addInterface", 0, dev).Store()
 }
 
 func (s *systemConn) PolicyByName(name string) (string, error) {

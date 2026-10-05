@@ -8,7 +8,7 @@ configured through a single TOML file.
 `qlvm` is one cobra binary (`cmd/qlvm`) plus a small libxl hotplug helper
 (`cmd/qlvm-vif`, installed to `/etc/xen/scripts/vif-ovn`). It talks to every
 control plane through libraries — OVN/OVS via libovsdb, firewalld and
-NetworkManager over D-Bus, Xen via xenlight — and never shells out to a
+systemd (networkd/system units) over D-Bus, Xen via xenlight — and never shells out to a
 management CLI. The only local process it launches is `waypipe` (for
 `qlvm vm run` GUI sessions).
 
@@ -20,7 +20,7 @@ management CLI. The only local process it launches is `waypipe` (for
 sudo make container-build
 
 # 2. First install: writes /etc/qvm/qlvm.toml and drives the dom0
-#    (OVS bridges, OVN router/switches, firewall, NetworkManager,
+#    (OVS bridges, OVN router/switches, firewall, networkd config,
 #    services, storage tree, vif-ovn script) toward the declared state
 sudo qlvm install
 
@@ -52,7 +52,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 
 | Command | What it does |
 |---|---|
-| `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, NetworkManager, systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
+| `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, systemd-networkd (and masks NetworkManager), systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
 | `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB`, `--vcpus N`, `--config PATH` |
 | `qlvm vm start <name>` | Boot a prepared VM (seeds the per-VM kernel files from the template dir if missing, cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
@@ -102,8 +102,7 @@ editing it + re-running `install` is the change path (reconciliation).
 
 ```toml
 [network]
-nic = "enp1s0"                 # physical NIC
-nic_connection = "Wired connection 1"
+nic = "enp1s0"                 # physical NIC (install moves it into OVS br-ex)
 gateway = "192.168.1.1"        # physical LAN gateway
 router_ip = "192.168.1.200"    # unused LAN IP for the OVN SNAT router
 dns = ["1.1.1.1", "1.0.0.1"]
@@ -190,7 +189,7 @@ qlvm/
 │   ├── ovn/                    # libovsdb OVN_Northbound models + reconciler
 │   ├── ovs/                    # libovsdb Open_vSwitch models + reconciler
 │   ├── fw/                     # firewalld over D-Bus (rich-rule egress policy)
-│   ├── nm/                     # NetworkManager over D-Bus (NIC migration)
+│   ├── netd/                   # systemd-networkd drop-ins (DHCP on NIC + br-ex)
 │   ├── systemd/                # systemd over D-Bus (enable/start units)
 │   ├── template/               # template ensure: podman pull, ostree bake
 │   ├── ostree/                 # template bake: loop/mount, partition discovery
