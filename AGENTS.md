@@ -193,6 +193,7 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   Known wart: the enslaved NIC still holds its own DHCP lease (networkd
   has no match condition on kernel master), so the LAN sees a double
   lease — harmless, and it makes failback instant.
+  - **`systemd-networkd.service` is DISABLED by the distro preset** (`preset: disabled`), and the old install only ever *started* it via the drop-in reload — so the first reboot after install booted with no uplink until someone ran `systemctl restart systemd-networkd` (hit live 2026-10-06). The install now `EnableStart`s the unit at the top of the ovs step; if you change dom0 networking, check `systemctl is-enabled systemd-networkd` on the dom0.
   - NM D-Bus history (why the old path died): `Settings.Connection.Update`
     takes `a{sa{sv}}` and re-validates the whole connection; structured
     types round-trip through `map[string]dbus.Variant` lose their

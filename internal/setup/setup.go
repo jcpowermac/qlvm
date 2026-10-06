@@ -130,31 +130,38 @@ func Run(ctx context.Context, p *Plan, cfg *config.Config, opts Options) error {
 		if os.Getenv("SSH_CONNECTION") != "" && !opts.SkipNICMigration {
 			return fmt.Errorf("refusing to migrate %s during an SSH session (the uplink would move to %s with a new IP, dropping this session); re-run with --skip-nic-migration", cfg.Network.NIC, ovs.BrEx)
 		}
-		// 1. networkd owns the addresses from here: DHCP on the bare NIC
+		// 1. networkd is DISABLED by the distro preset: a plain start (which
+		//    the drop-in reload below does) never survives a reboot, so the
+		//    first reboot after install left the dom0 without an uplink.
+		//    Enable+start it before anything else in this step.
+		if err := p.SD.EnableStart(ctx, "systemd-networkd.service"); err != nil {
+			return err
+		}
+		// 2. networkd owns the addresses from here: DHCP on the bare NIC
 		//    (current + failback state) and on the OVS bridge (migrated
 		//    state). Files must exist before NM releases the NIC.
 		if err := p.Netd.Ensure(cfg.Network.NIC, ovs.BrEx); err != nil {
 			return err
 		}
-		// 2. NM's OVS plugin blocks system ports it did not create and marks
+		// 3. NM's OVS plugin blocks system ports it did not create and marks
 		//    external bridges unmanaged, so it must be gone before OVS.Apply
 		//    enslaves the NIC. Masked: nothing can pull it back.
 		if err := p.SD.EnsureMasked(ctx, "NetworkManager.service"); err != nil {
 			return err
 		}
-		// 3. networkd must hold the NIC's lease before the NIC is enslaved.
+		// 4. networkd must hold the NIC's lease before the NIC is enslaved.
 		//    (Failure here means the uplink is down and NM is masked; manual
 		//    recovery: unmask + start NetworkManager.)
 		if err := p.Netd.WaitUplink(ctx, cfg.Network.NIC); err != nil {
 			return fmt.Errorf("%w (NetworkManager is masked; unmask + start it to restore the uplink)", err)
 		}
-		// 4. OVS creates br-ex and the NIC's system port; ovs-vswitchd
+		// 5. OVS creates br-ex and the NIC's system port; ovs-vswitchd
 		//    enslaves the NIC itself. No-op when the topology already
 		//    exists (re-run).
 		if err := p.OVS.Apply(ctx, cfg.Network.NIC); err != nil {
 			return err
 		}
-		// 5. The bridge must reach the LAN. If it does not, drop the OVS
+		// 6. The bridge must reach the LAN. If it does not, drop the OVS
 		//    topology: the NIC is released back to networkd, which re-DHCPs
 		//    it — install must never leave the dom0 without an uplink.
 		if err := p.Netd.WaitUplink(ctx, ovs.BrEx); err != nil {

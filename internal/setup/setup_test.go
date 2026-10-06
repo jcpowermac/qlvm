@@ -141,6 +141,9 @@ type fakeSD struct {
 	mut int
 	// masked tracks UnitFileState for units masked during the run.
 	masked map[string]bool
+	// disabled reports UnitFileState "disabled" for listed units (the
+	// distro preset state of systemd-networkd).
+	disabled map[string]bool
 }
 
 func (f *fakeSD) UnitActive(unit string) (string, error) {
@@ -150,6 +153,9 @@ func (f *fakeSD) UnitActive(unit string) (string, error) {
 func (f *fakeSD) UnitFileState(unit string) (string, error) {
 	if f.masked[unit] {
 		return "masked", nil
+	}
+	if f.disabled[unit] {
+		return "disabled", nil
 	}
 	return "enabled", nil
 }
@@ -301,8 +307,9 @@ func TestNICMigrationSSHGuard(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--skip-nic-migration")
 	assert.Equal(t, 0, w.ovs.n)
-	// The refusal happens at the start of the ovs step: no networkd drop-in
-	// reload, no NM mask, no OVS mutation.
+	// The refusal happens at the start of the ovs step: no networkd
+	// enable/start, no drop-in reload, no NM mask, no OVS mutation.
+	assert.Zero(t, count(r, "sd:systemd-networkd.service"))
 	assert.Zero(t, count(r, "netd:reload"))
 	assert.Zero(t, count(r, "sd:mask:NetworkManager.service"))
 	assert.Zero(t, count(r, "ovs:apply"))
@@ -324,6 +331,7 @@ func TestInstallStepOrder(t *testing.T) {
 		"sd:openvswitch.service",
 		"sd:ovn-northd.service",
 		"sd:ovn-controller.service",
+		"sd:systemd-networkd.service",
 		"netd:reload",
 		"sd:stop:NetworkManager.service",
 		"sd:mask:NetworkManager.service",
@@ -342,6 +350,19 @@ func TestInstallStepOrder(t *testing.T) {
 		"vif",
 		"save",
 	}, r.seq)
+}
+
+// TestInstallEnablesNetworkd (regression): the distro preset leaves
+// systemd-networkd disabled and the old install only ever started it via
+// the drop-in reload, so the first reboot after install left the dom0
+// without an uplink. Install must enable the unit when it finds it
+// disabled.
+func TestInstallEnablesNetworkd(t *testing.T) {
+	r := &rec{}
+	w := testPlan(t, r, false)
+	w.sd.disabled = map[string]bool{"systemd-networkd.service": true}
+	require.NoError(t, Run(context.Background(), w.p, fixture(), Options{}))
+	assert.Equal(t, 1, count(r, "sd:EnableUnit"), "install did not enable systemd-networkd: %v", r.seq)
 }
 
 func TestIsDom0(t *testing.T) {
