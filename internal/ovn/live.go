@@ -35,6 +35,16 @@ func nbEndpoint() string {
 	return "unix:/var/run/ovn/ovnnb_db.sock"
 }
 
+// sbEndpoint is the live OVN Southbound OVSDB endpoint on dom0, the
+// standard OVN SB unix socket by default, overridable via
+// QVM_OVNSB_ENDPOINT (e.g. "tcp:127.0.0.1:6642").
+func sbEndpoint() string {
+	if v := os.Getenv("QVM_OVNSB_ENDPOINT"); v != "" {
+		return v
+	}
+	return "unix:/var/run/ovn/ovnsb_db.sock"
+}
+
 // NewLive dials the live OVN Northbound database and returns a monitoring
 // Reconciler over it.
 func NewLive(ctx context.Context) (*Reconciler, error) {
@@ -57,5 +67,29 @@ func NewLive(ctx context.Context) (*Reconciler, error) {
 		c.Close()
 		return nil, err
 	}
-	return New(c), nil
+
+	// The southbound Chassis table yields the live chassis name for the
+	// gateway router's options:chassis (OVN >= 26.03 northd compiles NAT
+	// flows only for routers carrying it; without it the guest's SNAT
+	// silently disappears and guest egress leaves the LAN unroutable).
+	sbModel, err := model.NewClientDBModel("OVN_Southbound", SBTables())
+	if err != nil {
+		c.Close()
+		return nil, fmt.Errorf("ovn sb schema: %w", err)
+	}
+	sbc, err := client.NewOVSDBClient(sbModel, client.WithEndpoint(sbEndpoint()))
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	if err := sbc.Connect(ctx); err != nil {
+		c.Close()
+		return nil, err
+	}
+	if _, err := sbc.MonitorAll(ctx); err != nil {
+		c.Close()
+		sbc.Close()
+		return nil, err
+	}
+	return New(c).WithSB(sbc), nil
 }

@@ -41,11 +41,22 @@ const (
 // cache-backed lookups stay fresh.
 type Reconciler struct {
 	client client.Client
+	// sb reads the OVN_Southbound Chassis table (the live chassis name for
+	// the gateway router's options:chassis). Nil in tests; without it the
+	// chassis option is simply not written.
+	sb client.Client
 }
 
 // New returns a Reconciler over the given OVN_Northbound client.
 func New(nbClient client.Client) *Reconciler {
 	return &Reconciler{client: nbClient}
+}
+
+// WithSB attaches the OVN_Southbound client used to resolve the dom0's live
+// chassis name; Apply marks the gateway router options:chassis with it.
+func (r *Reconciler) WithSB(sbClient client.Client) *Reconciler {
+	r.sb = sbClient
+	return r
 }
 
 // desiredUUIDs returns the deterministic named UUID of a desired object.
@@ -220,6 +231,23 @@ func strPtr(s string) *string { return &s }
 func (r *Reconciler) Apply(ctx context.Context, cfg *config.Config) error {
 	desired := Desired(cfg)
 
+	// OVN >= 26.03 northd only compiles NAT flows for routers it considers
+	// gateway routers, and it decides that from options:chassis alone
+	// (od->is_gw_router = !!options:chassis); a router without it silently
+	// loses its SNAT and every guest packet leaves the LAN with its private
+	// source address. Pin the live chassis name on the gateway router.
+	chassisID, err := r.sbChassisName(ctx)
+	if err != nil {
+		return err
+	}
+	if chassisID != "" {
+		for _, m := range desired {
+			if lr, ok := m.(*LogicalRouter); ok && lr.Name == RouterName {
+				lr.Options = map[string]string{"chassis": chassisID}
+			}
+		}
+	}
+
 	have, err := r.indexExisting(ctx)
 	if err != nil {
 		return err
@@ -238,45 +266,50 @@ func (r *Reconciler) Apply(ctx context.Context, cfg *config.Config) error {
 			missing = append(missing, m)
 		}
 	}
-	if len(missing) == 0 {
-		return nil
-	}
-
-	// Rewrite references in missing switches/routers: references to rows that
-	// already exist must use the real UUID; references to rows created in
-	// this transaction stay named and are expanded by the server.
-	rewire(missing, resolve)
-
 	// Existing switches/routers must be updated to reference the rows created
 	// in this transaction, otherwise those rows stay unreferenced and the
-	// database silently drops them (referential integrity).
-	attachOps, err := r.attachExistingRefs(desired, have, resolve)
+	// database silently drops them (referential integrity). This also carries
+	// the in-place drift repairs (e.g. options:chassis), so it must run even
+	// when every desired row already exists.
+	attachOps, err := r.attachExistingRefs(desired, have, resolve, chassisID)
 	if err != nil {
 		return err
 	}
-
 	var ops []ovsdb.Operation
-	for _, table := range []string{
-		"ACL", "NAT", "Logical_Router_Static_Route",
-		"Logical_Switch_Port", "Logical_Router_Port",
-		"Logical_Switch", "Logical_Router",
-	} {
-		var rows []model.Model
-		for _, m := range missing {
-			if tableOf(m) == table {
-				rows = append(rows, m)
-			}
-		}
-		if len(rows) == 0 {
-			continue
-		}
-		tableOps, err := r.client.Create(rows...)
-		if err != nil {
-			return err
-		}
-		ops = append(ops, tableOps...)
-	}
 	ops = append(ops, attachOps...)
+
+	if len(missing) == 0 {
+		if len(ops) == 0 {
+			return nil
+		}
+	} else {
+		// Rewrite references in missing switches/routers: references to rows
+		// that already exist must use the real UUID; references to rows
+		// created in this transaction stay named and are expanded by the
+		// server.
+		rewire(missing, resolve)
+
+		for _, table := range []string{
+			"ACL", "NAT", "Logical_Router_Static_Route",
+			"Logical_Switch_Port", "Logical_Router_Port",
+			"Logical_Switch", "Logical_Router",
+		} {
+			var rows []model.Model
+			for _, m := range missing {
+				if tableOf(m) == table {
+					rows = append(rows, m)
+				}
+			}
+			if len(rows) == 0 {
+				continue
+			}
+			tableOps, err := r.client.Create(rows...)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, tableOps...)
+		}
+	}
 
 	send, err := expandOps(ops)
 	if err != nil {
@@ -331,9 +364,11 @@ func rewireUUIDs(refs *[]string, resolve map[string]string) {
 
 // attachExistingRefs builds mutate-insert ops so that switches and routers
 // that already exist gain the desired references to rows created in the same
-// transaction. Without those ops the new rows are unreferenced and the
-// database drops them (referential integrity).
-func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]string, resolve map[string]string) ([]ovsdb.Operation, error) {
+// transaction (without those ops the new rows are unreferenced and the
+// database drops them, referential integrity). It also writes the gateway
+// router's options:chassis when it drifted (a router created before OVN
+// 26.03 has no options and no SNAT until it is set).
+func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]string, resolve map[string]string, chassisID string) ([]ovsdb.Operation, error) {
 	var ops []ovsdb.Operation
 	for _, m := range desired {
 		uuid, ok := have[identity(m)]
@@ -373,6 +408,22 @@ func (r *Reconciler) attachExistingRefs(desired []model.Model, have map[string]s
 			if err != nil {
 				return nil, err
 			}
+			if v.Name == RouterName && chassisID != "" && cur.Options["chassis"] != chassisID {
+				// The condition model must stay bare: Where() derives the
+				// match from the model's non-zero fields, so the new option
+				// value may only live on the mutation model.
+				whereModel := &LogicalRouter{UUID: uuid}
+				valModel := &LogicalRouter{UUID: uuid, Options: map[string]string{"chassis": chassisID}}
+				mutate, err := r.client.Where(whereModel).Mutate(valModel, model.Mutation{
+					Field:   &valModel.Options,
+					Mutator: ovsdb.MutateOperationInsert,
+					Value:   valModel.Options,
+				})
+				if err != nil {
+					return nil, err
+				}
+				ops = append(ops, mutate...)
+			}
 		}
 	}
 	return ops, nil
@@ -407,6 +458,37 @@ func (r *Reconciler) appendRefs(ops []ovsdb.Operation, m model.Model, field *[]s
 		return nil, err
 	}
 	return append(ops, mutate...), nil
+}
+
+// sbChassisName returns the dom0's live chassis name from the southbound
+// Chassis table, waiting briefly for ovn-controller to register it (a
+// fresh install starts the controller a step earlier; the row appears
+// within seconds). It returns "" when no SB client is attached (tests).
+func (r *Reconciler) sbChassisName(ctx context.Context) (string, error) {
+	if r.sb == nil {
+		return "", nil
+	}
+	const wait = 30 * time.Second
+	deadline := time.Now().Add(wait)
+	for {
+		var ch []SBChassis
+		if err := r.sb.List(ctx, &ch); err != nil {
+			return "", err
+		}
+		if len(ch) > 0 {
+			// Single-chassis dom0; the name is what northd only checks for
+			// presence, but the live value keeps the option honest.
+			return ch[0].Name, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("no chassis in OVN southbound after %s (is ovn-controller running?)", wait)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // cacheModel fetches a row from the client cache by UUID.

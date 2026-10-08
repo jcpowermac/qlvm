@@ -68,6 +68,14 @@ func TestWaitUplinkHonorsContextCancel(t *testing.T) {
 	assert.ErrorIs(t, m.WaitUplink(ctx, "br-ex"), context.Canceled)
 }
 
+// TestEnslavedAbsent reports false (not an error) for a device with no
+// sysfs entry.
+func TestEnslavedAbsent(t *testing.T) {
+	enslaved, err := Enslaved("no-such-iface-42")
+	require.NoError(t, err)
+	require.False(t, enslaved)
+}
+
 func read(t *testing.T, dir, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, name))

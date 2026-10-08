@@ -151,9 +151,18 @@ func Run(ctx context.Context, p *Plan, cfg *config.Config, opts Options) error {
 		}
 		// 4. networkd must hold the NIC's lease before the NIC is enslaved.
 		//    (Failure here means the uplink is down and NM is masked; manual
-		//    recovery: unmask + start NetworkManager.)
-		if err := p.Netd.WaitUplink(ctx, cfg.Network.NIC); err != nil {
-			return fmt.Errorf("%w (NetworkManager is masked; unmask + start it to restore the uplink)", err)
+		//    recovery: unmask + start NetworkManager.) In the already-migrated
+		//    state the NIC is enslaved to the bridge (kernel master) and no
+		//    longer carries its own lease, so there is nothing to wait for —
+		//    step 6 verifies the bridge uplink either way.
+		enslaved, err := netd.Enslaved(cfg.Network.NIC)
+		if err != nil {
+			return err
+		}
+		if !enslaved {
+			if err := p.Netd.WaitUplink(ctx, cfg.Network.NIC); err != nil {
+				return fmt.Errorf("%w (NetworkManager is masked; unmask + start it to restore the uplink)", err)
+			}
 		}
 		// 5. OVS creates br-ex and the NIC's system port; ovs-vswitchd
 		//    enslaves the NIC itself. No-op when the topology already

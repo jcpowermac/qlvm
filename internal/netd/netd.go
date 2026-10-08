@@ -88,6 +88,20 @@ func (m *Manager) Ensure(nic, br string) error {
 	return nil
 }
 
+// Enslaved reports whether dev has a kernel master (an OVS system port
+// shows "ovs-system"), i.e. its address already moved to the bridge and
+// the bare device no longer carries its own lease.
+func Enslaved(dev string) (bool, error) {
+	target, err := os.Readlink("/sys/class/net/" + dev + "/master")
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return target != "", nil
+}
+
 // WaitUplink polls until dev holds a global IPv4 address (its DHCP
 // lease) or the timeout expires.
 func (m *Manager) WaitUplink(ctx context.Context, dev string) error {

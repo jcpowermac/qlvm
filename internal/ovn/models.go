@@ -20,11 +20,12 @@ type LogicalSwitch struct {
 
 // LogicalRouter is a row in the Logical_Router table.
 type LogicalRouter struct {
-	UUID         string   `ovsdb:"_uuid"`
-	Name         string   `ovsdb:"name"`
-	Ports        []string `ovsdb:"ports"`
-	StaticRoutes []string `ovsdb:"static_routes"`
-	NAT          []string `ovsdb:"nat"`
+	UUID         string            `ovsdb:"_uuid"`
+	Name         string            `ovsdb:"name"`
+	Ports        []string          `ovsdb:"ports"`
+	StaticRoutes []string          `ovsdb:"static_routes"`
+	NAT          []string          `ovsdb:"nat"`
+	Options      map[string]string `ovsdb:"options"`
 }
 
 // LogicalRouterPort is a row in the Logical_Router_Port table.
@@ -90,6 +91,23 @@ type HAChassis struct {
 	UUID        string `ovsdb:"_uuid"`
 	ChassisName string `ovsdb:"chassis_name"`
 	Priority    int    `ovsdb:"priority"`
+}
+
+// SBChassis is a row in the OVN_Southbound Chassis table: the live chassis
+// registry ovn-controller maintains. Name is the chassis identifier
+// (a UUID on stock Fedora installs).
+type SBChassis struct {
+	UUID     string `ovsdb:"_uuid"`
+	Name     string `ovsdb:"name"`
+	Hostname string `ovsdb:"hostname"`
+}
+
+// SBTables is the OVN_Southbound table set qlvm reads; used to build the
+// read-side SB client model (Chassis is the only table install needs).
+func SBTables() map[string]model.Model {
+	return map[string]model.Model{
+		"Chassis": &SBChassis{},
+	}
 }
 
 // Tables maps the OVN_Northbound table names qlvm manages to their models.

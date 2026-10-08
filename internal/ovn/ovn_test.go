@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -275,6 +276,159 @@ func TestApplyIgnoresUnNamedACLs(t *testing.T) {
 	require.Equal(t, 3, c.Cache().Table("Logical_Router_Port").Len())
 }
 
+// newSBTestEnv stands up an in-process OVN_Southbound server (Chassis
+// table only) seeded with the given chassis rows, plus a monitoring client.
+func newSBTestEnv(t *testing.T, chassis ...SBChassis) (client.Client, func()) {
+	t.Helper()
+
+	f, err := os.Open(filepath.Join("testdata", "ovn-sb-chassis.ovsschema"))
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	schema, err := ovsdb.SchemaFromFile(f)
+	require.NoError(t, err)
+
+	clientModel, err := model.NewClientDBModel(schema.Name, SBTables())
+	require.NoError(t, err)
+	dbModel, errs := model.NewDatabaseModel(schema, clientModel)
+	require.Empty(t, errs)
+
+	logger := logr.Discard()
+	ovsDB := inmemory.NewDatabase(map[string]model.ClientDBModel{schema.Name: clientModel}, &logger)
+	srv, err := server.NewOvsdbServer(ovsDB, &logger, dbModel)
+	require.NoError(t, err)
+
+	sock := filepath.Join(t.TempDir(), "ovn-sb.sock")
+	go func() { _ = srv.Serve("unix", sock) }()
+	require.Eventually(t, srv.Ready, 2*time.Second, 10*time.Millisecond)
+
+	c, err := client.NewOVSDBClient(clientModel, client.WithEndpoint("unix:"+sock))
+	require.NoError(t, err)
+	require.NoError(t, c.Connect(context.Background()))
+	_, err = c.MonitorAll(context.Background())
+	require.NoError(t, err)
+
+	if len(chassis) > 0 {
+		var ops []ovsdb.Operation
+		for i := range chassis {
+			chassis[i].UUID = "q-sbchassis-" + chassis[i].Name
+			op, err := c.Create(&chassis[i])
+			require.NoError(t, err)
+			ops = append(ops, op...)
+		}
+		reply, err := c.Transact(context.Background(), ops...)
+		require.NoError(t, err)
+		_, err = ovsdb.CheckOperationResults(reply, ops)
+		require.NoError(t, err)
+	}
+
+	return c, func() {
+		c.Close()
+		srv.Close()
+	}
+}
+
+// TestApplyWritesRouterChassisOption: OVN >= 26.03 northd compiles NAT flows
+// only for routers with options:chassis set; without it the gateway's SNAT
+// silently disappears and guest egress is unroutable on the LAN.
+func TestApplyWritesRouterChassisOption(t *testing.T) {
+	nb, closeNB := newTestEnv(t)
+	defer closeNB()
+	sb, closeSB := newSBTestEnv(t, SBChassis{Name: "sb-chassis-1", Hostname: "fedora"})
+	defer closeSB()
+
+	cfg := fixtureConfig()
+	r := New(nb).WithSB(sb)
+	require.NoError(t, r.Apply(context.Background(), cfg))
+
+	router := findLogicalRouter(t, nb, RouterName)
+	require.Equal(t, "sb-chassis-1", router.Options["chassis"])
+}
+
+// TestAttachExistingRefsWritesChassisOption: a router created before the
+// option existed (or before OVN 26.03) must be updated in place. The
+// in-memory ovsdb server does not apply map-insert mutations (it reports
+// count=1 and changes nothing), so this asserts on the generated op; the
+// wire behavior itself is verified by a live install re-run on dom0.
+func TestAttachExistingRefsWritesChassisOption(t *testing.T) {
+	nb, closeNB := newTestEnv(t)
+	defer closeNB()
+
+	cfg := fixtureConfig()
+	require.NoError(t, New(nb).Apply(context.Background(), cfg))
+	router := findLogicalRouter(t, nb, RouterName)
+	require.NotContains(t, router.Options, "chassis")
+
+	have, err := (New(nb)).indexExisting(context.Background())
+	require.NoError(t, err)
+	desired := Desired(cfg)
+	resolve := make(map[string]string, len(desired))
+	for _, m := range desired {
+		uuid := desiredUUID(m)
+		if u, ok := have[identity(m)]; ok {
+			resolve[uuid] = u
+		} else {
+			resolve[uuid] = uuid
+		}
+	}
+
+	ops, err := New(nb).attachExistingRefs(desired, have, resolve, "sb-chassis-1")
+	require.NoError(t, err)
+
+	var found *ovsdb.Operation
+	for i := range ops {
+		if ops[i].Op == "mutate" && ops[i].Table == "Logical_Router" &&
+			len(ops[i].Mutations) == 1 && ops[i].Mutations[0].Column == "options" {
+			found = &ops[i]
+			break
+		}
+	}
+	require.NotNil(t, found, "expected a mutate op setting options:chassis on the existing router")
+	require.Len(t, found.Where, 1)
+	require.Equal(t, "_uuid", found.Where[0].Column)
+	require.Contains(t, fmt.Sprintf("%v", found.Where[0].Value), router.UUID)
+	m := found.Mutations[0]
+	require.Equal(t, ovsdb.MutateOperationInsert, m.Mutator)
+	require.Equal(t, "sb-chassis-1", castChassisOptionValue(t, m.Value))
+
+	// No drift (option already current) means no op.
+	have2, err := New(nb).indexExisting(context.Background())
+	require.NoError(t, err)
+	_ = have2
+	desired2 := Desired(cfg)
+	ops2, err := New(nb).attachExistingRefs(desired2, have, resolve, "")
+	require.NoError(t, err)
+	for _, op := range ops2 {
+		require.NotEqual(t, "mutate", op.Op, "no mutate op expected without a chassis id")
+	}
+}
+
+// castChassisOptionValue pulls the chassis key out of the mutation value
+// (a map in Go notation, an OvsMap after wire conversion).
+func castChassisOptionValue(t *testing.T, v any) string {
+	t.Helper()
+	switch mv := v.(type) {
+	case map[string]string:
+		return mv["chassis"]
+	case map[any]any:
+		return mv["chassis"].(string)
+	case ovsdb.OvsMap:
+		return mv.GoMap["chassis"].(string)
+	}
+	t.Fatalf("unexpected option value type %T", v)
+	return ""
+}
+
+func findLogicalRouter(t *testing.T, c client.Client, name string) LogicalRouter {
+	t.Helper()
+	for _, r := range countBy[LogicalRouter](t, c) {
+		if r.Name == name {
+			return r
+		}
+	}
+	t.Fatalf("router %q not found", name)
+	return LogicalRouter{}
+}
+
 func findLRPUUID(t *testing.T, c client.Client, name string) string {
 	t.Helper()
 	for _, p := range countBy[LogicalRouterPort](t, c) {
@@ -318,6 +472,21 @@ func findLogicalRouterPort(t *testing.T, c client.Client, name string) LogicalRo
 	}
 	require.FailNowf(t, "lrp not found", "lrp %q not found", name)
 	return LogicalRouterPort{}
+}
+
+func TestSbEndpoint(t *testing.T) {
+	t.Run("default is the unix socket", func(t *testing.T) {
+		t.Setenv("QVM_OVNSB_ENDPOINT", "")
+		if got := sbEndpoint(); got != "unix:/var/run/ovn/ovnsb_db.sock" {
+			t.Errorf("sbEndpoint() = %q, want unix socket default", got)
+		}
+	})
+	t.Run("env override", func(t *testing.T) {
+		t.Setenv("QVM_OVNSB_ENDPOINT", "tcp:127.0.0.1:6642")
+		if got := sbEndpoint(); got != "tcp:127.0.0.1:6642" {
+			t.Errorf("sbEndpoint() = %q, want env override", got)
+		}
+	})
 }
 
 func TestNBEndpoint(t *testing.T) {

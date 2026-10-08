@@ -190,9 +190,13 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   it blocks system ports NM did not create, marks externally created
   bridges unmanaged, and its connection validation is a black box (the
   ethernet D-Bus type string is `802-3-ethernet`, not `ethernet`).
-  Known wart: the enslaved NIC still holds its own DHCP lease (networkd
-  has no match condition on kernel master), so the LAN sees a double
-  lease — harmless, and it makes failback instant.
+  Old note (2026-10-05): the enslaved NIC was observed holding its own
+  DHCP lease in parallel. That lease is NOT guaranteed to persist (it had
+  gone by 2026-10-08), which broke `install` re-runs: the ovs step waited
+  for a bare-NIC lease that never came. The step now skips the NIC-lease
+  wait when the NIC already has a kernel master (`netd.Enslaved`, sysfs
+  `master` = `ovs-system` for OVS system ports) and relies on the
+  bridge-lease check + failback instead.
   - **`systemd-networkd.service` is DISABLED by the distro preset** (`preset: disabled`), and the old install only ever *started* it via the drop-in reload — so the first reboot after install booted with no uplink until someone ran `systemctl restart systemd-networkd` (hit live 2026-10-06). The install now `EnableStart`s the unit at the top of the ovs step; if you change dom0 networking, check `systemctl is-enabled systemd-networkd` on the dom0.
   - NM D-Bus history (why the old path died): `Settings.Connection.Update`
     takes `a{sa{sv}}` and re-validates the whole connection; structured
@@ -264,25 +268,47 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   ACPI stop (`qlvm vm stop`) replays fine — only unclean stops hit this.
   Loop-mount forensics reads are otherwise reliable; "empty reads" from a
   stale mount path were a separate (lost mount) issue, not xfs.
-- **OVN 26.03 localnet-router anti-spoofing breaks the legacy dom0→VM
-  router path (found live 2026-10-07).** The legacy design sent dom0
-  traffic to VM subnets over the uplink subnet via the OVN gateway router
-  (static route `10.100.0.0/16 via <gw> dev br-ex`). Current OVN adds a
-  `MAC_Binding` drop flow to table 79 on localnet-attached routers: a
-  guest frame with its own MAC leaving the router is dropped (diagnosis:
-  `ovs-ofctl dump-flows br-int table=79`, `ovn-trace work 'inport="foo",
-  arp, dl_dst=...dom0-mac'` → drop: MAC_Binding) while dom0→guest pings
-  succeed (asymmetric). The router also SNATs guest egress to `router_ip`,
-  so dom0 never sees guest source MAC/IP and can't learn a MAC_Binding
-  either — the design is dead, not tunable. **Current workaround
-  (MANUAL, not yet in the qlvm reconcilers):** the dom0 joins the work
-  LSW directly — OVS internal port `qvm-dom0` on br-int (no type, so the
-  kernel netdev exists), OVN LSP `dom0` (mac=dom0 NIC's MAC,
-  `10.100.1.2`), address on the kernel iface. `10.100.0.0/16 via <gw>`
-  replaced by per-VM-subnet /24 direct routes (or the LSW's /24). If it
-  regresses, check: `ovs-vsctl get interface qvm-dom0 admin_state`,
-  `ovn-nbctl lsp-list work`, and that no stale /16 static route survives.
-  Persisting this in the ovs/ovn reconcilers + networkd is the follow-up.
+- **OVN 26.03 silently drops the gateway's SNAT unless the router has
+  `options:chassis` (found + fixed live 2026-10-08; the guest's LAN
+  egress/DNS was dead on the 26.03.2 package from Oct 5).** In 26.03
+  northd decides `is_gw_router` from `Logical_Router.options:chassis`
+  being non-empty (`northd.c`: `od->is_gw_router =
+  !!smap_get(&od->nbr->options, "chassis")`) — the older localnet-peer
+  heuristic is gone. Without the option the NAT builder early-returns and
+  compiles zero SNAT flows; the failure is SILENT (no log line) and the
+  symptom is exactly "guest → LAN dead, dom0 → guest fine": every guest
+  egress packet leaves the LAN with its private source address and no
+  reply can route back. Diagnosis: `ovn-nbctl get logical_router gateway
+  options` empty while `ovn-sbctl dump-flows gateway` shows no
+  `lr_out_snat`/`ct_snat` row. The router's `router_ip` SNAT
+  (`10.100.0.0/16 → 172.31.12.200`) is the designed guest-egress path and
+  works again once northd compiles it. **Fixed forward (not pinned):**
+  the option carries the live chassis name — exactly what ovn-kubernetes
+  sets (`pkg/ovn/gateway.go`) on the same OVN build — and the qlvm ovn
+  reconciler now does it: `NewLive` opens the SB socket
+  (`unix:/var/run/ovn/ovnsb_db.sock`, `QVM_OVNSB_ENDPOINT` override) and
+  reads the chassis name from the SB `Chassis` table (bounded wait for
+  ovn-controller to register), fresh installs carry `Options` on the
+  router row, and `Apply`'s attach pass mutates `options:chassis` in place
+  on the existing row when it drifted — so a re-run of `qlvm install`
+  self-heals a router that predates the option (or an OVN upgrade that
+  changes the rule again). Gotchas learned the hard way: libovsdb
+  `Where(m).Mutate(m, …)` derives the match from the model's non-zero
+  fields, so the new value may live only on the mutation model, not the
+  condition model; and `count=1`/no-error replies prove NOTHING — the
+  client cache lags the monitor, so verify the effect with `ovn-nbctl get`
+  (server-side) and the SB flows. If egress regresses: check the option
+  first, then the SB `lr_out_snat` row, then `ovn-trace gateway 'ip, ip4
+  == 10.100.x.x/1.1, outport="gw-external"'` for the `ct_snat` action
+  (26.03 trace syntax: positional datapath, `&&` separators in the
+  microflow). NB: table 79's `MAC_CACHE_USE` rows on localnet routers are
+  harmless usage counters (resubmit semantics), not a drop — an earlier
+  read of them as the cause was wrong. The dom0 also still joins the work LSW directly (STILL MANUAL, not in the
+  qlvm reconcilers: `qvm-dom0` OVS port on br-int + LSP `dom0`
+  `10.100.1.2` + per-subnet /24 kernel routes) so that guest→dom0 replies
+  (e.g. the waypipe tcp/vsock data port dials) land on an address the dom0
+  owns, since the router SNATs guest egress to `router_ip`; that part is
+  unchanged and separate from the SNAT fix.
 - **Guest account is `user`, not the dom0's username.** The template
   bakes the dom0's pubkey into `/var/home/user/.ssh/authorized_keys`
   (see the SSH section below); ssh as `user@<vm-ip>`. SSHing as the
