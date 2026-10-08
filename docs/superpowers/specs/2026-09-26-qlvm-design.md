@@ -86,48 +86,51 @@ standalone script (folded into `qlvm apps`), all NFS code.
 
 ## 4. Configuration
 
-Single source of truth: `/etc/qvm/qlvm.toml` (TOML). `install` writes it;
+Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). `install` writes it;
 editing it + re-running `install` is the change path (reconciliation).
 
-```toml
-[network]
-nic = "enp1s0"                 # physical NIC
-nic_connection = "Wired connection 1"
-gateway = "192.168.1.1"        # physical LAN gateway
-router_ip = "192.168.1.200"    # unused LAN IP for the OVN SNAT router
-dns = ["1.1.1.1", "1.0.0.1"]
+```yaml
+network:
+  nic: "enp1s0"                 # physical NIC
+  gateway: "192.168.1.1"        # physical LAN gateway
+  router_ip: "192.168.1.200"    # unused LAN IP for the OVN SNAT router
+  dns: ["1.1.1.1", "1.0.0.1"]
 
-[[domain]]
-name = "work"
-subnet = "10.100.1"            # first three octets; VMs get .10, .11, ...
-gateway = "10.100.1.1"
+domain:
+  - name: "work"
+    subnet: "10.100.1"          # first three octets; VMs get .10, .11, ...
+    gateway: "10.100.1.1"
+  - name: "personal"
+    subnet: "10.100.2"
+    gateway: "10.100.2.1"
 
-[[domain]]
-name = "personal"
-subnet = "10.100.2"
-gateway = "10.100.2.1"
+vm:
+  user: "user"                  # VM user baked into templates
+  memory_mb: 4096
+  vcpus: 2
 
-[vm]
-user = "user"                  # VM user baked into templates
-memory_mb = 4096
-vcpus = 2
+disposable:
+  memory_mb: 4096
+  vcpus: 2
 
-[disposable]
-memory_mb = 4096
-vcpus = 2
-
-[firewall.egress]              # rich rules for the dom0-egress policy
-allow_dns = true
-allow_https = true
-allow_ssh_to_vms = true        # SSH restricted to the VM supernet
-allow_icmp = true
-extra_rules = []               # additional firewalld rich-rule strings
+firewall:
+  egress:                       # rich rules for the dom0-egress policy
+    allow_dns: true
+    allow_https: true
+    allow_ssh_to_vms: true      # SSH restricted to the VM supernet
+    allow_icmp: true
+    extra_rules: []             # additional firewalld rich-rule strings
 ```
+
+`memory_mb` is megabytes with a 64 MB floor (`MinMemoryMB`): config
+validation and `vm create` reject lower values — a `4` meant as 4 GB is the
+classic unit typo, and below the floor Xen cannot build the guest's memory
+map.
 
 Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
 
 - `disk.img` — reflink copy of the template
-- `meta.toml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
+- `meta.yaml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
 
 Storage layout:
 
@@ -137,7 +140,7 @@ Storage layout:
 │   ├── template.raw
 │   ├── vmlinuz  initramfs
 │   └── META     # image, digest, kernel version, root uuid, ostree path
-└── vms/<name>/{disk.img,meta.toml}
+└── vms/<name>/{disk.img,meta.yaml}
 ```
 
 ## 5. `install` — idempotent orchestration
@@ -175,7 +178,7 @@ will (TDD: integration test runs it twice).
      `extra_rules`)
 7. **vif script** — install `qlvm-vif` at `/etc/xen/scripts/vif-ovn` (copy
    binary, `chmod +x`).
-8. **Config** — write `/etc/qvm/qlvm.toml`.
+8. **Config** — write `/etc/qvm/qlvm.yaml`.
 
 ## 6. Templates and `vm create`
 
@@ -209,7 +212,7 @@ will (TDD: integration test runs it twice).
      repair, no exec.
 - **`template list`** — table of template dirs: dir name, image ref, digest,
   kernel version, size, which VMs reference it (resolved from
-  `vms/*/meta.toml`). Incomplete dirs (no META / no `template.raw`) get a
+  `vms/*/meta.yaml`). Incomplete dirs (no META / no `template.raw`) get a
   warning; an empty cache is not an error.
 - **`template delete [dir...] [--force]`** — remove the named template
   dirs (exact dir name or unique prefix, resolved like `vm create
@@ -224,7 +227,7 @@ will (TDD: integration test runs it twice).
    dir (the TEMPLATE column of `qlvm template list`): exact dir name or a
    unique prefix of one; zero or multiple candidates → hard error listing
    what exists. The template's META supplies the image ref + digest
-   persisted in the VM's `meta.toml`. **No podman, no pull, no bake, ever** —
+   persisted in the VM's `meta.yaml`. **No podman, no pull, no bake, ever** —
    a missing or incomplete template hard-fails pointing at
    `qlvm template create <ref>`. Consequence: if the upstream image changed,
    VMs keep the bake they were given; a newer bake is a new dir, created
@@ -247,11 +250,11 @@ will (TDD: integration test runs it twice).
    immutable after the bake), `extra` =
    `root=PARTUUID=… [rootflags] ostree=<path> systemd.default-target=multi-user.target
    console=hvc0`, disk `xvda` = `disk.img` (raw, rw), vif `mac=<MAC>,script=vif-ovn`,
-   `P9S` entries for each `--mount`) is stored in `meta.toml`, not booted.
+   `P9S` entries for each `--mount`) is stored in `meta.yaml`, not booted.
    Xen has no such thing as a stopped domain — "stopped" means "not created".
    `create` therefore prepares; `start` calls `DomainCreateNew` (mirrors the
    bash create-config-file-then-`xl create` split).
-5. **Side effects** — `meta.toml`; ssh-config block for `app` type (idempotent
+5. **Side effects** — `meta.yaml`; ssh-config block for `app` type (idempotent
    add, removed by `delete`).
 
 ## 7. Lifecycle
@@ -261,13 +264,13 @@ will (TDD: integration test runs it twice).
   existing files, e.g. a sync-kernel'd upgrade, are never replaced); cleanup
   stale OVS ports whose `external-ids:iface-id` matches the VM but whose
   netdev is gone (libovsdb scan + delete); then `DomainCreateNew` with the
-  stored config from `meta.toml` + template.
+  stored config from `meta.yaml` + template.
 - **stop** — `DomainShutdown` (ACPI).
 - **kill** — `DomainDestroy`.
 - **delete** — `DomainDestroy` (if running), remove OVN lswitch port, remove
   OVS port (stale-port cleanup as in start), remove `vms/<name>/` (reflink —
   only private extents reclaimed), remove ssh-config block (app type).
-- **`vm list`** — `ListDomain` (xenlight) joined with `meta.toml` files; columns
+- **`vm list`** — `ListDomain` (xenlight) joined with `meta.yaml` files; columns
   name, type (`app`/`disposable`), state, mem, vcpus; stopped VMs listed
   under "available".
 - **`vm run`** — `exec waypipe ssh <name> <app>…` (only local exec in the project;
@@ -347,12 +350,12 @@ Every feature lands test-first.
 
 - **Unit (default `go test ./...`)** — no root, no Xen:
   - domain/subnet parsing, IP/MAC allocation
-  - config TOML load/validate/render (idempotent re-write)
+  - config YAML load/validate/render (idempotent re-write)
   - OVN desired-state builder → expected model objects (switches, LRPs, ACLs,
     NAT, chassis) from a config fixture; firewall rich-rule generation
   - template dir layout + `META` parsing; ostree boot-path computation
   - libxl `DomainConfig` construction (disks/vif/p9/extra strings)
-  - `meta.toml` round-trip; ssh-config add/remove (golden files)
+  - `meta.yaml` round-trip; ssh-config add/remove (golden files)
   - networkd file rendering (golden)
   - rofi entry emission from a fake cache (golden)
   - desktop-file split (`.desktop` concatenation parsing)
@@ -374,7 +377,7 @@ qlvm/
 │   └── qlvm-vif/main.go      # vif hotplug binary
 ├── internal/
 │   ├── cli/                  # cobra commands, one file per subcommand
-│   ├── config/               # qlvm.toml load/validate/render
+│   ├── config/               # qlvm.yaml load/validate/render
 │   ├── xenctl/               # xenlight wrapper + DomainConfig builders
 │   ├── ovn/                  # libovsdb OVN_Northbound models + reconciler
 │   ├── ovs/                  # libovsdb OVSDB models
@@ -383,7 +386,7 @@ qlvm/
 │   ├── systemd/              # systemd D-Bus helpers
 │   ├── template/             # template.Ensure: podman, image-builder, ostree surgery
 │   ├── ostree/               # loop/mount helpers, partition discovery, dep-tree paths
-│   ├── vm/                   # create/start/stop/kill/delete/list, meta.toml
+│   ├── vm/                   # create/start/stop/kill/delete/list, meta.yaml
 │   ├── provisioner/          # dotfile sync (Runner seam; real: sftp over sshx)
 │   ├── sshx/                 # x/crypto/ssh helpers (sync-kernel, apps, wait)
 │   ├── apps/                 # desktop cache + rofi mode

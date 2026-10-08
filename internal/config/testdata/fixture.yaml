@@ -1,0 +1,30 @@
+network:
+  nic: "enp1s0"                 # physical NIC
+  gateway: "192.168.1.1"        # physical LAN gateway
+  router_ip: "192.168.1.200"    # unused LAN IP for the OVN SNAT router
+  dns: ["1.1.1.1", "1.0.0.1"]
+
+domain:
+  - name: "work"
+    subnet: "10.100.1"          # first three octets; VMs get .10, .11, ...
+    gateway: "10.100.1.1"
+  - name: "personal"
+    subnet: "10.100.2"
+    gateway: "10.100.2.1"
+
+vm:
+  user: "user"                  # VM user baked into templates
+  memory_mb: 4096
+  vcpus: 2
+
+disposable:
+  memory_mb: 4096
+  vcpus: 2
+
+firewall:
+  egress:                       # rich rules for the dom0-egress policy
+    allow_dns: true
+    allow_https: true
+    allow_ssh_to_vms: true      # SSH restricted to the VM supernet
+    allow_icmp: true
+    extra_rules: []             # additional firewalld rich-rule strings

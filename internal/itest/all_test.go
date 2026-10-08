@@ -39,7 +39,7 @@ const (
 	sbEndpoint  = "unix:/var/run/ovn/ovnsb_db.sock"       // OVN Southbound
 	ovsEndpoint = "unix:/var/run/openvswitch/db.sock" // Open_vSwitch
 
-	configPath = "/etc/qvm/qlvm.toml"
+	configPath = "/etc/qvm/qlvm.yaml"
 	stateRoot  = "/var/lib/qvm"
 )
 

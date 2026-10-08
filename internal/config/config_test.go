@@ -8,43 +8,42 @@ import (
 	"testing"
 )
 
-const baseTOML = `
-[network]
-nic = "enp1s0"
-gateway = "192.168.1.1"
-router_ip = "192.168.1.200"
-dns = ["1.1.1.1", "1.0.0.1"]
+const baseYAML = `
+network:
+  nic: "enp1s0"
+  gateway: "192.168.1.1"
+  router_ip: "192.168.1.200"
+  dns: ["1.1.1.1", "1.0.0.1"]
 
-[[domain]]
-name = "work"
-subnet = "10.100.1"
-gateway = "10.100.1.1"
+domain:
+  - name: "work"
+    subnet: "10.100.1"
+    gateway: "10.100.1.1"
+  - name: "personal"
+    subnet: "10.100.2"
+    gateway: "10.100.2.1"
 
-[[domain]]
-name = "personal"
-subnet = "10.100.2"
-gateway = "10.100.2.1"
+vm:
+  user: "user"
+  memory_mb: 4096
+  vcpus: 2
 
-[vm]
-user = "user"
-memory_mb = 4096
-vcpus = 2
+disposable:
+  memory_mb: 4096
+  vcpus: 2
 
-[disposable]
-memory_mb = 4096
-vcpus = 2
-
-[firewall.egress]
-allow_dns = true
-allow_https = true
-allow_ssh_to_vms = true
-allow_icmp = true
-extra_rules = []
+firewall:
+  egress:
+    allow_dns: true
+    allow_https: true
+    allow_ssh_to_vms: true
+    allow_icmp: true
+    extra_rules: []
 `
 
-func writeTOML(t *testing.T, body string) string {
+func writeYAML(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "qlvm.toml")
+	p := filepath.Join(t.TempDir(), "qlvm.yaml")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +51,7 @@ func writeTOML(t *testing.T, body string) string {
 }
 
 func TestLoadFixture(t *testing.T) {
-	cfg, err := Load("testdata/fixture.toml")
+	cfg, err := Load("testdata/fixture.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -98,14 +97,16 @@ func TestLoadFixture(t *testing.T) {
 
 func TestLoadValidateErrors(t *testing.T) {
 	cases := map[string]string{
-		"empty NIC":      strings.Replace(baseTOML, `nic = "enp1s0"`, `nic = ""`, 1),
-		"duplicate name": strings.Replace(baseTOML, `name = "personal"`, `name = "work"`, 1),
-		"4-octet subnet": strings.Replace(baseTOML, `subnet = "10.100.1"`, `subnet = "10.100.1.1"`, 1),
-		"MemoryMB=0":     strings.Replace(baseTOML, `memory_mb = 4096`, `memory_mb = 0`, 1),
+		"empty NIC":      strings.Replace(baseYAML, `nic: "enp1s0"`, `nic: ""`, 1),
+		"duplicate name": strings.Replace(baseYAML, `name: "personal"`, `name: "work"`, 1),
+		"4-octet subnet": strings.Replace(baseYAML, `subnet: "10.100.1"`, `subnet: "10.100.1.1"`, 1),
+		"MemoryMB=0":     strings.Replace(baseYAML, `memory_mb: 4096`, `memory_mb: 0`, 1),
+		// the GB-vs-MB typo that produced the Xen "segment padding" panic
+		"MemoryMB=4 (GB typo)": strings.Replace(baseYAML, `memory_mb: 4096`, `memory_mb: 4`, 1),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := Load(writeTOML(t, body))
+			cfg, err := Load(writeYAML(t, body))
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
@@ -116,12 +117,28 @@ func TestLoadValidateErrors(t *testing.T) {
 	}
 }
 
+func TestMemoryFloorMessage(t *testing.T) {
+	cfg, err := Load(writeYAML(t, strings.Replace(baseYAML, `memory_mb: 4096`, `memory_mb: 4`, 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate: expected error, got nil")
+	}
+	for _, want := range []string{"4", "64 MB", "megabytes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Validate error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
-	cfg, err := Load("testdata/fixture.toml")
+	cfg, err := Load("testdata/fixture.yaml")
 	if err != nil {
 		t.Fatalf("Load fixture: %v", err)
 	}
-	out := filepath.Join(t.TempDir(), "out.toml")
+	out := filepath.Join(t.TempDir(), "out.yaml")
 	if err := cfg.Save(out); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -135,7 +152,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestDomainLookup(t *testing.T) {
-	cfg, err := Load("testdata/fixture.toml")
+	cfg, err := Load("testdata/fixture.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -152,7 +169,7 @@ func TestDomainLookup(t *testing.T) {
 }
 
 func TestVMSupernet(t *testing.T) {
-	cfg, err := Load("testdata/fixture.toml")
+	cfg, err := Load("testdata/fixture.yaml")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

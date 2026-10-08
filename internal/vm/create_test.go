@@ -186,7 +186,7 @@ func TestCreateHappyPath(t *testing.T) {
 		}
 		require.Equal(t, []string{"-U generate /dev/loop9p2"}, xfsLines,
 			"xfs_admin -U generate runs exactly once, on the root partition only")
-		require.FileExists(t, filepath.Join(root, "vms/vm1/meta.toml"))
+		require.FileExists(t, filepath.Join(root, "vms/vm1/meta.yaml"))
 		require.Equal(t, 0, sshCalls, "disposable writes no ssh-config entry")
 		require.NoFileExists(t, filepath.Join(home, ".ssh", "config"))
 	})
@@ -330,8 +330,23 @@ func TestCreateReflinkFailureLeavesNoOrphanPort(t *testing.T) {
 	require.Contains(t, err.Error(), "same filesystem")
 	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qvm/templates/os-abc/template.raw", "ovn-del:vm1"},
 		events, "failed create must delete the OVN port")
-	require.NoFileExists(t, filepath.Join(root, "vms/vm1/meta.toml"))
+	require.NoFileExists(t, filepath.Join(root, "vms/vm1/meta.yaml"))
 	require.NoFileExists(t, filepath.Join(root, "vms/vm1/disk.img"))
+}
+
+func TestCreateMemoryFloor(t *testing.T) {
+	root := t.TempDir()
+	var events []string
+	d, _ := testDeps(t, root, &events, nil)
+	// --memory 4 means 4 MB (a GB-vs-MB typo); it must be refused before any
+	// OVN/disk side effects instead of dying later as a Xen boot panic.
+	_, err := Create(context.Background(), d, testCfg(),
+		Spec{Name: "vm1", Domain: "work", Type: "app", MemoryMB: 4})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "below the 64 MB minimum")
+	require.Contains(t, err.Error(), "megabytes")
+	require.Empty(t, events, "memory floor violation must not touch OVN")
+	require.NoFileExists(t, filepath.Join(root, "vms/vm1/meta.yaml"))
 }
 
 func TestCreateXFSAdminFailureLeavesNoOrphan(t *testing.T) {

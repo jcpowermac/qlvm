@@ -15,13 +15,27 @@ import (
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
+// privileged reports whether this process can open a libxl context.
+// Live-verified on the dom0 (Xen 4.21.2): an unprivileged
+// libxl_ctx_alloc fails ("cannot open libxc handle: Permission denied")
+// because the context needs the privileged xcl/libxc handle. Overridable
+// in tests (CI runs non-root).
+var privileged = func() bool { return os.Geteuid() == 0 }
+
 // assertVMRunning refuses to launch a waypipe session for a VM whose
 // domain is absent or not serving (dying zombie, paused, …) — otherwise
 // waypipe sits on a dead connection until its own timeout. running and
 // blocked are alive states (an idle HVM guest normally shows blocked).
-// A Xen open failure is tolerated (stub builds have no libxl; plain-ssh
-// projection still works without the check).
+// Two skip paths, both leaving plain-ssh projection working: stub builds
+// have no libxl (Xen open failure is tolerated), and unprivileged
+// callers (run is a user-session command — sudo is forbidden) have no
+// Xen state source at all: libxl needs root and /run/xenstored/socket
+// is 0600 root on the dom0, so the pre-check is skipped and a down VM
+// surfaces as waypipe/ssh's own failure instead.
 func assertVMRunning(name string) error {
+	if !privileged() {
+		return nil
+	}
 	x, err := xenctlNew()
 	if err != nil {
 		return nil

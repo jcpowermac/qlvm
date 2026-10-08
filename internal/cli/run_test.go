@@ -24,10 +24,16 @@ func TestRunWaypipeGuard(t *testing.T) {
 func TestAssertVMRunning(t *testing.T) {
 	old := xenctlNew
 	t.Cleanup(func() { xenctlNew = old })
+	// The check only runs for privileged callers (unprivileged users have
+	// no Xen state source); pretend to be root so the path is exercised
+	// in CI and on the dom0 alike.
+	oldPriv := privileged
+	t.Cleanup(func() { privileged = oldPriv })
+	privileged = func() bool { return true }
 	domains := []xenctl.DomainInfo{
 		{Name: "alpha", State: "running"},
-		{Name: "beta", State: "blocked"},  // idle vCPU — the guest is alive
-		{Name: "gamma", State: "dying"},   // the ---sr- zombie
+		{Name: "beta", State: "blocked"}, // idle vCPU — the guest is alive
+		{Name: "gamma", State: "dying"},  // the ---sr- zombie
 		{Name: "delta", State: "paused"},
 	}
 	xenctlNew = func() (xenctl.Xen, error) {
@@ -54,6 +60,15 @@ func TestAssertVMRunning(t *testing.T) {
 	xenctlNew = func() (xenctl.Xen, error) {
 		return nil, errors.New("no libxl")
 	}
+	require.NoError(t, assertVMRunning("zeta"))
+
+	// Unprivileged caller: libxl cannot open the context (dom0 gives a
+	// non-root process no Xen state source), so the check is skipped.
+	xenctlNew = func() (xenctl.Xen, error) {
+		t.Fatal("libxl must not be opened for an unprivileged caller")
+		return nil, nil
+	}
+	privileged = func() bool { return false }
 	require.NoError(t, assertVMRunning("zeta"))
 }
 

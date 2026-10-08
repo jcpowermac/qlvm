@@ -24,7 +24,7 @@ func createCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Prepare a VM from a baked template (OVN port, reflinked disk, meta.toml)",
+		Short: "Prepare a VM from a baked template (OVN port, reflinked disk, meta.yaml)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -82,10 +82,10 @@ func createCmd() *cobra.Command {
 	cmd.Flags().StringVar(&domain, "domain", "", "isolation domain (config section name; default: first in config)")
 	cmd.Flags().StringVar(&typ, "type", "app", "VM type: app or disposable")
 	cmd.Flags().StringVar(&tplRef, "template", "", "template dir to reference (exact dir name or unique prefix of `qlvm template list`'s TEMPLATE column; required)")
-	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MB (default: per-type config)")
+	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MB (minimum 64; default: per-type config)")
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPUs (default: per-type config)")
 	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil, "p9 mount host:guest (repeatable)")
-	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.toml")
+	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.yaml")
 	_ = cmd.MarkFlagRequired("template")
 	return cmd
 }

@@ -17,7 +17,7 @@ import (
 )
 
 // defaultConfigPath is where install reads and rewrites the config.
-const defaultConfigPath = "/etc/qvm/qlvm.toml"
+const defaultConfigPath = "/etc/qvm/qlvm.yaml"
 
 // installRoot is the per-VM/template state tree (spec §5.2).
 const installRoot = "/var/lib/qvm"
@@ -43,7 +43,7 @@ func installCmd() *cobra.Command {
 			return setup.Run(cmd.Context(), plan, cfg, setup.Options{SkipNICMigration: skipNICMigration})
 		},
 	}
-	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.toml")
+	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.yaml")
 	cmd.Flags().BoolVar(&skipNICMigration, "skip-nic-migration", false, "allow the NIC migration to proceed during an SSH session")
 	return cmd
 }
@@ -77,8 +77,8 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 		return nil, err
 	}
 	return &setup.Plan{
-		OVN: nb,
-		OVS: ovsDB,
+		OVN:  nb,
+		OVS:  ovsDB,
 		FW:   fwMgr,
 		Netd: netdMgr,
 		SD:   sdMgr,
@@ -86,8 +86,21 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 		// subvolume via an x/sys BTRFS_IOC_SUBVOL_CREATE ioctl if the
 		// subvolume's snapshot/usage isolation ever matters.
 		Storage: func() error {
-			for _, dir := range []string{installRoot, installRoot + "/templates", installRoot + "/vms"} {
-				if err := os.MkdirAll(dir, 0o750); err != nil {
+			// installRoot and vms/ stay user-traversable: `qlvm vm run` is a
+			// user-session command and must reach vms/<n>/meta.yaml (0644)
+			// without root. templates/ keeps 0750 — template.raw bakes the
+			// guest's authorized_keys and is root-only by design.
+			for dir, mode := range map[string]os.FileMode{
+				installRoot:                0o755, //nolint:gosec // G301: user-session read is the design
+				installRoot + "/vms":       0o755, //nolint:gosec // G301: ditto
+				installRoot + "/templates": 0o750,
+			} {
+				if err := os.MkdirAll(dir, mode); err != nil {
+					return err
+				}
+				// MkdirAll never re-modes an existing dir; Chmod makes a
+				// re-run of install repair the old 0750 ancestors.
+				if err := os.Chmod(dir, mode); err != nil {
 					return err
 				}
 			}

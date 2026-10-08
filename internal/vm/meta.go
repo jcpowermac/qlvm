@@ -1,58 +1,65 @@
 package vm
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
-// Meta is the per-VM state persisted as meta.toml in the VM's state dir
+// Meta is the per-VM state persisted as meta.yaml in the VM's state dir
 // (spec §6.5: create prepares, start boots from meta — Xen has no stopped
 // domains).
 type Meta struct {
-	Name     string    `toml:"name"`
-	Type     string    `toml:"type"`
-	Image    string    `toml:"image"`
-	Digest   string    `toml:"digest"`
-	Domain   string    `toml:"domain"`
-	IP       string    `toml:"ip"`
-	MAC      string    `toml:"mac"`
-	MemoryMB int       `toml:"memory_mb"`
-	VCPUs    int       `toml:"vcpus"`
-	Mounts   []Mount   `toml:"mounts"`
-	UUID     string    `toml:"uuid"`
-	Created  time.Time `toml:"created"`
+	Name     string    `yaml:"name"`
+	Type     string    `yaml:"type"`
+	Image    string    `yaml:"image"`
+	Digest   string    `yaml:"digest"`
+	Domain   string    `yaml:"domain"`
+	IP       string    `yaml:"ip"`
+	MAC      string    `yaml:"mac"`
+	MemoryMB int       `yaml:"memory_mb"`
+	VCPUs    int       `yaml:"vcpus"`
+	Mounts   []Mount   `yaml:"mounts"`
+	UUID     string    `yaml:"uuid"`
+	Created  time.Time `yaml:"created"`
 	// Token authenticates the waypipe control channel (guest :4711); the
 	// same secret is baked into the guest's /etc/qvm/waypipe-token.
-	Token string `toml:"token"`
+	Token string `yaml:"token"`
 }
 
 // Mount is one p9 share: Host path on dom0, Guest tag inside the VM.
 type Mount struct {
-	Host  string `toml:"host"`
-	Guest string `toml:"guest"`
+	Host  string `yaml:"host"`
+	Guest string `yaml:"guest"`
 }
 
-const metaFile = "meta.toml"
+const metaFile = "meta.yaml"
 
-// LoadMeta reads <vmDir>/meta.toml.
+// LoadMeta reads <vmDir>/meta.yaml.
 func LoadMeta(vmDir string) (*Meta, error) {
 	data, err := os.ReadFile(filepath.Join(vmDir, metaFile)) // #nosec G304 -- vmDir is the VM dir under the qlvm state root
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if _, legacy := os.Stat(filepath.Join(vmDir, "meta.toml")); legacy == nil {
+				return nil, fmt.Errorf("%s: legacy meta.toml found — convert it to meta.yaml (YAML; same fields) and retry", vmDir)
+			}
+		}
 		return nil, err
 	}
 	var m Meta
-	if err := toml.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
 }
 
-// Save writes the meta to <vmDir>/meta.toml (vmDir must exist).
+// Save writes the meta to <vmDir>/meta.yaml (vmDir must exist).
 func (m *Meta) Save(vmDir string) error {
-	data, err := toml.Marshal(m)
+	data, err := yaml.Marshal(m)
 	if err != nil {
 		return err
 	}

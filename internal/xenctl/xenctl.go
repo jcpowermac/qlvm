@@ -58,7 +58,7 @@ type DomainInfo struct {
 // the per-VM kernel files from the template dir if missing, removes stale
 // OVS vif ports left by a prior crashed start (duplicate iface-id would
 // break OVN binding), then creates the domain. vmDir is the VM state dir
-// holding meta.toml, disk.img and the per-VM kernel/initramfs.
+// holding meta.yaml, disk.img and the per-VM kernel/initramfs.
 func Start(ctx context.Context, x Xen, vp ovs.VifPorter, m *vm.Meta, vmDir string, tpl *template.Template) error {
 	running, err := x.Running(m.Name)
 	if err != nil {

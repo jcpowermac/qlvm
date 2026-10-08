@@ -51,7 +51,7 @@ type Spec struct {
 var sshConfigFn = AddSSHConfig
 
 // Create prepares a VM (spec §6): OVN port -> reflink disk -> per-VM XFS
-// UUIDs -> per-VM networkd bake -> per-mount 9p .mount units -> meta.toml ->
+// UUIDs -> per-VM networkd bake -> per-mount 9p .mount units -> meta.yaml ->
 // ssh-config (app only). Any failure after the port is added deletes the
 // port and the half-built VM dir, leaving no orphan port.
 func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*Meta, error) {
@@ -78,6 +78,11 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	default:
 		return nil, fmt.Errorf("type %q: must be app or disposable", spec.Type)
 	}
+	// Floor check on the RESOLVED value: a `--memory 4` meant as 4 GB would
+	// otherwise only fail later as a Xen hypervisor panic at boot time.
+	if memory < config.MinMemoryMB {
+		return nil, fmt.Errorf("%s: memory %d MB is below the %d MB minimum (the unit is megabytes — 4 GB is 4096)", spec.Name, memory, config.MinMemoryMB)
+	}
 	vmDir := filepath.Join(d.Root, "vms", spec.Name)
 	if _, err := LoadMeta(vmDir); err == nil {
 		return nil, fmt.Errorf("%s: VM already exists", spec.Name)
@@ -93,7 +98,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		_ = os.RemoveAll(vmDir)
 		return nil, err
 	}
-	// 0755 + world-readable meta.toml: `qlvm vm run` is a user-session command
+	// 0755 + world-readable meta.yaml: `qlvm vm run` is a user-session command
 	// and must LoadMeta without root (disk.img itself stays 0600).
 	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec // G301: user-session read is the design
 		return nil, fmt.Errorf("create %s: %w", spec.Name, err)

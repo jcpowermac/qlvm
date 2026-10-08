@@ -5,7 +5,6 @@
 package template
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/containers/podman/v5/pkg/bindings"
 	"github.com/containers/podman/v5/pkg/bindings/containers"
 	"github.com/containers/podman/v5/pkg/bindings/images"
 	"github.com/containers/podman/v5/pkg/specgen"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
+	"gopkg.in/yaml.v3"
 )
 
 // imageBuilderImage is the osbuild image-builder used to produce bootc raw images.
@@ -42,13 +41,13 @@ type Podman interface {
 // Template is a built OS template. RootFlags is "subvol=root" on btrfs hosts,
 // empty otherwise; OstreePath is the boot path inside the rootfs.
 type Template struct {
-	Dir        string `toml:"dir"`
-	Image      string `toml:"image"`
-	Digest     string `toml:"digest"`
-	KernelVer  string `toml:"kernel_ver"`
-	RootDev    string `toml:"root_dev"`
-	RootFlags  string `toml:"root_flags"`
-	OstreePath string `toml:"ostree_path"`
+	Dir        string `yaml:"dir"`
+	Image      string `yaml:"image"`
+	Digest     string `yaml:"digest"`
+	KernelVer  string `yaml:"kernel_ver"`
+	RootDev    string `yaml:"root_dev"`
+	RootFlags  string `yaml:"root_flags"`
+	OstreePath string `yaml:"ostree_path"`
 }
 
 // EnsureOpts configures Ensure.
@@ -198,19 +197,19 @@ func LoadMeta(dir string) (*Template, error) {
 		return nil, err
 	}
 	var t Template
-	if err := toml.Unmarshal(data, &t); err != nil {
+	if err := yaml.Unmarshal(data, &t); err != nil {
 		return nil, fmt.Errorf("parse META in %s: %w", dir, err)
 	}
 	return &t, nil
 }
 
-// SaveMeta writes the template's META file.
+// SaveMeta writes the template's META file (YAML).
 func (t *Template) SaveMeta(dir string) error {
-	var b bytes.Buffer
-	if err := toml.NewEncoder(&b).Encode(t); err != nil {
+	data, err := yaml.Marshal(t)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "META"), b.Bytes(), 0o600)
+	return os.WriteFile(filepath.Join(dir, "META"), data, 0o600) //nolint:gosec // G306: internal template path, 0600
 }
 
 // podmanClient is the real Podman over the podman REST socket (pkg/bindings).

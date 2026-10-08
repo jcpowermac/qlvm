@@ -19,13 +19,13 @@ management CLI. The only local process it launches is `waypipe` (for
 #    writes qlvm + qlvm-vif + bundled libyajl.so.2 to /usr/local/bin)
 sudo make container-build
 
-# 2. First install: writes /etc/qvm/qlvm.toml and drives the dom0
+# 2. First install: writes /etc/qvm/qlvm.yaml and drives the dom0
 #    (OVS bridges, OVN router/switches, firewall, networkd config,
 #    services, storage tree, vif-ovn script) toward the declared state
 sudo qlvm install
 
 # 3. Edit the config (NIC, gateway, domains, VM defaults, egress policy)
-$EDITOR /etc/qvm/qlvm.toml
+$EDITOR /etc/qvm/qlvm.yaml
 sudo qlvm install                   # reconciliation: edit + re-run is the change path
 
 # 4. Bake a template once: pull the image + ostree bake (~5 min).
@@ -53,13 +53,13 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | Command | What it does |
 |---|---|
 | `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, systemd-networkd (and masks NetworkManager), systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
-| `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB`, `--vcpus N`, `--config PATH` |
+| `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB` (minimum 64), `--vcpus N`, `--config PATH` |
 | `qlvm vm start <name>` | Boot a prepared VM (seeds the per-VM kernel files from the template dir if missing, cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
 | `qlvm vm kill <name>` | Force destroy |
 | `qlvm vm restart <name>` | Graceful stop, force-kill if it lingers, then start |
 | `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
-| `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.toml`) |
+| `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.yaml`) |
 | `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via waypipe (needs a dom0 Wayland session). `--connect ssh` (default) \| `tcp` \| `vsock` picks the channel |
 | `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
 | `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into the VM's own state dir (`vms/<name>/`) so a restart picks up a kernel the VM upgraded in place. Per-VM: a sibling VM of the same template keeps its own kernel; the template dir is never touched |
@@ -97,47 +97,51 @@ is no kernel-cmdline mechanism involved.
 
 ## Configuration
 
-Single source of truth: `/etc/qvm/qlvm.toml` (TOML). `install` writes it;
+Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). `install` writes it;
 editing it + re-running `install` is the change path (reconciliation).
 
-```toml
-[network]
-nic = "enp1s0"                 # physical NIC (install moves it into OVS br-ex)
-gateway = "192.168.1.1"        # physical LAN gateway
-router_ip = "192.168.1.200"    # unused LAN IP for the OVN SNAT router
-dns = ["1.1.1.1", "1.0.0.1"]
+```yaml
+network:
+  nic: "enp1s0"                 # physical NIC (install moves it into OVS br-ex)
+  gateway: "192.168.1.1"        # physical LAN gateway
+  router_ip: "192.168.1.200"    # unused LAN IP for the OVN SNAT router
+  dns: ["1.1.1.1", "1.0.0.1"]
 
-[[domain]]
-name = "work"
-subnet = "10.100.1"            # first three octets; VMs get .10, .11, ...
-gateway = "10.100.1.1"
+domain:
+  - name: "work"
+    subnet: "10.100.1"          # first three octets; VMs get .10, .11, ...
+    gateway: "10.100.1.1"
+  - name: "personal"
+    subnet: "10.100.2"
+    gateway: "10.100.2.1"
 
-[[domain]]
-name = "personal"
-subnet = "10.100.2"
-gateway = "10.100.2.1"
+vm:
+  user: "user"                  # VM user baked into templates
+  memory_mb: 4096
+  vcpus: 2
 
-[vm]
-user = "user"                  # VM user baked into templates
-memory_mb = 4096
-vcpus = 2
+disposable:
+  memory_mb: 4096
+  vcpus: 2
 
-[disposable]
-memory_mb = 4096
-vcpus = 2
-
-[firewall.egress]              # rich rules for the dom0-egress policy
-allow_dns = true
-allow_https = true
-allow_ssh_to_vms = true        # SSH restricted to the VM supernet
-allow_icmp = true
-extra_rules = []               # additional firewalld rich-rule strings
+firewall:
+  egress:                       # rich rules for the dom0-egress policy
+    allow_dns: true
+    allow_https: true
+    allow_ssh_to_vms: true      # SSH restricted to the VM supernet
+    allow_icmp: true
+    extra_rules: []             # additional firewalld rich-rule strings
 ```
+
+`memory_mb` is **megabytes** and has a 64 MB floor (config validation and
+`vm create` both reject values below it): `4` where `4096` was meant is the
+classic gigabyte-vs-megabyte typo, and below the floor Xen cannot even build
+the guest's memory map.
 
 Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
 
 - `disk.img` — reflink copy of the template
-- `meta.toml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
+- `meta.yaml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
 
 Storage layout:
 
@@ -147,7 +151,7 @@ Storage layout:
 │   ├── template.raw
 │   ├── vmlinuz  initramfs
 │   └── META     # image, digest, kernel version, root uuid, ostree path
-└── vms/<name>/{disk.img,meta.toml}
+└── vms/<name>/{disk.img,meta.yaml}
 ```
 
 ## Architecture
@@ -182,7 +186,7 @@ qlvm/
 │   └── qlvm-vif/main.go        # vif hotplug binary (reads xenstore, writes OVSDB)
 ├── internal/
 │   ├── cli/                    # cobra commands, one file per subcommand
-│   ├── config/                 # qlvm.toml load/validate/save
+│   ├── config/                 # qlvm.yaml load/validate/save
 │   ├── setup/                  # install: idempotent orchestration of the planes
 │   ├── xenctl/                 # xenlight wrapper (libxl cgo; stub without it)
 │   ├── xenstore/               # xenstore text-protocol client (for vif-ovn)
@@ -193,7 +197,7 @@ qlvm/
 │   ├── systemd/                # systemd over D-Bus (enable/start units)
 │   ├── template/               # template ensure: podman pull, ostree bake
 │   ├── ostree/                 # template bake: loop/mount, partition discovery
-│   ├── vm/                     # create/start/stop/kill/delete/list, meta.toml
+│   ├── vm/                     # create/start/stop/kill/delete/list, meta.yaml
 │   ├── provisioner/            # dotfile sync over sftp (Runner seam)
 │   │                           #   + sftp dotfile upload (Runner seam)
 │   ├── sshx/                   # x/crypto/ssh client (auth, wait, run, fetch)

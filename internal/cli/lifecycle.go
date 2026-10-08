@@ -207,7 +207,7 @@ func deleteCmd() *cobra.Command {
 func listCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List VMs: running from Xen, stopped from meta.toml",
+		Short: "List VMs: running from Xen, stopped from meta.yaml",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			x, err := xenctl.New()

@@ -269,7 +269,7 @@ func scanTemplates(root string) ([]tplRow, error) {
 	return rows, nil
 }
 
-// vmTemplateRefs maps template dir path -> sorted VM names whose meta.toml
+// vmTemplateRefs maps template dir path -> sorted VM names whose meta.yaml
 // (Image, Digest) resolves to that dir.
 func vmTemplateRefs(root string) map[string][]string {
 	refs := map[string][]string{}
