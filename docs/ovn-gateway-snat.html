@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How guest LAN egress works now — OVN 26.03 gateway SNAT + qlvm</title>
+<style>
+  :root {
+    --ink: #1a202c; --muted: #5a6474; --line: #d8dee9;
+    --fwd: #2563eb; --rep: #059669; --dom0: #9333ea; --bad: #dc2626;
+    --fix: #b45309; --bg-soft: #f4f6f9; --code-bg: #0f172a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: #fff; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 80px; }
+  h1 { font-size: 27px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 48px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 16.5px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  code { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  pre { background: var(--code-bg); color: #e2e8f0; border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 12.8px; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; color: inherit; }
+  .tldr { background: #eef4ff; border: 1px solid #c7d8fe; border-left: 5px solid var(--fwd); border-radius: 8px; padding: 14px 18px; margin: 20px 0; }
+  .warn { background: #fef3f2; border: 1px solid #fecaca; border-left: 5px solid var(--bad); border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .ok { background: #ecfdf5; border: 1px solid #a7f3d0; border-left: 5px solid var(--rep); border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); }
+  td.c, th.c { text-align: center; }
+  .fig { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 18px 0; }
+  .fig svg { width: 100%; height: auto; display: block; }
+  .caption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .badge { display: inline-block; border-radius: 12px; padding: 1px 9px; font-size: 12px; font-weight: 600; }
+  .b-bad { background: #fee2e2; color: #991b1b; }
+  .b-ok { background: #d1fae5; color: #065f46; }
+  .b-fix { background: #fef3c7; color: #92400e; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  ul { margin: 8px 0; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .small { font-size: 13px; color: var(--muted); }
+  .hl { background: #fef9c3; padding: 0 3px; border-radius: 3px; }
+  footer { margin-top: 60px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>How guest LAN egress works now</h1>
+<p class="small">OVN 26.03 gateway-router SNAT, the <code>options:chassis</code> requirement, and how <code>qlvm install</code> keeps it correct.
+Verified live on dom0 (OVN 26.03.2-122.fc44, Xen 4.21) — 2026-10-08. Working example: VM <code>foo</code>, 10.100.1.10, vif <code>vif13.0</code>.</p>
+
+<div class="tldr">
+<strong>TL;DR.</strong> Guest VMs reach the LAN through the OVN <em>gateway router</em>: traffic leaves the <code>work</code> logical switch,
+is routed by the <code>gateway</code> router, and is <strong>SNATed from 10.100.0.0/16 → 172.31.12.200</strong> before crossing the
+<code>localnet</code> port onto <code>br-ex</code>. OVN 26.03 silently skips NAT flow generation for any router whose
+<code>options:chassis</code> is empty — the old config had none, so the SNAT simply vanished and guest egress died.
+The fix is forward, not a workaround: <code>qlvm install</code> now reads the live chassis name from the OVN southbound
+<code>Chassis</code> table and pins <code>options:chassis</code> on the gateway router — at create time <em>and</em> as an
+in-place drift repair on every re-run.
+</div>
+
+<h2>1. What broke, and why it was silent</h2>
+
+<p>On Oct 5, 09:56 the dom0 picked up <code>ovn-26.03.2-122.fc44</code> (from 25.09.2). From then on: dom0 → VM worked,
+guest → dom0 <em>and</em> guest → LAN did not (pings left the guest but replies never came back; DNS answered "no servers
+could be reached"). Everything else was verifiably correct — OVN NB config right, guest networkd up on <code>enX0</code>,
+firewall out of the picture (inactive).</p>
+
+<p>The cause is a behavior change inside <strong>ovn-northd</strong> (the compiler from northbound config to logical flows):</p>
+
+<div class="cols">
+<div>
+<h3>OVN 25.09 (worked)</h3>
+<p>northd derived "is this a gateway router?" from the <em>topology</em>: a router with a localnet-attached peer port
+was treated as a gateway router. Its NAT rows were compiled into flows automatically.
+No explicit option was ever needed — qlvm's config never set one.</p>
+</div>
+<div>
+<h3>OVN 26.03 (broke) — <span class="badge b-bad">silent failure</span></h3>
+<pre><code>// northd/northd.c:5364 (full-rebuild
+// path repeats at :955)
+od-&gt;is_gw_router =
+  !!smap_get(&amp;od-&gt;nbr-&gt;options,
+             "chassis");
+
+// NAT builder guard, ~:18198
+if (!od-&gt;is_gw_router &amp;&amp;
+    vector_is_empty(&amp;od-&gt;l3dgw_ports))
+  return;  /* no NAT flows,
+              no log line */</code></pre>
+<p><code>is_gw_router</code> is now decided by <span class="hl"><code>Logical_Router.options:chassis</code> being non-empty</span>.
+Empty options → the builder early-returns → <strong>zero NAT flows, no error, no log</strong>. The router's <code>NAT</code>
+row still sits in the NB database looking perfectly healthy.</p>
+</div>
+</div>
+
+<div class="warn">
+<strong>Why it looked like a routing or firewall problem:</strong> with no SNAT, guest egress packets left the LAN carrying their
+private source (e.g. <code>10.100.1.10</code>). The LAN has no route for 10.100.0.0/16, so replies were dropped upstream —
+exactly the symptom of a dead return path. The dom0 itself was unaffected because its own traffic never needed the NAT.
+</div>
+
+<div class="fig">
+<svg viewBox="0 0 1000 305" role="img" aria-label="Northd decision diagram, 25.09 vs 26.03">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill:#f8fafc; stroke:#64748b; stroke-width:1.4; }
+    .boxB { fill:#eff6ff; stroke:#2563eb; stroke-width:1.6; }
+    .boxR { fill:#fef2f2; stroke:#dc2626; stroke-width:1.6; }
+    .boxG { fill:#ecfdf5; stroke:#059669; stroke-width:1.6; }
+    .t { font: 600 13.5px -apple-system, sans-serif; fill:#1a202c; }
+    .s { font: 12px -apple-system, sans-serif; fill:#475569; }
+    .mono { font: 11px ui-monospace, monospace; fill:#0f172a; }
+    .lbl { font: 600 12px -apple-system, sans-serif; }
+  </style>
+
+  <text x="18" y="26" class="t">OVN 25.09 (legacy)</text>
+  <rect x="18" y="40" width="215" height="44" rx="8" class="box"/>
+  <text x="125" y="58" text-anchor="middle" class="s">gateway router with</text>
+  <text x="125" y="74" text-anchor="middle" class="s">localnet-attached peer port</text>
+  <line x1="125" y1="84" x2="125" y2="112" stroke="#475569" stroke-width="1.6" marker-end="url(#ar)"/>
+  <rect x="18" y="116" width="215" height="40" rx="8" class="boxB"/>
+  <text x="125" y="141" text-anchor="middle" class="mono">is_gw_router = &lt;derived&gt;</text>
+  <line x1="125" y1="156" x2="125" y2="184" stroke="#059669" stroke-width="1.6" marker-end="url(#arG)"/>
+  <text x="135" y="175" class="lbl" fill="#059669">true</text>
+  <rect x="18" y="188" width="215" height="40" rx="8" class="boxG"/>
+  <text x="125" y="205" text-anchor="middle" class="s">NAT builder runs →</text>
+  <text x="125" y="220" text-anchor="middle" class="s">SNAT/UNSNAT flows compiled</text>
+  <line x1="125" y1="228" x2="125" y2="256" stroke="#059669" stroke-width="1.6" marker-end="url(#arG)"/>
+  <rect x="18" y="260" width="215" height="30" rx="8" class="boxG"/>
+  <text x="125" y="279" text-anchor="middle" class="s">guest egress works</text>
+
+  <text x="400" y="26" class="t">OVN 26.03 (current)</text>
+  <rect x="400" y="40" width="250" height="56" rx="8" class="box"/>
+  <text x="525" y="60" text-anchor="middle" class="s">gateway router — same topology,</text>
+  <text x="525" y="76" text-anchor="middle" class="s">but northd asks:</text>
+  <text x="525" y="92" text-anchor="middle" class="mono">options:chassis non-empty?</text>
+  <line x1="455" y1="96" x2="455" y2="128" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arR)"/>
+  <text x="352" y="118" class="lbl" fill="#dc2626">no (old config)</text>
+  <rect x="352" y="132" width="200" height="40" rx="8" class="boxR"/>
+  <text x="452" y="157" text-anchor="middle" class="mono">is_gw_router = false</text>
+  <line x1="452" y1="172" x2="452" y2="200" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arR)"/>
+  <rect x="352" y="204" width="200" height="44" rx="8" class="boxR"/>
+  <text x="452" y="222" text-anchor="middle" class="s">NAT builder early-returns</text>
+  <text x="452" y="238" text-anchor="middle" class="mono">0 flows · no log · no error</text>
+  <line x1="452" y1="248" x2="452" y2="258" stroke="#dc2626" stroke-width="1.6" marker-end="url(#arR)"/>
+  <rect x="352" y="260" width="200" height="30" rx="8" class="boxR"/>
+  <text x="452" y="279" text-anchor="middle" class="s">egress leaves w/ private src</text>
+
+  <line x1="650" y1="96" x2="678" y2="96" stroke="#059669" stroke-width="1.6" marker-end="url(#arG)"/>
+  <text x="655" y="88" class="lbl" fill="#059669">yes</text>
+  <rect x="682" y="72" width="300" height="48" rx="8" class="boxG"/>
+  <text x="832" y="90" text-anchor="middle" class="s">NAT builder runs → SNAT/UNSNAT flows</text>
+  <text x="832" y="108" text-anchor="middle" class="mono">options:chassis = ff0a05a6-…-b0f38f6e9ef1</text>
+  <line x1="832" y1="120" x2="832" y2="148" stroke="#059669" stroke-width="1.6" marker-end="url(#arG)"/>
+  <rect x="682" y="152" width="300" height="44" rx="8" class="box"/>
+  <text x="832" y="170" text-anchor="middle" class="s">ovn-controller compiles to OVS flows</text>
+  <text x="832" y="186" text-anchor="middle" class="mono">table 13 lr_in_unsnat · table 51 lr_out_snat</text>
+  <line x1="832" y1="196" x2="832" y2="224" stroke="#059669" stroke-width="1.6" marker-end="url(#arG)"/>
+  <rect x="682" y="228" width="300" height="62" rx="8" class="boxG"/>
+  <text x="832" y="248" text-anchor="middle" class="s">ct(commit, nat(src=172.31.12.200)) on egress,</text>
+  <text x="832" y="264" text-anchor="middle" class="s">ct un-NAT on ingress — egress works</text>
+</svg>
+<p class="caption">Fig. 1 — The one-line behavior change. Topology is unchanged across versions; only the <em>trigger</em> for NAT
+compilation moved from "derived from the localnet peer" to "explicit option". Northd only checks the option for <em>presence</em>,
+but qlvm stores the real chassis name so the value stays honest and auditable.</p>
+</div>
+
+<p class="small"><strong>Reference implementation:</strong> ovn-kubernetes runs this exact OVN build in production and does precisely this —
+<code>go-controller/pkg/ovn/gateway.go</code> (lines 285–295) sets <code>"chassis": gwConfig.annoConfig.ChassisID</code> on the
+gateway router's options. Its multi-node chassis <em>pinning</em> (<code>gateway_chassis</code>/<code>ha_chassis_group</code> on the LRP)
+is not needed on a single-chassis dom0; <code>options:chassis</code> alone is sufficient (live-verified). For completeness: 26.03 also
+redefined the per-port check <code>lrp_is_l3dgw()</code> (<code>northd.h:1132</code>) to require a chassis/HA group, and NAT
+validation moved to <code>northd/en-lr-nat.c</code> — neither matters here with the option set.</p>
+
+<h2>2. The logical topology, as it stands now</h2>
+
+<div class="fig">
+<svg viewBox="0 0 1060 726" role="img" aria-label="OVN logical topology with SNAT path">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/>
+    </marker>
+  </defs>
+  <style>
+    .lan  { fill:#fffbeb; stroke:#d97706; stroke-width:1.5; }
+    .lsw  { fill:#eff6ff; stroke:#3b82f6; stroke-width:1.6; }
+    .rtr  { fill:#fdf4ff; stroke:#a21caf; stroke-width:2; }
+    .br   { fill:#e2e8f0; stroke:#475569; stroke-width:2; }
+    .vm   { fill:#f0fdf4; stroke:#16a34a; stroke-width:1.8; }
+    .p    { fill:#ffffff; stroke:#64748b; stroke-width:1.2; }
+    .t  { font: 700 14px -apple-system, sans-serif; fill:#111827; }
+    .s  { font: 12.5px -apple-system, sans-serif; fill:#374151; }
+    .sm { font: 11.5px -apple-system, sans-serif; fill:#6b7280; }
+    .mono { font: 11px ui-monospace, monospace; fill:#0f172a; }
+    .chip { font: 600 11.5px -apple-system, sans-serif; }
+  </style>
+
+  <!-- dom0/OVS container -->
+  <rect x="20" y="120" width="1020" height="484" rx="14" fill="#fcfcfd" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="40" y="145" class="s" style="font-weight:700">dom0 — one OVS instance: br-ex = br-int (external-ids:ovsbridge:br-ex)</text>
+
+  <!-- LAN -->
+  <rect x="200" y="18" width="640" height="74" rx="10" class="lan"/>
+  <text x="520" y="40" text-anchor="middle" class="t">LAN 172.31.12.0/24 (physical)</text>
+  <text x="520" y="58" text-anchor="middle" class="sm">uplink 172.31.12.1 · DNS 172.31.12.234 / .235 · servers .111 … .234</text>
+  <text x="520" y="76" text-anchor="middle" class="sm">172.31.12.200 = the router's SNAT address (a “virtual host” on the LAN, owned by OVN)</text>
+
+  <!-- br-ex bar -->
+  <rect x="200" y="152" width="640" height="34" rx="6" class="br"/>
+  <text x="520" y="174" text-anchor="middle" class="mono">br-ex · dom0 address 172.31.12.116/24 (networkd DHCP) · enp130s0 enslaved</text>
+
+  <!-- LAN wire -->
+  <line x1="520" y1="92" x2="520" y2="152" stroke="#475569" stroke-width="2" marker-end="url(#a)"/>
+  <text x="532" y="127" class="sm">physical wire (uplink)</text>
+
+  <!-- external LSW -->
+  <rect x="60" y="220" width="270" height="130" rx="10" class="lsw"/>
+  <text x="195" y="243" text-anchor="middle" class="t">external LSW</text>
+  <rect x="80" y="255" width="110" height="52" rx="6" class="p"/>
+  <text x="135" y="273" text-anchor="middle" class="chip">ext-localnet</text>
+  <text x="135" y="289" text-anchor="middle" class="sm">type: localnet</text>
+  <text x="135" y="301" text-anchor="middle" class="sm">provider: br-ex</text>
+  <rect x="205" y="255" width="110" height="52" rx="6" class="p"/>
+  <text x="260" y="273" text-anchor="middle" class="chip">ext-to-gw</text>
+  <text x="260" y="289" text-anchor="middle" class="sm">router port</text>
+  <text x="260" y="301" text-anchor="middle" class="sm">172.31.12.200/24</text>
+  <line x1="135" y1="255" x2="135" y2="188" stroke="#475569" stroke-width="1.6" marker-end="url(#a)"/>
+  <text x="146" y="220" class="sm">localnet = “port on br-ex”</text>
+
+  <!-- gateway router -->
+  <rect x="400" y="215" width="330" height="150" rx="12" class="rtr"/>
+  <text x="565" y="238" text-anchor="middle" class="t">logical router “gateway”</text>
+  <rect x="418" y="250" width="130" height="44" rx="6" class="p"/>
+  <text x="483" y="268" text-anchor="middle" class="chip">gw-external</text>
+  <text x="483" y="284" text-anchor="middle" class="sm">172.31.12.200/24</text>
+  <rect x="572" y="250" width="138" height="44" rx="6" class="p"/>
+  <text x="641" y="268" text-anchor="middle" class="chip">gw-work</text>
+  <text x="641" y="284" text-anchor="middle" class="sm">10.100.1.1/24</text>
+  <rect x="418" y="304" width="130" height="46" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.3"/>
+  <text x="483" y="320" text-anchor="middle" class="chip" fill="#92400e">NAT (snat) + route</text>
+  <text x="483" y="335" text-anchor="middle" class="sm">10.100.0.0/16 → 172.31.12.200</text>
+  <text x="483" y="347" text-anchor="middle" class="sm">0.0.0.0/0 via 172.31.12.1</text>
+  <rect x="572" y="304" width="138" height="46" rx="6" fill="#fef9c3" stroke="#b45309" stroke-width="2"/>
+  <text x="641" y="319" text-anchor="middle" class="chip" fill="#92400e">options:chassis</text>
+  <text x="641" y="333" text-anchor="middle" class="mono">ff0a05a6-e529-49bd-</text>
+  <text x="641" y="346" text-anchor="middle" class="mono">970d-b0f38f6e9ef1</text>
+
+  <!-- router <-> external LSW -->
+  <line x1="330" y1="281" x2="416" y2="272" stroke="#475569" stroke-width="1.8" marker-end="url(#a)"/>
+  <line x1="416" y1="272" x2="330" y2="281" stroke="#475569" stroke-width="1.8" marker-end="url(#a)" opacity="0.4"/>
+
+  <!-- work LSW -->
+  <rect x="400" y="410" width="470" height="160" rx="10" class="lsw"/>
+  <text x="635" y="433" text-anchor="middle" class="t">work LSW  (10.100.1.0/24)</text>
+  <rect x="420" y="445" width="120" height="50" rx="6" class="p"/>
+  <text x="480" y="463" text-anchor="middle" class="chip">gw-work</text>
+  <text x="480" y="479" text-anchor="middle" class="sm">router port</text>
+  <rect x="560" y="445" width="140" height="50" rx="6" class="p"/>
+  <text x="630" y="463" text-anchor="middle" class="chip">foo (LSP)</text>
+  <text x="630" y="479" text-anchor="middle" class="mono">10.100.1.10</text>
+  <rect x="720" y="445" width="130" height="50" rx="6" class="p" stroke="#9333ea"/>
+  <text x="785" y="463" text-anchor="middle" class="chip" fill="#6b21a8">dom0 (LSP)</text>
+  <text x="785" y="479" text-anchor="middle" class="mono">10.100.1.2</text>
+  <text x="635" y="547" text-anchor="middle" class="sm">ACLs: allow intra-subnet, deny cross-domain · port security pins MAC+IP per LSP</text>
+
+  <!-- router <-> work LSW -->
+  <line x1="560" y1="365" x2="494" y2="445" stroke="#475569" stroke-width="1.8" marker-end="url(#a)"/>
+  <line x1="494" y1="445" x2="560" y2="365" stroke="#475569" stroke-width="1.8" marker-end="url(#a)" opacity="0.4"/>
+
+  <!-- VM -->
+  <rect x="520" y="632" width="220" height="74" rx="10" class="vm"/>
+  <text x="630" y="655" text-anchor="middle" class="t">VM foo (Xen HVM)</text>
+  <text x="630" y="672" text-anchor="middle" class="sm">user@10.100.1.10 · MAC 02:00:00:00:00:0a</text>
+  <text x="630" y="688" text-anchor="middle" class="sm">static netfront config baked (no DHCP)</text>
+  <line x1="630" y1="495" x2="630" y2="632" stroke="#475569" stroke-width="1.8" marker-end="url(#a)"/>
+  <text x="640" y="575" class="sm">OVS port 13 · vif13.0 (type=system)</text>
+
+  <!-- dom0 kernel -->
+  <rect x="760" y="626" width="246" height="76" rx="10" fill="#faf5ff" stroke="#9333ea" stroke-width="1.8"/>
+  <text x="883" y="648" text-anchor="middle" class="t" fill="#6b21a8">dom0 kernel netdev</text>
+  <text x="883" y="664" text-anchor="middle" class="mono">qvm-dom0 = 10.100.1.2</text>
+  <text x="883" y="680" text-anchor="middle" class="sm">direct LSW join: kernel route</text>
+  <text x="883" y="693" text-anchor="middle" class="mono">10.100.1.0/24 dev qvm-dom0</text>
+  <line x1="842" y1="495" x2="856" y2="626" stroke="#9333ea" stroke-width="2.2" marker-end="url(#ad)" stroke-dasharray="6 4"/>
+  <text x="852" y="560" class="sm" fill="#6b21a8" style="font-weight:600">dom0 ↔ VM direct,</text>
+  <text x="852" y="574" class="sm" fill="#6b21a8" style="font-weight:600">no router, no NAT</text>
+
+  <!-- FORWARD path (blue) -->
+  <g stroke="#2563eb" stroke-width="2.6" fill="none" stroke-dasharray="9 5">
+    <path d="M 552 660 L 552 505 L 486 505"/>
+    <path d="M 480 500 L 480 380 L 556 380"/>
+    <path d="M 500 362 L 500 330"/>
+  </g>
+  <circle cx="536" cy="585" r="11" fill="#2563eb"/><text x="536" y="589" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">1</text>
+  <circle cx="480" cy="428" r="11" fill="#2563eb"/><text x="480" y="432" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">2</text>
+  <circle cx="592" cy="392" r="11" fill="#2563eb"/><text x="592" y="396" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">3</text>
+  <circle cx="468" cy="336" r="11" fill="#2563eb"/><text x="468" y="340" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">4</text>
+  <circle cx="368" cy="272" r="11" fill="#2563eb"/><text x="368" y="276" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">5</text>
+  <circle cx="180" cy="208" r="11" fill="#2563eb"/><text x="180" y="212" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">6</text>
+  <path d="M 138 208 L 138 132 L 262 132 L 262 98" stroke="#2563eb" stroke-width="2.6" fill="none" stroke-dasharray="9 5" marker-end="url(#af)"/>
+  <text x="225" y="120" class="chip" fill="#1d4ed8">forward (SNAT) ①–⑥</text>
+
+  <!-- REPLY path (green) -->
+  <g stroke="#059669" stroke-width="2.6" fill="none" stroke-dasharray="2 6">
+    <path d="M 302 94 L 302 148 L 214 148 L 214 200 L 254 200"/>
+    <path d="M 258 248 L 330 266"/>
+    <path d="M 424 284 L 546 284 L 546 360 L 504 442"/>
+    <path d="M 508 494 L 606 494 L 622 494 L 622 628"/>
+  </g>
+  <circle cx="546" cy="330" r="11" fill="#059669"/><text x="546" y="334" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">7</text>
+  <circle cx="600" cy="560" r="11" fill="#059669"/><text x="600" y="564" text-anchor="middle" style="font:700 12px sans-serif" fill="#fff">8</text>
+  <text x="316" y="112" class="chip" fill="#047857">reply (UNSNAT) ⑦–⑧ · dst 172.31.12.200 → dst 10.100.1.10</text>
+</svg>
+<p class="caption">Fig. 2 — The working topology. Blue dashed = guest→LAN forward path (source NAT committed at hop ④, router egress).
+Green dotted = return path (reverse NAT at hop ⑦, router ingress). Purple dashed = the dom0's direct logical-switch join for
+dom0↔guest traffic, which bypasses the router entirely. The yellow box is the fix: <code>options:chassis</code> on the gateway router.</p>
+</div>
+
+<table>
+<tr><th class="c">Hop</th><th>Where</th><th>What happens</th></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">①</td><td>VM foo → <code>vif13.0</code> → OVS port 13</td><td>Frame enters br-int with src MAC 02:00:00:00:00:0a, ip4 10.100.1.10 → e.g. 172.31.12.234:53. OVN switch <code>work</code> ingress: port security (MAC+IP pinned per LSP), ACL <code>acl-work-allow</code> (priority 800) matches <code>ip4</code> → accept.</td></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">②</td><td>work LSW egress → LSP <code>gw-work</code></td><td>Switch routing: destination is off-subnet → next hop is the router port <code>gw-work</code> (10.100.1.1). Frame is re-MAC'd toward the router.</td></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">③</td><td>Router <code>gateway</code>, ingress pipeline (<code>lr_in</code>)</td><td>Port security on <code>gw-work</code>, then <code>lr_in_input</code>: longest-prefix match routes 172.31.12.234 via <code>gw-external</code>, next hop 172.31.12.200. Frame moves to the router egress pipeline aimed at <code>gw-external</code>.</td></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">④</td><td>Router egress, <strong>table 51 <code>lr_out_snat</code></strong></td><td><span class="hl">The fix's flow.</span> <code>ct(commit, table=52, zone=&lt;gateway_snat=2&gt;, nat(src=172.31.12.200))</code>: the source is rewritten 10.100.1.10 → 172.31.12.200 and the mapping is committed to conntrack so the reply can be reversed. Only new flows are NATed (<code>ct_state=-trk</code>); replies are skipped.</td></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">⑤</td><td>LSP <code>ext-to-gw</code> → external LSW</td><td>Frame (now src 172.31.12.200) enters the external switch, egresses via <code>ext-localnet</code>.</td></tr>
+<tr><td class="c" style="color:var(--fwd);font-weight:700">⑥</td><td><code>localnet</code> → br-ex → wire</td><td>A localnet port is just a kernel-side tap on <code>br-ex</code>: the frame lands on the physical uplink with a routable LAN source. The uplink router sees traffic from 172.31.12.200, which it can route back.</td></tr>
+<tr><td class="c" style="color:var(--rep);font-weight:700">⑦</td><td>Reply enters router, <strong>table 13 <code>lr_in_unsnat</code></strong></td><td>Reply src 172.31.12.234 → dst 172.31.12.200. <code>ct_snat</code> on ingress (match <code>ip4.dst == 172.31.12.200</code>) looks up the committed mapping and rewrites dst back to 10.100.1.10.</td></tr>
+<tr><td class="c" style="color:var(--rep);font-weight:700">⑧</td><td>Router → <code>gw-work</code> → work LSW → LSP <code>foo</code> → VM</td><td>Normal switch delivery to the guest. Symmetric delivery, one conntrack table doing both directions.</td></tr>
+</table>
+
+<h2>3. The dom0's own traffic (and why the purple path still exists)</h2>
+
+<p>Two different directions, two different paths:</p>
+<ul>
+<li><strong>dom0 → guest</strong> (e.g. <code>ssh user@10.100.1.10</code>, <code>qlvm vm run</code>): the dom0 kernel has a
+<em>direct</em> route <code>10.100.1.0/24 dev qvm-dom0</code>. <code>qvm-dom0</code> is a kernel netdev backed by an OVS internal
+port on br-int, and the <code>dom0</code> LSP (10.100.1.2) attaches it straight to the <em>work</em> switch — no router, no NAT,
+ttl=64. This is the low-latency control path.</li>
+<li><strong>guest → dom0</strong> (e.g. the guest's waypipe server dialing the dom0's ephemeral data port for
+<code>qlvm vm run --connect tcp|vsock</code>): this is <em>guest egress</em>, so it takes the router path ①–⑥ and arrives at the
+dom0 with source <strong>172.31.12.200</strong> (the SNAT address), not 10.100.1.10. That is why the dom0's firewall
+<code>dom0-data-in</code> policy rich-rules match the <em>router</em> IP for the data port range, and why
+<code>network.dom0_ip</code> in <code>qlvm.yaml</code> must be the dom0's uplink address (br-ex), not the router IP.</li>
+</ul>
+<p class="small">The <code>qvm-dom0</code> join is still manual (an OVS port + LSP + kernel route, not yet owned by the qlvm
+reconcilers) — it predates this fix and is orthogonal to it: even with SNAT working, dom0→guest via the router would be
+asymmetric and slower. Persisting it in the reconcilers remains the follow-up.</p>
+
+<h2>4. What <code>qlvm install</code> does now</h2>
+
+<div class="fig">
+<svg viewBox="0 0 1020 470" role="img" aria-label="qlvm install OVN step sequence">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill:#f8fafc; stroke:#64748b; stroke-width:1.4; }
+    .bn { fill:#eff6ff; stroke:#2563eb; stroke-width:1.6; }
+    .bs { fill:#f5f3ff; stroke:#7c3aed; stroke-width:1.6; }
+    .bg { fill:#ecfdf5; stroke:#059669; stroke-width:1.6; }
+    .br2 { fill:#fef2f2; stroke:#dc2626; stroke-width:1.6; }
+    .t { font: 700 13px -apple-system, sans-serif; fill:#111827; }
+    .s { font: 11.8px -apple-system, sans-serif; fill:#374151; }
+    .mono { font: 10.8px ui-monospace, monospace; fill:#0f172a; }
+  </style>
+
+  <!-- column 1: clients -->
+  <text x="20" y="24" class="t" fill="#1d4ed8">NewLive (setup wires it)</text>
+  <rect x="20" y="38" width="240" height="58" rx="8" class="bn"/>
+  <text x="140" y="58" text-anchor="middle" class="s">NB client</text>
+  <text x="140" y="74" text-anchor="middle" class="mono">unix:/var/run/ovn/ovnnb_db.sock</text>
+  <text x="140" y="88" text-anchor="middle" class="mono">(QVM_OVN_ENDPOINT)</text>
+  <rect x="20" y="112" width="240" height="58" rx="8" class="bs"/>
+  <text x="140" y="132" text-anchor="middle" class="s">SB client — new</text>
+  <text x="140" y="148" text-anchor="middle" class="mono">unix:/var/run/ovn/ovnsb_db.sock</text>
+  <text x="140" y="162" text-anchor="middle" class="mono">(QVM_OVNSB_ENDPOINT)</text>
+  <line x1="140" y1="170" x2="140" y2="196" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <rect x="20" y="200" width="240" height="66" rx="8" class="bx"/>
+  <text x="140" y="220" text-anchor="middle" class="s">List SB Chassis rows</text>
+  <text x="140" y="236" text-anchor="middle" class="mono">→ name: ff0a05a6-…-b0f38f6e9ef1</text>
+  <text x="140" y="252" text-anchor="middle" class="s">poll 500 ms, 30 s deadline (ovn-controller</text>
+  <text x="140" y="264" text-anchor="middle" class="s">registers within seconds of boot)</text>
+
+  <!-- column 2: reconcile -->
+  <text x="330" y="24" class="t" fill="#1d4ed8">Apply (ovn.Reconciler)</text>
+  <rect x="300" y="38" width="240" height="52" rx="8" class="bn"/>
+  <text x="420" y="58" text-anchor="middle" class="s">desired = Desired(cfg)</text>
+  <text x="420" y="74" text-anchor="middle" class="s">+ Options{chassis} on the gateway router</text>
+  <rect x="300" y="106" width="240" height="52" rx="8" class="bn"/>
+  <text x="420" y="126" text-anchor="middle" class="s">indexExisting via NB monitor</text>
+  <text x="420" y="142" text-anchor="middle" class="s">→ resolve desired UUIDs to real ones</text>
+  <rect x="300" y="174" width="240" height="64" rx="8" class="bn"/>
+  <text x="420" y="193" text-anchor="middle" class="s">attach pass — runs even in steady state</text>
+  <text x="420" y="209" text-anchor="middle" class="mono">cur.Options["chassis"] != live ?</text>
+  <text x="420" y="225" text-anchor="middle" class="mono">→ mutate op (Where uuid, insert option)</text>
+  <rect x="300" y="254" width="240" height="52" rx="8" class="bn"/>
+  <text x="420" y="274" text-anchor="middle" class="s">missing rows → inserts (fresh install)</text>
+  <text x="420" y="290" text-anchor="middle" class="s">nothing missing → no inserts</text>
+
+  <!-- column 3: transaction -->
+  <text x="620" y="24" class="t" fill="#1d4ed8">one OVSDB transaction</text>
+  <rect x="600" y="90" width="200" height="58" rx="8" class="bg"/>
+  <text x="700" y="110" text-anchor="middle" class="s">steady state, option current</text>
+  <text x="700" y="126" text-anchor="middle" class="mono">0 ops → no Transact → no-op</text>
+  <rect x="600" y="164" width="200" height="58" rx="8" class="bg"/>
+  <text x="700" y="184" text-anchor="middle" class="s">drift: option missing/wrong</text>
+  <text x="700" y="200" text-anchor="middle" class="mono">Transact([mutate options])</text>
+  <rect x="600" y="238" width="200" height="58" rx="8" class="bg"/>
+  <text x="700" y="258" text-anchor="middle" class="s">fresh install</text>
+  <text x="700" y="274" text-anchor="middle" class="mono">Transact([11 inserts, …])</text>
+
+  <!-- column 4: northd -->
+  <text x="850" y="24" class="t" fill="#1d4ed8">northd (event-driven)</text>
+  <rect x="830" y="120" width="170" height="58" rx="8" class="br2"/>
+  <text x="915" y="140" text-anchor="middle" class="s" fill="#991b1b">option empty (old OVN)</text>
+  <text x="915" y="156" text-anchor="middle" class="mono">is_gw_router=false → 0 flows</text>
+  <text x="915" y="170" text-anchor="middle" class="mono">silent</text>
+  <rect x="830" y="204" width="170" height="58" rx="8" class="bg"/>
+  <text x="915" y="224" text-anchor="middle" class="s">option set</text>
+  <text x="915" y="240" text-anchor="middle" class="mono">snat flows within ~1 s:</text>
+  <text x="915" y="254" text-anchor="middle" class="mono">t13 unsnat · t51 snat</text>
+
+  <!-- arrows -->
+  <line x1="260" y1="230" x2="298" y2="206" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="540" y1="112" x2="598" y2="118" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="540" y1="196" x2="598" y2="192" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="540" y1="270" x2="598" y2="266" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="800" y1="149" x2="828" y2="149" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="800" y1="233" x2="828" y2="233" stroke="#475569" stroke-width="1.5" marker-end="url(#b)"/>
+  <path d="M 700 296 L 700 340 L 915 340 L 915 264" stroke="#059669" stroke-width="1.6" fill="none" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <text x="740" y="332" class="s" fill="#047857">nbctl/ovn-nbctl changes propagate to northd automatically</text>
+
+  <!-- bottom note -->
+  <rect x="20" y="370" width="980" height="80" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.3"/>
+  <text x="40" y="392" class="s" style="font-weight:700">Verified live, in order:</text>
+  <text x="40" y="410" class="mono">1. ovn-nbctl remove logical_router gateway options chassis   → SNAT flows gone, guest egress dead (bug reproduced)</text>
+  <text x="40" y="426" class="mono">2. sudo qlvm install                                → mutate op sent, reply count=1, option restored, flows back</text>
+  <text x="40" y="442" class="mono">3. guest: ping 172.31.12.234 3/3 · host www.google.com → 142.251.152.119 · 4. re-run install → 0 ops (no-op)</text>
+</svg>
+<p class="caption">Fig. 3 — The install flow. The SB client is read-only: it exists only to answer "what chassis name is live right now?".
+Everything it writes is one option on one row; northd does the rest. The bottom box is the actual live verification sequence.</p>
+</div>
+
+<h3>Implementation notes (the non-obvious parts)</h3>
+<ul>
+<li><strong>Two condition/mutation models.</strong> libovsdb's <code>Where(model)</code> derives the match clause from the model's
+<em>non-zero</em> fields. If the new option value sat on the same model, the match would be "options already equals the new value"
+— which is false on a broken row, so the mutate would silently no-op. The repair therefore builds a bare condition model
+(<code>UUID</code> only) and a separate value model.</li>
+<li><strong><code>count=1</code> is not proof.</strong> Both the in-memory test server and the real one answer the mutate with
+<code>count=1</code>, but the Go client's <code>List</code> reads the <em>monitor cache</em>, which lags the write. Verify effects
+server-side (<code>ovn-nbctl get</code>) and in the SB flows — never from the client cache a few milliseconds after the Transact.</li>
+<li><strong>The steady-state early exit was the second bug.</strong> The original <code>Apply</code> returned before the attach pass
+when nothing was missing — so a steady-state re-run could never repair a drifted option. The attach pass now always runs, and
+"no ops at all" is the only no-op path (this also means a fresh-install transaction is still exactly one atomic batch).</li>
+<li><strong>Why the chassis name, not a literal.</strong> Northd only checks presence, but storing the real name from the SB
+<code>Chassis</code> table keeps the row truthful (and matches what ovn-kubernetes does). On a single-chassis dom0 the name is
+stable across reboots (it's the chassis's own UUID).</li>
+<li><strong>Install re-run hardening found along the way:</strong> the ovs step used to wait 30 s for a DHCP lease on the bare NIC,
+but in the already-migrated state the NIC is enslaved (<code>master ovs-system</code>) and may legitimately hold no lease anymore.
+The wait is skipped when <code>netd.Enslaved()</code> sees a kernel master; the bridge-lease check + failback still guard the uplink.</li>
+</ul>
+
+<h2>5. Live evidence (OVN 26.03.2, dom0 2026-10-08)</h2>
+
+<h3>Northbound state (the fixed row)</h3>
+<pre><code>$ sudo ovn-nbctl get logical_router gateway options
+{chassis="ff0a05a6-e529-49bd-970d-b0f38f6e9ef1"}
+
+$ sudo ovn-nbctl list nat        # the row that was being ignored
+uuid        : 42019f6b-ac51-577c-a1a9-464f50587883
+external_ip : 172.31.12.200
+logical_ip  : 10.100.0.0/16
+type        : snat</code></pre>
+
+<h3>Logical flows northd compiled once the option was set</h3>
+<pre><code>$ sudo ovn-sbctl dump-flows gateway
+... lr_out_snat ...
+  priority = 17
+  match    = (ip &amp;&amp; ip4.src == 10.100.0.0/16 &amp;&amp; (!ct.trk || !ct.rpl))
+  action   = (ct_snat(172.31.12.200);)
+... lr_in_unsnat ...
+  priority = 90
+  match    = (ip &amp;&amp; ip4.dst == 172.31.12.200)
+  action   = (ct_snat;)</code></pre>
+<p class="small">26.03 has no SB <code>NAT</code> table — northd compiles NAT directly into <code>Logical_Flow</code> rows
+(validation in <code>northd/en-lr-nat.c</code>, flow generation in <code>northd.c</code> 17614–17778;
+<code>encode_ct_nat</code> in <code>lib/actions.c</code> lowers <code>ct_snat</code> to OVS <code>ct(…, nat(src=…))</code>).</p>
+
+<h3>Physical OVS flows on br-int (what the hardware actually executes)</h3>
+<pre><code>$ sudo ovs-ofctl dump-flows br-int table=51 | grep 10.100
+  ct_state=-trk, ip, metadata=0x3, nw_src=10.100.0.0/16
+  actions=ct(commit, table=52, zone=NXM_NX_REG12[0..15], nat(src=172.31.12.200))
+
+# table 13 carries the ingress mirror (unsnat)
+# conntrack zones (ovn-controller): gateway_snat=2, gateway_dnat=3, work_snat=1</code></pre>
+<p class="small">Table numbers moved in 26.03: <code>lr_out_snat</code> is physical table <strong>51</strong> (it was 25 in 25.09).
+The pipeline is expanded; always resolve the number from the table <em>comment</em> (<code>ovs-ofctl dump-flows br-int | grep
+"table=51.*snat"</code> style) rather than remembering it.</p>
+
+<h3>End-to-end test from the guest</h3>
+<pre><code>$ ssh user@10.100.1.10
+$ ping -c3 172.31.12.234          # LAN server through the OVN SNAT
+3 packets transmitted, 3 received, 0% packet loss
+$ host -t A www.google.com        # DNS through the same path
+www.google.com has address 142.251.152.119</code></pre>
+<div class="ok">
+<strong>Controlled experiment:</strong> the dom0-side MASQUERADE stopgap (iptables NAT on br-ex) was removed <em>after</em> the
+<code>options:chassis</code> fix and the guest kept working — proving the OVN SNAT path alone carries guest egress. No dom0 NAT
+rule is part of the design anymore.
+</div>
+
+<h2>6. Troubleshooting: if guest egress dies again</h2>
+
+<table>
+<tr><th>Symptom</th><th>Check (dom0)</th><th>What it means</th></tr>
+<tr>
+<td>Guest can't reach LAN or its own dom0 data port; dom0→guest fine; <code>ping 172.31.12.x</code> from guest drops</td>
+<td><code>sudo ovn-nbctl get logical_router gateway options</code></td>
+<td><span class="badge b-bad">empty {} = this bug.</span> Northd isn't compiling the NAT. Fix: <code>sudo qlvm install</code>
+(it self-heals). Manual equivalent: <code>sudo ovn-sbctl list chassis</code> — the <code>name</code> column <em>is</em> the value —
+then <code>sudo ovn-nbctl set logical_router gateway options:chassis=&lt;that-name&gt;</code>.</td>
+</tr>
+<tr>
+<td>Option is set but still dead</td>
+<td><code>sudo ovn-sbctl dump-flows gateway | grep -c ct_snat</code></td>
+<td>0 with option set ⇒ check <code>ovn-northd</code> is running and actually reconciling (<code>journalctl -u ovn-northd</code>),
+and that the <code>NAT</code> row still exists on the router.</td>
+</tr>
+<tr>
+<td>Flows exist but packets don't arrive</td>
+<td><code>sudo ovn-trace gateway 'ip, ip4 &amp;&amp; ip4.src == 10.100.1.10, outport="gw-external"'</code></td>
+<td>The full pipeline is printed hop by hop; the working run shows <code>ct_snat(172.31.12.200)</code> on egress and delivery to
+the external datapath. (26.03 syntax: positional datapath, <code>&amp;&amp;</code> separators; no <code>lport</code> field — use
+<code>inport</code>.)</td>
+</tr>
+<tr>
+<td>Guest → dom0 high port only ("No route to host")</td>
+<td><code>sudo firewall-cmd --report</code> / <code>dom0-data-in</code> policy rules</td>
+<td>The guest arrives source-<code>172.31.12.200</code> (SNAT), so the rich rule must match the <em>router</em> IP, not the VM
+subnet. Port range is the default <code>ip_local_port_range</code> (32768–60999).</td>
+</tr>
+<tr>
+<td>Everything works after reboot, then dies hours later — or after an OVN package upgrade</td>
+<td><code>rpm -q ovn-central</code> + rerun <code>sudo qlvm install</code></td>
+<td>Version skew again: a new northd may change what triggers NAT compilation. The install re-run re-pins the option and is the
+first thing to try. (The reverse skew — builder Xen headers vs dom0 runtime — is a separate, build-time constraint; see AGENTS.md.)</td>
+</tr>
+<tr>
+<td>Guest ping to dom0 works but DNS doesn't</td>
+<td>Guest: <code>cat /etc/resolv.conf</code> (must be a real file, <code>nameserver 172.31.12.234</code>)</td>
+<td>Guest DNS comes from the baked <code>/etc/resolv.conf</code> (bake writes it because this networkd defers resolv.conf
+writes to a hook that writes nothing). The name must then traverse the SNAT path — so this usually lands back on the first row.</td>
+</tr>
+</table>
+
+<h2>7. Where everything lives</h2>
+<table>
+<tr><th>Thing</th><th>Location</th></tr>
+<tr><td>Reconciler (NB + SB, chassis pin, drift repair)</td><td><code>internal/ovn/reconcile.go</code> — <code>Apply</code>, <code>attachExistingRefs</code>, <code>sbChassisName</code></td></tr>
+<tr><td>Live client wiring (NB + SB sockets)</td><td><code>internal/ovn/live.go</code> — <code>NewLive</code>, <code>sbEndpoint</code></td></tr>
+<tr><td>NB + SB models</td><td><code>internal/ovn/models.go</code> — <code>Tables()</code>, <code>SBChassis</code>, <code>SBTables()</code></td></tr>
+<tr><td>Install orchestration + NIC-lease skip</td><td><code>internal/setup/setup.go</code> — ovs step; <code>internal/netd/netd.go</code> — <code>Enslaved</code></td></tr>
+<tr><td>Tests (in-memory OVSDB servers, NB + SB schemas)</td><td><code>internal/ovn/ovn_test.go</code>, <code>internal/ovn/testdata/*.ovsschema</code></td></tr>
+<tr><td>Committed 2026-10-08</td><td><code>a4867ce</code> — "ovn: pin gateway router options:chassis …"</td></tr>
+<tr><td>Repo docs of record</td><td><code>AGENTS.md</code> → "Live-smoke pitfalls → OVN / guest network" (root cause, gotchas, commands)</td></tr>
+</table>
+
+<footer>
+Generated 2026-10-08 from the live dom0 and the qlvm tree at <code>a4867ce</code>. All IPs, UUIDs and flow excerpts are from the
+real dom0/VM (<code>foo</code>) at verification time; flow strings are abbreviated where long. Open this file directly in any
+browser — no external assets.
+</footer>
+
+</main>
+</body>
+</html>
