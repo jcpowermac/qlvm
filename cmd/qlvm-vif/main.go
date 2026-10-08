@@ -15,7 +15,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"strconv"
@@ -37,10 +36,6 @@ type XsReader interface {
 // handleTimeout bounds one hotplug call so a wedged OVSDB connection
 // cannot hang libxl's device bring-up forever.
 const handleTimeout = 30 * time.Second
-
-// int32Max bounds the sysfs ifindex before it is put into the netlink
-// IfInfomsg (a 32-bit field).
-const int32Max = int(^uint32(0) >> 1)
 
 // VifHandle implements one hotplug invocation.
 //
@@ -106,10 +101,56 @@ func vifAdd(xs XsReader, vif ovs.VifPorter, linkUp func(string) error, dev strin
 	if err := vif.AddVifPort(ctx, dev, name, uuid, mac); err != nil {
 		return fmt.Errorf("add vif port %s: %w", dev, err)
 	}
-	if err := linkUp(dev); err != nil {
-		return fmt.Errorf("link up %s: %w", dev, err)
+	return bringUp(ctx, dev, linkUp)
+}
+
+// bringUp sets IFF_UP on dev and polls the kernel until the flag is set.
+// The retry covers ovs-vswitchd binding the netdev asynchronously after
+// the OVSDB commit (the flag can be cleared between our set and the bind
+// completing); without it the port wedges down and the guest is
+// unreachable until a hand "ip link set up". Retries stop at the hotplug
+// context deadline so a broken device fails the bring-up (libxl sees exit
+// 1) instead of hanging it. Success is the IFF_UP flag, not operstate:
+// a fresh-boot vif has no carrier until the guest's netfront comes up,
+// which is past the hotplug deadline.
+func bringUp(ctx context.Context, dev string, linkUp func(string) error) error {
+	var lastErr error
+	for {
+		if err := linkUp(dev); err != nil {
+			lastErr = err
+		} else if flagsUpFn(dev) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("link up %s: %w", dev, lastErr)
+			}
+			return fmt.Errorf("link up %s: still down at deadline", dev)
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	return nil
+}
+
+// flagsUpFn is bringUp's kernel link-state check; tests replace it.
+var flagsUpFn = flagsUp
+
+// flagsUp reports whether the kernel's IFF_UP flag is set on dev. This is
+// the right success signal for the hotplug: operstate additionally needs
+// carrier, which for a vif only appears once the (still-booting) guest's
+// netfront comes up — well past the hotplug deadline.
+func flagsUp(dev string) bool {
+	// #nosec G304,G703 -- dev comes from libxl's vif argv (a bare
+	// "vifN.M" name, never a path separator).
+	b, err := os.ReadFile("/sys/class/net/" + dev + "/flags")
+	if err != nil {
+		return false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 0, 32) // #nosec G115 -- sysfs prints hex
+	if err != nil {
+		return false
+	}
+	return n&int64(unix.IFF_UP) != 0
 }
 
 // wire builds the real planes. Tests replace it.
@@ -122,7 +163,7 @@ var wire = func() (XsReader, ovs.VifPorter, func(string) error, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return xs, vif, netlinkSetUp, nil
+	return xs, vif, ioctlSetUp, nil
 }
 
 // run is the testable entry point; it maps a VifHandle failure to exit 1
@@ -163,78 +204,45 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-// newlinkRequest builds the RTM_NEWLINK request (nlmsghdr + ifinfomsg +
-// IFLA_IFNAME attribute) that sets IFF_UP on the interface with the given
-// index. The ifname attribute carries a proper 4-byte netlink attribute
-// header (nla_len, nla_type) and a NUL-padded name.
-func newlinkRequest(idx int, dev string) []byte {
-	name := make([]byte, 16)
-	copy(name, dev)
-	attr := make([]byte, 4+len(name))
-	binary.LittleEndian.PutUint16(attr, uint16(4+len(name))) // #nosec G115 -- fixed 16-byte ifname, len 20
-	binary.LittleEndian.PutUint16(attr[2:], unix.IFLA_IFNAME)
-	copy(attr[4:], name)
 
-	payload := make([]byte, 12+len(attr))
-	payload[0] = unix.AF_UNSPEC
-	// #nosec G115 -- IfInfomsg.Index is 32-bit; idx is range-guarded by the caller.
-	binary.LittleEndian.PutUint32(payload[4:8], uint32(idx))
-	binary.LittleEndian.PutUint32(payload[8:12], uint32(unix.IFF_UP))
-	copy(payload[12:], attr)
-
-	hdr := make([]byte, 16)
-	binary.LittleEndian.PutUint32(hdr, uint32(16+len(payload))) // #nosec G115 -- fixed-size message (48)
-	binary.LittleEndian.PutUint16(hdr[4:], unix.RTM_NEWLINK)
-	binary.LittleEndian.PutUint16(hdr[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
-	binary.LittleEndian.PutUint32(hdr[8:], 1) // seq
-	return append(hdr, payload...)
-}
-
-// netlinkSetUp brings an OVS internal netdev up with a raw RTM_NEWLINK
-// request (IFF_UP). OVS creates internal ports administratively down and
-// qlvm has no management-CLI shell-out, so the kernel is spoken to
-// directly. The interface index comes from sysfs.
-func netlinkSetUp(dev string) error {
+// ioctlSetUp brings an OVS-managed vif netdev up with
+// ioctl(SIOCSIFFLAGS): read the kernel's current flag set from sysfs, OR
+// in IFF_UP, and write it back. SIOCSIFFLAGS replaces the whole flag word,
+// so the read-modify-write is required to keep BROADCAST/MULTICAST/PROMISC.
+//
+// (The original raw RTM_NEWLINK here put IFF_UP in ifinfomsg.ifi_flags:
+// the kernel only honors that field when the device is CREATED, acks the
+// request with success for an existing one, and silently leaves the flags
+// alone — so every restarted VM came up with its vif wedged down. The
+// ioctl is the same call ifconfig/ip use, via x/sys's Ifreq helpers.)
+func ioctlSetUp(dev string) error {
 	// #nosec G304,G703 -- dev comes from libxl's vif argv (a bare
 	// "vifN.M" name, never a path separator).
-	raw, err := os.ReadFile("/sys/class/net/" + dev + "/ifindex")
+	raw, err := os.ReadFile("/sys/class/net/" + dev + "/flags")
 	if err != nil {
 		return err
 	}
-	idx, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	// sysfs prints the word in hex ("0x1102"); base 0 parses the 0x prefix.
+	cur, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 0, 32) // #nosec G115 -- 32-bit sysfs word
 	if err != nil {
-		return fmt.Errorf("ifindex for %s: %w", dev, err)
+		return fmt.Errorf("flags for %s: %w", dev, err)
 	}
-	// ponytail: ifindex is 32-bit by kernel contract; a guard keeps the
-	// uint32 conversion below overflow-free.
-	if idx <= 0 || idx > int32Max {
-		return fmt.Errorf("ifindex %d out of range for %s", idx, dev)
-	}
+	// SIOCSIFFLAGS speaks the 16-bit if-flag word; the sysfs read is the
+	// same word zero-extended, so mask it back down before the OR.
+	flags := uint16(cur) | uint16(unix.IFF_UP) // #nosec G115 -- if-flags are 16-bit by kernel contract
 
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	ifr, err := unix.NewIfreq(dev)
+	if err != nil {
+		return fmt.Errorf("ifreq for %s: %w", dev, err)
+	}
+	ifr.SetUint16(flags)
+
+	// Any fd will do for SIOCSIFFLAGS; a dummy socket is the conventional
+	// choice and costs nothing.
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
-	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return err
-	}
-
-	if err := unix.Sendto(fd, newlinkRequest(idx, dev), 0, nil); err != nil {
-		return err
-	}
-	// With NLM_F_ACK the kernel answers exactly one NLMSG_ERROR.
-	reply := make([]byte, 128)
-	n, _, err := unix.Recvfrom(fd, reply, 0)
-	if err != nil {
-		return err
-	}
-	if n < 20 {
-		return fmt.Errorf("short netlink reply for %s", dev)
-	}
-	// #nosec G115 -- errno is the 4-byte field of the kernel's NLMSG_ERROR reply.
-	if errno := int32(binary.LittleEndian.Uint32(reply[16:20])); errno != 0 {
-		return fmt.Errorf("netlink RTM_NEWLINK %s: %w", dev, unix.Errno(errno)) // #nosec G115 -- kernel errno
-	}
-	return nil
+	return unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr)
 }

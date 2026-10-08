@@ -76,6 +76,7 @@ type Interface struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
 	Type        string            `ovsdb:"type"`
+	AdminState  *string           `ovsdb:"admin_state"`
 	MacInUse    *string           `ovsdb:"mac_in_use"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
@@ -501,7 +502,11 @@ func (r *Reconciler) AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac s
 		// type=system: the vif netdev already exists (libxl created it).
 		// type=internal makes ovs-vswitchd try to create it and fail with
 		// "could not add network device ... (File exists)".
-		createOps, err := r.client.Create(&Interface{UUID: "q-if-" + dev, Name: dev, Type: "system", ExternalIDs: extIDs})
+		// admin_state up: ovs-vswitchd binds the netdev asynchronously
+		// after this commit and re-syncs the link state; a default-down
+		// admin state lets it wedge the vif down and the guest loses
+		// connectivity until a hand "ip link set up".
+		createOps, err := r.client.Create(&Interface{UUID: "q-if-" + dev, Name: dev, Type: "system", AdminState: strPtr("up"), ExternalIDs: extIDs})
 		if err != nil {
 			return err
 		}
@@ -547,6 +552,9 @@ func (r *Reconciler) AddVifPort(ctx context.Context, dev, ifaceID, vmUUID, mac s
 			iface.ExternalIDs["attached-mac"] == mac
 	})
 }
+
+// strPtr is a tiny helper for optional (pointer) model fields.
+func strPtr(s string) *string { return &s }
 
 // DelVifPort removes the vif port named dev from br-int.
 func (r *Reconciler) DelVifPort(ctx context.Context, dev string) error {

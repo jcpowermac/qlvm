@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"testing"
-
-	"golang.org/x/sys/unix"
+	"time"
 
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/stretchr/testify/assert"
@@ -51,6 +49,15 @@ func (f *fakeOVS) DelVifPort(_ context.Context, dev string) error {
 
 func (f *fakeOVS) StaleVifPorts(context.Context, string) ([]string, error) {
 	return nil, nil
+}
+
+// setFlagsUp stubs bringUp's kernel link-state check; t.Cleanup restores
+// the real one.
+func setFlagsUp(t *testing.T, up bool) {
+	t.Helper()
+	old := flagsUpFn
+	t.Cleanup(func() { flagsUpFn = old })
+	flagsUpFn = func(string) bool { return up }
 }
 
 type fakeLinks struct{ ups []string }
@@ -105,35 +112,12 @@ func TestRunTeardownWithDeadControlPlane(t *testing.T) {
 	assert.Equal(t, 1, run([]string{"online"}))
 }
 
-// TestNewlinkRequestLayout pins the wire bytes of the RTM_NEWLINK
-// request: nlmsghdr, ifinfomsg, and the IFLA_IFNAME attribute header.
-func TestNewlinkRequestLayout(t *testing.T) {
-	msg := newlinkRequest(7, "vif1.0")
-
-	// nlmsghdr: len 16+12+20=48, type RTM_NEWLINK, REQUEST|ACK, seq 1.
-	assert.Equal(t, uint32(48), binary.LittleEndian.Uint32(msg[0:4]))
-	assert.Equal(t, uint16(unix.RTM_NEWLINK), binary.LittleEndian.Uint16(msg[4:6]))
-	assert.Equal(t, uint16(unix.NLM_F_REQUEST|unix.NLM_F_ACK), binary.LittleEndian.Uint16(msg[6:8]))
-	assert.Equal(t, uint32(1), binary.LittleEndian.Uint32(msg[8:12]))
-
-	// ifinfomsg: family AF_UNSPEC, index 7, flags IFF_UP.
-	assert.Equal(t, byte(unix.AF_UNSPEC), msg[16])
-	assert.Equal(t, uint32(7), binary.LittleEndian.Uint32(msg[20:24]))
-	assert.Equal(t, uint32(unix.IFF_UP), binary.LittleEndian.Uint32(msg[24:28]))
-
-	// IFLA_IFNAME attr: 4-byte header (nla_len=20, nla_type=IFLA_IFNAME)
-	// then the NUL-padded name.
-	assert.Equal(t, uint16(20), binary.LittleEndian.Uint16(msg[28:30]))
-	assert.Equal(t, uint16(unix.IFLA_IFNAME), binary.LittleEndian.Uint16(msg[30:32]))
-	assert.Equal(t, []byte("vif1.0"), msg[32:38])
-	assert.Equal(t, byte(0), msg[38])
-}
-
 func TestVifAddHappyPath(t *testing.T) {
 	t.Setenv("XENBUS_PATH", "backend/vif/1/0")
 	xs := addTestXs()
 	ov := &fakeOVS{}
 	links := &fakeLinks{}
+	setFlagsUp(t, true)
 
 	require.NoError(t, VifHandle("add", "vif1.0", xs, ov, links.up))
 	assert.Equal(t,
@@ -147,9 +131,40 @@ func TestVifAddHappyPath(t *testing.T) {
 	assert.Len(t, links.ups, 2)
 }
 
+// TestBringUpRetriesUntilUp covers the ovs-vswitchd bind race: the
+// first IFF_UP wins the netlink ack but ovs re-syncs the link down,
+// so bringUp must re-issue until operstate reports up.
+func TestBringUpRetriesUntilUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	state := false
+	ups := 0
+	setFlagsUp(t, false)
+	flagsUpFn = func(string) bool { return state }
+	linkUp := func(string) error {
+		ups++
+		if ups == 2 { // ovs settles after the second attempt
+			state = true
+		}
+		return nil
+	}
+
+	require.NoError(t, bringUp(ctx, "vif9.0", linkUp))
+	assert.GreaterOrEqual(t, ups, 2)
+
+	// A link that never reports up fails at the deadline.
+	state = false
+	ups = 0
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	assert.Error(t, bringUp(ctx2, "vif9.0", linkUp))
+}
+
 func TestVifAddFailurePropagates(t *testing.T) {
 	t.Setenv("XENBUS_PATH", "backend/vif/1/0")
 	xs := addTestXs()
+	setFlagsUp(t, true)
 
 	// OVS failure: error returned, link never brought up.
 	ovFail := &fakeOVS{err: errors.New("ovsdb down")}
