@@ -173,7 +173,7 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
     unsubstituted `{chain}_{zone}` template.
   - **The dom0-egress policy is a strict DROP allowlist. Any service the
     dom0 itself depends on (e.g. the llama.cpp inference endpoint — see
-    `[firewall.egress] extra_rules` in /etc/qvm/qlvm.toml) needs an allow
+    `firewall.egress.extra_rules` in /etc/qvm/qlvm.yaml) needs an allow
     rule or the agent driving this repo loses its model connection mid-run.**
     Verify llama liveness after every firewall change.
   - Permanent state lives in `/etc/firewalld/{zones,policies}/*.xml` and
@@ -264,11 +264,35 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   ACPI stop (`qlvm vm stop`) replays fine — only unclean stops hit this.
   Loop-mount forensics reads are otherwise reliable; "empty reads" from a
   stale mount path were a separate (lost mount) issue, not xfs.
+- **OVN 26.03 localnet-router anti-spoofing breaks the legacy dom0→VM
+  router path (found live 2026-10-07).** The legacy design sent dom0
+  traffic to VM subnets over the uplink subnet via the OVN gateway router
+  (static route `10.100.0.0/16 via <gw> dev br-ex`). Current OVN adds a
+  `MAC_Binding` drop flow to table 79 on localnet-attached routers: a
+  guest frame with its own MAC leaving the router is dropped (diagnosis:
+  `ovs-ofctl dump-flows br-int table=79`, `ovn-trace work 'inport="foo",
+  arp, dl_dst=...dom0-mac'` → drop: MAC_Binding) while dom0→guest pings
+  succeed (asymmetric). The router also SNATs guest egress to `router_ip`,
+  so dom0 never sees guest source MAC/IP and can't learn a MAC_Binding
+  either — the design is dead, not tunable. **Current workaround
+  (MANUAL, not yet in the qlvm reconcilers):** the dom0 joins the work
+  LSW directly — OVS internal port `qvm-dom0` on br-int (no type, so the
+  kernel netdev exists), OVN LSP `dom0` (mac=dom0 NIC's MAC,
+  `10.100.1.2`), address on the kernel iface. `10.100.0.0/16 via <gw>`
+  replaced by per-VM-subnet /24 direct routes (or the LSW's /24). If it
+  regresses, check: `ovs-vsctl get interface qvm-dom0 admin_state`,
+  `ovn-nbctl lsp-list work`, and that no stale /16 static route survives.
+  Persisting this in the ovs/ovn reconcilers + networkd is the follow-up.
+- **Guest account is `user`, not the dom0's username.** The template
+  bakes the dom0's pubkey into `/var/home/user/.ssh/authorized_keys`
+  (see the SSH section below); ssh as `user@<vm-ip>`. SSHing as the
+  dom0's user "works" to connect but lands nowhere — there is no such
+  account in the guest.
 
 ### Guest SSH / qlvm vm run
 - **`qlvm vm run` is a user-session command** (waypipe needs the desktop's
   WAYLAND_DISPLAY; sudo strips it and the guard says so). Therefore
-  `vms/<name>/` is 0755 and `meta.toml` 0644 (LoadMeta as the user);
+  `vms/<name>/` is 0755 and `meta.yaml` 0644 (LoadMeta as the user);
   `disk.img` stays 0600. Run connects `user@<meta.IP>` directly —
   disposables have no `~/.ssh/config` entry by design — with
   StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null (VM generations
@@ -329,6 +353,24 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
   `~/.cache/qlvm-build`).
 - Rebuild the container binary after ANY change before re-running live
   commands — the stub in `bin/` cannot talk to Xen.
+- **vif link-up is `ioctl(SIOCSIFFLAGS)`, never RTM_NEWLINK ifi_flags
+  (regression cost a whole session, 2026-10-07).** `cmd/qlvm-vif`'s
+  original `netlinkSetUp` put IFF_UP in `ifinfomsg.ifi_flags`; the
+  kernel only honors that field when the device is CREATED and SILENTLY
+  ACKS (errno 0) for an existing device — every restarted VM came up
+  with the vif admin-down (dom0→VM ping/SSH dead, guest fine) until a
+  hand `ip link set vifN.0 up`. A raw-netlink success ack proves NOTHING;
+  verify the effect (sysfs `flags`/operstate). The fix: read-modify-write
+  via SIOCSIFFLAGS (sysfs prints the word in **hex**; the ioctl replaces
+  the whole word, so preserve BROADCAST/MULTICAST), polled until the
+  IFF_UP flag is actually set (500 ms to the hotplug deadline; fail =
+  libxl sees exit 1). Success must be the flag, not operstate — a
+  fresh-boot vif has no carrier until the guest's netfront comes up,
+  past the deadline. The vif OVS Interface also gets `admin_state=up` on
+  create (ovs-vswitchd re-syncs from the kernel on its async bind).
+  Also: the `admin_state` column on the OVS `Interface` model must be a
+  `*string` (libovsdb marshals a zero-value `string` as `""` and the
+  strict ovsdb-server rejects it as a type mismatch).
 
 ### In-guest reboot → Xen zombie `---sr-` (reproduced 2026-09-30)
 - **In-guest `reboot` is unsupported — use `qlvm vm restart`.** A plain
@@ -414,7 +456,7 @@ older docs. Fake `Conn` interfaces test Manager logic, not wire shapes.**
 - `template list` / `delete` never touch podman. `create <ref>` pulls
   first, then: dir absent → reap + bake (~5 min); dir exists → refuse
   unless `--force`; `--force` is the re-bake: flat refusal (no override
-  flag) if any VM's `vms/<n>/meta.toml` (Image+Digest) resolves to the
+  flag) if any VM's `vms/<n>/meta.yaml` (Image+Digest) resolves to the
   target dir — delete the VM first — then reap, remove, bake.
 - `delete [dir...]` removes the named dirs (exact name or unique prefix;
   flat refusal while a VM references one). With no args it removes complete
