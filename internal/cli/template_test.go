@@ -69,12 +69,12 @@ func TestScanTemplates(t *testing.T) {
 
 func TestTemplateListOutput(t *testing.T) {
 	rows := []tplRow{
-		{Dir: "ns-os-bolt-sha256:a", Complete: true, Image: cliTestRef, Kernel: "6.12.0", HasRaw: true, Size: 1 << 30, Refs: []string{"t1", "t2"}},
+		{Dir: "ns-os-bolt-sha256:a", Complete: true, Type: "ostree", Image: cliTestRef, Kernel: "6.12.0", HasRaw: true, Size: 1 << 30, Refs: []string{"t1", "t2"}},
 		{Dir: "ns-os-bolt-sha256:b"},
 	}
-	want := "TEMPLATE  IMAGE  KERNEL  SIZE  REFERENCED-BY\n" +
-		"ns-os-bolt-sha256:a  registry.example.com/ns/os-bolt:latest  6.12.0  1.0G  t1, t2\n" +
-		"ns-os-bolt-sha256:b  -  -  -  -\n"
+	want := "TEMPLATE  TYPE  IMAGE  KERNEL  SIZE  REFERENCED-BY\n" +
+		"ns-os-bolt-sha256:a  ostree  registry.example.com/ns/os-bolt:latest  6.12.0  1.0G  t1, t2\n" +
+		"ns-os-bolt-sha256:b  -  -  -  -  -\n"
 	assert.Equal(t, want, templateListOutput(rows))
 
 	w := templateWarnings(rows)

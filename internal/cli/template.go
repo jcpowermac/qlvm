@@ -229,6 +229,7 @@ func templateDeletePlan(root string, rows []tplRow, names []string, force bool) 
 type tplRow struct {
 	Dir      string // dir basename (slug-digest)
 	Complete bool   // loadable META present
+	Type     string // "ostree" or "agent"
 	Image    string // META.Image
 	Kernel   string // META.KernelVer
 	HasRaw   bool
@@ -257,6 +258,10 @@ func scanTemplates(root string) ([]tplRow, error) {
 		row := tplRow{Dir: e.Name(), Refs: refs[dir]}
 		if t, merr := template.LoadMeta(dir); merr == nil {
 			row.Complete = true
+			row.Type = t.Type
+			if row.Type == "" {
+				row.Type = "ostree"
+			}
 			row.Image = t.Image
 			row.Kernel = t.KernelVer
 		}
@@ -301,10 +306,12 @@ func templateListOutput(rows []tplRow) string {
 		return "no templates\n"
 	}
 	var b strings.Builder
-	b.WriteString("TEMPLATE  IMAGE  KERNEL  SIZE  REFERENCED-BY\n")
+	b.WriteString("TEMPLATE  TYPE  IMAGE  KERNEL  SIZE  REFERENCED-BY\n")
 	for _, r := range rows {
+		typ := "-"
 		image, kernel, size := "-", "-", "-"
 		if r.Complete {
+			typ = r.Type
 			image = r.Image
 			kernel = r.Kernel
 		}
@@ -315,7 +322,7 @@ func templateListOutput(rows []tplRow) string {
 		if len(r.Refs) > 0 {
 			refs = strings.Join(r.Refs, ", ")
 		}
-		fmt.Fprintf(&b, "%s  %s  %s  %s  %s\n", r.Dir, image, kernel, size, refs)
+		fmt.Fprintf(&b, "%s  %s  %s  %s  %s  %s\n", r.Dir, typ, image, kernel, size, refs)
 	}
 	return b.String()
 }

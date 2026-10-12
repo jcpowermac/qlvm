@@ -19,7 +19,7 @@ import (
 
 func createCmd() *cobra.Command {
 	var domain, typ, tplRef string
-	var memory, vcpus int
+	var memory, vcpus, workspaceSize int
 	var mountFlags []string
 	var configPath string
 	cmd := &cobra.Command{
@@ -42,6 +42,13 @@ func createCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Auto-detect agent type from template.
+			if template.IsAgent(tpl) {
+				if typ == "app" || typ == "disposable" {
+					return fmt.Errorf("--type %s is incompatible with agent template %q (agent templates require --type agent)", typ, tplRef)
+				}
+				typ = "agent"
+			}
 			nb, err := ovn.NewLive(cmd.Context())
 			if err != nil {
 				return err
@@ -62,13 +69,14 @@ func createCmd() *cobra.Command {
 				Root:    installRoot,
 				FSType:  fstype,
 			}, cfg, vm.Spec{
-				Name:     name,
-				Domain:   domain,
-				Type:     typ,
-				Image:    tpl.Image,
-				MemoryMB: memory,
-				VCPUs:    vcpus,
-				Mounts:   ms,
+				Name:            name,
+				Domain:          domain,
+				Type:            typ,
+				Image:           tpl.Image,
+				MemoryMB:        memory,
+				VCPUs:           vcpus,
+				Mounts:          ms,
+				WorkspaceSizeMB: workspaceSize,
 			})
 			if err != nil {
 				return err
@@ -80,10 +88,11 @@ func createCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "", "isolation domain (config section name; default: first in config)")
-	cmd.Flags().StringVar(&typ, "type", "app", "VM type: app or disposable")
+	cmd.Flags().StringVar(&typ, "type", "app", "VM type: app, disposable, or agent (auto-detected from template)")
 	cmd.Flags().StringVar(&tplRef, "template", "", "template dir to reference (exact dir name or unique prefix of `qlvm template list`'s TEMPLATE column; required)")
 	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MB (minimum 64; default: per-type config)")
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPUs (default: per-type config)")
+	cmd.Flags().IntVar(&workspaceSize, "workspace-size", 0, "workspace disk size in MB for agent VMs (default 4096, 0 = ephemeral)")
 	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil, "p9 mount host:guest (repeatable)")
 	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.yaml")
 	_ = cmd.MarkFlagRequired("template")

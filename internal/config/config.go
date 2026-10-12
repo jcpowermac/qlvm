@@ -25,6 +25,7 @@ type Config struct {
 	Domains    []Domain   `yaml:"domain"`
 	VM         VMDefaults `yaml:"vm"`
 	Disposable VMDefaults `yaml:"disposable"`
+	Agent      VMDefaults `yaml:"agent"`
 	Firewall   Firewall   `yaml:"firewall"`
 }
 

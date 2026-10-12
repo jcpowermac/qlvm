@@ -78,10 +78,16 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		}
 	case "agent":
 		if memory == 0 {
-			memory = cfg.VM.MemoryMB
+			memory = cfg.Agent.MemoryMB
+			if memory == 0 {
+				memory = cfg.VM.MemoryMB
+			}
 		}
 		if vcpus == 0 {
-			vcpus = cfg.VM.VCPUs
+			vcpus = cfg.Agent.VCPUs
+			if vcpus == 0 {
+				vcpus = cfg.VM.VCPUs
+			}
 		}
 	default:
 		return nil, fmt.Errorf("type %q: must be app, disposable, or agent", spec.Type)
