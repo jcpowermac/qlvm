@@ -50,7 +50,7 @@ func TestBakeAgentTemplate(t *testing.T) {
 		},
 		removeContErr: nil,
 	}
-	tpl, err := bakeAgentTemplate(context.Background(), pc, "test-image", dir, io.Discard)
+	tpl, err := bakeAgentTemplate(context.Background(), pc, "test-image", "sha256:abcd1234", dir, io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

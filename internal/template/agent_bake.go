@@ -13,9 +13,12 @@ import (
 
 // bakeAgentTemplate extracts kernel/initramfs from an agent container image
 // and writes them to dir. Returns the Template metadata.
-func bakeAgentTemplate(ctx context.Context, pc Podman, ref, dir string, log io.Writer) (*Template, error) {
-	// Inspect image for labels
-	labels, err := pc.InspectImage(ctx, ref)
+// bakeAgentTemplate extracts kernel+initramfs from a local container image.
+// ref is the original image reference (for META), imageID is the local
+// image ID (digest) guaranteed available after Pull.
+func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID, dir string, log io.Writer) (*Template, error) {
+	// Inspect image for labels (use local imageID)
+	labels, err := pc.InspectImage(ctx, imageID)
 	if err != nil {
 		return nil, fmt.Errorf("inspect image: %w", err)
 	}
@@ -28,8 +31,8 @@ func bakeAgentTemplate(ctx context.Context, pc Podman, ref, dir string, log io.W
 		initramfsPath = defaultAgentInitramfsPath(labels)
 	}
 
-	// Create temporary container for file extraction
-	containerID, err := pc.CreateContainer(ctx, ref, nil)
+	// Create temporary container for file extraction (use local imageID)
+	containerID, err := pc.CreateContainer(ctx, imageID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create extraction container: %w", err)
 	}

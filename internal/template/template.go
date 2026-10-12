@@ -126,12 +126,19 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 		return t, nil
 	}
 	// Agent templates: extract kernel/initramfs from the container instead
-	// of running image-builder.
-	if tp, err := detectTemplateType(ctx, p, o.Ref); err == nil && tp == "agent" {
+	// of running image-builder. Use the digest (guaranteed local after Pull).
+	if tp, err := detectTemplateType(ctx, p, digest); err != nil {
+		if o.Log != nil {
+			fmt.Fprintf(o.Log, "warning: template type detection failed: %v\n", err)
+		}
+		// Detection failed: fall through to ostree path (legacy behavior).
+		// If the user intended an agent template, they will see the warning
+		// and the ostree bake will fail with a clear error.
+	} else if tp == "agent" {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, err
 		}
-		return bakeAgentTemplate(ctx, p, o.Ref, dir, o.Log)
+		return bakeAgentTemplate(ctx, p, o.Ref, digest, dir, o.Log)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
