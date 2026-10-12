@@ -173,8 +173,8 @@ func TestParseConnect(t *testing.T) {
 }
 
 func TestSSHArgs(t *testing.T) {
-	args := SSHArgs("10.100.1.5", "firefox --private")
-	assert.Equal(t, []string{"--xwls", "ssh",
+	args := SSHArgs("foo", "10.100.1.5", "firefox --private")
+	assert.Equal(t, []string{"--xwls", "--title-prefix", "[foo] ", "ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ServerAliveInterval=15",
@@ -183,6 +183,6 @@ func TestSSHArgs(t *testing.T) {
 
 	// Empty exec: waypipe ssh with no command (remote login shell), the
 	// pre-control-channel behavior.
-	args = SSHArgs("10.100.1.5", "")
+	args = SSHArgs("foo", "10.100.1.5", "")
 	assert.Equal(t, "user@10.100.1.5", args[len(args)-1])
 }

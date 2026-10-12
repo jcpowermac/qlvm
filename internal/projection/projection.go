@@ -67,8 +67,8 @@ func waitPort(c Connect) int {
 // multi-hop (br-ex uplink → OVN gateway → netfront) and idle TCP flows
 // blackhole there, so fail in ~45s if the peer died instead of hanging
 // until ssh's default ~15min give-up.
-func SSHArgs(ip, exec string) []string {
-	args := []string{"--xwls", "ssh",
+func SSHArgs(name, ip, exec string) []string {
+	args := []string{"--xwls", "--title-prefix", "[" + name + "] ", "ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ServerAliveInterval=15",
@@ -136,7 +136,7 @@ func Run(ctx context.Context, d Deps, m *vm.Meta, c Connect, dom0IP, exec string
 	d.fill()
 	switch c {
 	case ConnectSSH:
-		return d.Waypipe(SSHArgs(m.IP, exec), stdin, out, errW)
+		return d.Waypipe(SSHArgs(m.Name, m.IP, exec), stdin, out, errW)
 	case ConnectVsock:
 		return runVsock(ctx, d, m, exec, stdin, out, errW)
 	default: // ConnectTCP
