@@ -18,6 +18,18 @@ const (
 	testDigest = "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456"
 )
 
+func TestIsAgent(t *testing.T) {
+	if !IsAgent(&Template{Type: "agent"}) {
+		t.Error("expected agent")
+	}
+	if IsAgent(&Template{Type: "ostree"}) {
+		t.Error("expected not agent")
+	}
+	if IsAgent(&Template{Type: ""}) {
+		t.Error("empty type should not be agent")
+	}
+}
+
 // fakePodman records calls; RunImageBuilder simulates the builder by
 // dropping a raw output file in the workdir.
 type fakePodman struct {

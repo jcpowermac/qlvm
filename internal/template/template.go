@@ -48,6 +48,12 @@ type Template struct {
 	RootDev    string `yaml:"root_dev"`
 	RootFlags  string `yaml:"root_flags"`
 	OstreePath string `yaml:"ostree_path"`
+	Type       string `yaml:"type"` // "ostree" or "agent"
+}
+
+// IsAgent reports whether t is an agent template (pvh-initramfs).
+func IsAgent(t *Template) bool {
+	return t.Type == "agent"
 }
 
 // EnsureOpts configures Ensure.
