@@ -38,6 +38,10 @@ type Podman interface {
 	RemoveContainer(ctx context.Context, id string, force bool) error
 	// InspectImage returns the image's config labels.
 	InspectImage(ctx context.Context, ref string) (map[string]string, error)
+	// CreateContainer creates a container from the image (not started).
+	CreateContainer(ctx context.Context, ref string, cmd []string) (id string, err error)
+	// CopyFromContainer copies a file from the container to writer.
+	CopyFromContainer(ctx context.Context, containerID, path string, writer io.Writer) error
 }
 
 // Template is a built OS template. RootFlags is "subvol=root" on btrfs hosts,
@@ -120,6 +124,14 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	dir := DirFor(o.Root, slugFromRef(o.Ref), digest)
 	if t, err := LoadMeta(dir); err == nil && t.Digest == digest {
 		return t, nil
+	}
+	// Agent templates: extract kernel/initramfs from the container instead
+	// of running image-builder.
+	if tp, err := detectTemplateType(ctx, p, o.Ref); err == nil && tp == "agent" {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, err
+		}
+		return bakeAgentTemplate(ctx, p, o.Ref, dir, o.Log)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
@@ -308,6 +320,32 @@ func (p *podmanClient) InspectImage(ctx context.Context, ref string) (map[string
 		return nil, err
 	}
 	return report.Config.Labels, nil
+}
+
+func (p *podmanClient) CreateContainer(ctx context.Context, ref string, cmd []string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	sgen := specgen.NewSpecGenerator(ref, false)
+	if cmd != nil {
+		sgen.Command = cmd
+	}
+	resp, err := containers.CreateWithSpec(p.ctx, sgen, nil)
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+func (p *podmanClient) CopyFromContainer(ctx context.Context, containerID, path string, writer io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	copyFunc, err := containers.CopyToArchive(p.ctx, containerID, path, writer)
+	if err != nil {
+		return err
+	}
+	return copyFunc()
 }
 
 // NormalizeDigest prefixes a bare 64-hex digest with sha256:; anything

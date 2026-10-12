@@ -41,6 +41,8 @@ type fakePodman struct {
 	removedConts  []string
 	removeContErr error
 	inspectFunc   func(ctx context.Context, ref string) (map[string]string, error)
+	createFunc    func(ctx context.Context, ref string, cmd []string) (string, error)
+	copyFunc      func(ctx context.Context, id, path string, writer io.Writer) error
 }
 
 type builderCall struct{ workdir, ref string }
@@ -75,6 +77,20 @@ func (f *fakePodman) InspectImage(ctx context.Context, ref string) (map[string]s
 		return f.inspectFunc(ctx, ref)
 	}
 	return map[string]string{}, nil
+}
+
+func (f *fakePodman) CreateContainer(ctx context.Context, ref string, cmd []string) (string, error) {
+	if f.createFunc != nil {
+		return f.createFunc(ctx, ref, cmd)
+	}
+	return "fake-container", nil
+}
+
+func (f *fakePodman) CopyFromContainer(ctx context.Context, id, path string, writer io.Writer) error {
+	if f.copyFunc != nil {
+		return f.copyFunc(ctx, id, path, writer)
+	}
+	return nil
 }
 
 func TestDirFor(t *testing.T) {
