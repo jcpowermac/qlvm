@@ -75,8 +75,15 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		if vcpus == 0 {
 			vcpus = cfg.Disposable.VCPUs
 		}
+	case "agent":
+		if memory == 0 {
+			memory = cfg.VM.MemoryMB
+		}
+		if vcpus == 0 {
+			vcpus = cfg.VM.VCPUs
+		}
 	default:
-		return nil, fmt.Errorf("type %q: must be app or disposable", spec.Type)
+		return nil, fmt.Errorf("type %q: must be app, disposable, or agent", spec.Type)
 	}
 	// Floor check on the RESOLVED value: a `--memory 4` meant as 4 GB would
 	// otherwise only fail later as a Xen hypervisor panic at boot time.
@@ -105,6 +112,10 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	}
 	if err := d.OVN.AddLSPort(ctx, spec.Domain, spec.Name, mac, ip); err != nil {
 		return fail(fmt.Errorf("add OVN port %s: %w", spec.Name, err))
+	}
+	// Agent VMs: no disk reflink, no networkd bake — kernel/initramfs only.
+	if template.IsAgent(d.Tpl) {
+		return createAgentVM(ctx, d, spec, vmDir, ip, mac, memory, vcpus, fail)
 	}
 	disk := filepath.Join(vmDir, "disk.img")
 	if err := d.Reflink(disk, filepath.Join(d.Tpl.Dir, "template.raw")); err != nil {
@@ -228,4 +239,34 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// createAgentVM prepares an agent VM: copies kernel/initramfs from the
+// template dir (per-VM state), saves meta. No disk reflink, no networkd
+// bake, no control token bake (agent VMs use console, not ssh).
+func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, fail func(error) (*Meta, error)) (*Meta, error) {
+	// Copy kernel/initramfs from template to VM dir (per-VM state)
+	if err := copyFile(filepath.Join(d.Tpl.Dir, "vmlinuz"), filepath.Join(vmDir, "vmlinuz")); err != nil {
+		return fail(fmt.Errorf("copy kernel: %w", err))
+	}
+	if err := copyFile(filepath.Join(d.Tpl.Dir, "initramfs"), filepath.Join(vmDir, "initramfs")); err != nil {
+		return fail(fmt.Errorf("copy initramfs: %w", err))
+	}
+	m := &Meta{
+		Name:     spec.Name,
+		Type:     "agent",
+		Image:    spec.Image,
+		Digest:   d.Tpl.Digest,
+		Domain:   spec.Domain,
+		IP:       ip,
+		MAC:      mac,
+		MemoryMB: memory,
+		VCPUs:    vcpus,
+		UUID:     newUUID(),
+		Created:  time.Now(),
+	}
+	if err := m.Save(vmDir); err != nil {
+		return fail(fmt.Errorf("save meta: %w", err))
+	}
+	return m, nil
 }
