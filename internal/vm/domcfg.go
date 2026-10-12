@@ -62,6 +62,9 @@ func P9Tag(vmName string, i int) string {
 // vmDir is the VM state dir holding disk.img (ruling 2026-09-26: added as a
 // parameter rather than a Meta field).
 func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
+	if template.IsAgent(tpl) {
+		return agentDomainConfig(vmDir, m)
+	}
 	extra := []string{"root=" + tpl.RootDev}
 	if tpl.RootFlags != "" {
 		extra = append(extra, tpl.RootFlags)
@@ -104,5 +107,27 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 		}},
 		Nics: []DomainNic{{Mac: m.MAC, Script: "vif-ovn", Nictype: "vif"}},
 		P9S:  p9s,
+	}
+}
+
+// agentDomainConfig renders the libxl domain configuration for an agent VM:
+// kernel+initramfs boot (initramfs is root), static IP via kernel cmdline,
+// no ostree params, no root disk.
+func agentDomainConfig(vmDir string, m *Meta) *DomainSpec {
+	return &DomainSpec{
+		Type: "PVH",
+		Name: m.Name,
+		UUID: m.UUID,
+		Kernel:  filepath.Join(vmDir, "vmlinuz"),
+		Ramdisk: filepath.Join(vmDir, "initramfs"),
+		Extra: []string{
+			"console=hvc0",
+			"ip=" + m.IP,
+		},
+		MaxVcpus:    m.VCPUs,
+		TargetMemkb: m.MemoryMB * 1024,
+		Disks:       []DomainDisk{},
+		Nics: []DomainNic{{Mac: m.MAC, Script: "vif-ovn", Nictype: "vif"}},
+		P9S:         []DomainP9{},
 	}
 }
