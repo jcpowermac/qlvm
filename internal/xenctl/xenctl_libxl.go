@@ -8,7 +8,9 @@ package xenctl
 import (
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 
 	"xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight"
 
@@ -92,6 +94,70 @@ func stateOf(d xenlight.Dominfo) string {
 	return domainState(d.Dying, d.Running, d.Paused, d.Blocked)
 }
 
+
+// Console attaches to a running VM's primary console (TTY).
+// Uses xenlight PrimaryConsoleGetTty to find the TTY device, then
+// does bidirectional I/O between stdin/stdout and the TTY.
+func (x *libxlXen) Console(name string) error {
+	d, err := x.NameToDomid(name)
+	if err != nil {
+		return fmt.Errorf("domain %s: %w", name, err)
+	}
+	info, err := x.Dominfo(d)
+	if err != nil {
+		return fmt.Errorf("domain %s: %w", name, err)
+	}
+	if !info.Running() {
+		return fmt.Errorf("domain %s is not running", name)
+	}
+	ttyPath, err := x.PrimaryConsoleGetTty(uint32(d))
+	if err != nil {
+		return fmt.Errorf("get console tty: %w", err)
+	}
+	return connectConsole(ttyPath)
+}
+
+// connectConsole does bidirectional I/O between stdin/stdout and the VM
+// console TTY. Blocks until the TTY closes (VM stopped) or an error occurs.
+func connectConsole(ttyPath string) error {
+	fd, err := syscall.Open(ttyPath, syscall.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return fmt.Errorf("open console tty %s: %w", ttyPath, err)
+	}
+	defer syscall.Close(fd)
+	errCh := make(chan error, 2)
+	// stdin -> console
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				errCh <- err
+				return
+			}
+			if _, err := syscall.Write(fd, buf[:n]); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+	// console -> stdout
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := syscall.Read(fd, buf)
+			if err != nil || n == 0 {
+				errCh <- err
+				return
+			}
+			if _, err := os.Stdout.Write(buf[:n]); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+	return <-errCh
+}
 
 // parseUUID parses a RFC 4122 string into xenlight.Uuid (no exported
 // parser in the generated API; the type is [16]byte).

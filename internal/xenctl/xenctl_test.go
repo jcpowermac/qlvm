@@ -37,6 +37,10 @@ func (f *fakeXen) List() ([]DomainInfo, error) { return nil, nil }
 func (f *fakeXen) Running(name string) (bool, error) {
 	return f.running[name], nil
 }
+func (f *fakeXen) Console(name string) error {
+	*f.events = append(*f.events, "console:"+name)
+	return nil
+}
 func (f *fakeXen) Close() error { return nil }
 
 // fakeVif is a VifPorter that reports f.stale from StaleVifPorts.

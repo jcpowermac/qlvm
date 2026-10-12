@@ -24,6 +24,9 @@ type Xen interface {
 	Shutdown(name string) error
 	List() ([]DomainInfo, error)
 	Running(name string) (bool, error)
+	// Console attaches to a running VM's primary console (TTY).
+	// Blocks until the console closes (VM stopped or user disconnects).
+	Console(name string) error
 	Close() error
 }
 

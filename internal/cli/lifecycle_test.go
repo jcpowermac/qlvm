@@ -46,6 +46,10 @@ func (f *fakeXen) Running(name string) (bool, error) {
 	}
 	return f.running[name], nil
 }
+func (f *fakeXen) Console(name string) error {
+	*f.events = append(*f.events, "console:"+name)
+	return nil
+}
 func (f *fakeXen) Close() error { return nil }
 
 // shortStopSeams shrinks stopPollInterval/stopMaxWait so stopForced's poll
