@@ -77,3 +77,36 @@ func TestLoadRefTemplate(t *testing.T) {
 		assert.Contains(t, err.Error(), "qlvm template create", "error must point at the bake command")
 	}
 }
+
+func TestLoadRefTemplateAgent(t *testing.T) {
+	root := t.TempDir()
+	// Agent template: META with Type="agent", vmlinuz + initramfs, no raw.
+	agentDir := template.DirOfRef(root, "ghcr.io/jcpowermac/pi-in-xen:latest", "sha256:def456")
+	require.NoError(t, os.MkdirAll(agentDir, 0o750))
+	require.NoError(t, (&template.Template{Dir: agentDir, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", KernelVer: "3.21-virt", Type: "agent"}).SaveMeta(agentDir))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "vmlinuz"), []byte("kernel"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "initramfs"), []byte("initramfs"), 0o644))
+
+	// Complete agent template loads without requiring template.raw.
+	tpl, err := loadRefTemplate(root, filepath.Base(agentDir))
+	require.NoError(t, err)
+	assert.Equal(t, "agent", tpl.Type)
+
+	// Agent template missing vmlinuz is incomplete.
+	noKernel := filepath.Join(root, "templates", "agent-no-kernel")
+	require.NoError(t, os.MkdirAll(noKernel, 0o750))
+	require.NoError(t, (&template.Template{Dir: noKernel, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", Type: "agent"}).SaveMeta(noKernel))
+	require.NoError(t, os.WriteFile(filepath.Join(noKernel, "initramfs"), []byte("initramfs"), 0o644))
+	_, err = loadRefTemplate(root, filepath.Base(noKernel))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vmlinuz")
+
+	// Agent template missing initramfs is incomplete.
+	noInitramfs := filepath.Join(root, "templates", "agent-no-initramfs")
+	require.NoError(t, os.MkdirAll(noInitramfs, 0o750))
+	require.NoError(t, (&template.Template{Dir: noInitramfs, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", Type: "agent"}).SaveMeta(noInitramfs))
+	require.NoError(t, os.WriteFile(filepath.Join(noInitramfs, "vmlinuz"), []byte("kernel"), 0o644))
+	_, err = loadRefTemplate(root, filepath.Base(noInitramfs))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "initramfs")
+}

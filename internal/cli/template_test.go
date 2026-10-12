@@ -83,6 +83,45 @@ func TestTemplateListOutput(t *testing.T) {
 	assert.NotContains(t, w, "ns-os-bolt-sha256:a")
 }
 
+func TestTemplateWarningsAgentNoRawWarning(t *testing.T) {
+	// Agent templates have vmlinuz/initramfs, not template.raw — they must
+	// not trigger the "incomplete bake" warning.
+	rows := []tplRow{
+		{Dir: "pi-in-xen-sha256:abc", Complete: true, Type: "agent", Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Kernel: "3.21-virt"},
+	}
+	w := templateWarnings(rows)
+	assert.Empty(t, w, "agent template must not warn about missing template.raw")
+
+	// An incomplete ostree template (no raw) must still warn.
+	rows[0].Type = "ostree"
+	w = templateWarnings(rows)
+	assert.Contains(t, w, "pi-in-xen-sha256:abc")
+	assert.Contains(t, w, "no template.raw")
+}
+
+func TestScanTemplatesAgent(t *testing.T) {
+	root := t.TempDir()
+	// Agent template: META with Type="agent", vmlinuz + initramfs, no raw.
+	dir := template.DirOfRef(root, "ghcr.io/jcpowermac/pi-in-xen:latest", "sha256:def456")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, (&template.Template{Dir: dir, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", KernelVer: "3.21-virt", Type: "agent"}).SaveMeta(dir))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "initramfs"), []byte("initramfs"), 0o644))
+
+	rows, err := scanTemplates(root)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+
+	assert.True(t, rows[0].Complete)
+	assert.Equal(t, "agent", rows[0].Type)
+	assert.False(t, rows[0].HasRaw)
+	assert.Equal(t, "3.21-virt", rows[0].Kernel)
+
+	// No warning for the agent template.
+	w := templateWarnings(rows)
+	assert.Empty(t, w)
+}
+
 func TestTemplateDeletePlan(t *testing.T) {
 	root := t.TempDir()
 	referenced := writeTemplate(t, root, cliTestRef, cliTestDigest, true)

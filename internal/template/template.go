@@ -148,7 +148,14 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, err
 		}
-		return bakeAgentTemplate(ctx, p, o.Ref, digest, labels, dir, o.Log)
+		t, err := bakeAgentTemplate(ctx, p, o.Ref, digest, labels, dir, o.Log)
+		if err != nil {
+			return nil, err
+		}
+		if err := t.SaveMeta(dir); err != nil {
+			return nil, err
+		}
+		return t, nil
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err

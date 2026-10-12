@@ -61,15 +61,10 @@ func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labe
 		return nil, fmt.Errorf("write initramfs: %w", err)
 	}
 
-	digest, err := pc.Pull(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("pull image for digest: %w", err)
-	}
-
 	return &Template{
 		Dir:       dir,
 		Image:     ref,
-		Digest:    digest,
+		Digest:    imageID,
 		KernelVer: kernelVer,
 		Type:      "agent",
 	}, nil

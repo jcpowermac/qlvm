@@ -1,6 +1,8 @@
 package template
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -121,6 +123,73 @@ func TestEnsureSkipsWhenMetaMatchesDigest(t *testing.T) {
 	assert.Equal(t, []string{testRef}, p.pulls, "Pull must be called to learn the digest")
 	assert.Empty(t, p.builderCalls, "builder must not run when META digest matches")
 	assert.Equal(t, saved, got)
+}
+
+func TestEnsureAgentTemplatePersistsMeta(t *testing.T) {
+	root := t.TempDir()
+	p := &fakePodman{
+		digest: testDigest,
+		inspectFunc: func(ctx context.Context, ref string) (map[string]string, error) {
+			return map[string]string{
+				"io.qlvm.type":      "pvh-initramfs",
+				"io.qlvm.kernel":    "/usr/lib/modules/7.2.8-xen1/vmlinuz",
+				"io.qlvm.initramfs": "/usr/lib/modules/7.2.8-xen1/initramfs.img",
+			}, nil
+		},
+		createFunc: func(ctx context.Context, ref string, cmd []string) (string, error) {
+			return "container123", nil
+		},
+		copyFunc: func(ctx context.Context, id, path string, writer io.Writer) error {
+			var content []byte
+			if strings.Contains(path, "vmlinuz") {
+				content = []byte("fake-kernel")
+			} else if strings.Contains(path, "initramfs") {
+				content = []byte("fake-initramfs")
+			} else if strings.Contains(path, "kernel-version") {
+				content = []byte("7.2.8-xen1")
+			}
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			_ = tw.WriteHeader(&tar.Header{
+				Name:     filepath.Base(path),
+				Mode:     0o644,
+				Size:     int64(len(content)),
+				Typeflag: tar.TypeReg,
+			})
+			_, _ = tw.Write(content)
+			_ = tw.Close()
+			_, _ = writer.Write(buf.Bytes())
+			return nil
+		},
+	}
+	tpl, err := Ensure(context.Background(), p, EnsureOpts{
+		Root: root,
+		Ref:  testRef,
+		Log:  io.Discard,
+	})
+	require.NoError(t, err)
+
+	wantDir := filepath.Join(root, "templates", "ns-os-bolt-"+testDigest)
+	require.Equal(t, wantDir, tpl.Dir)
+	require.Equal(t, "agent", tpl.Type)
+	require.Equal(t, "7.2.8-xen1", tpl.KernelVer)
+	require.Equal(t, testDigest, tpl.Digest)
+
+	// META must be persisted (the bug: agent path never called SaveMeta)
+	loaded, err := LoadMeta(wantDir)
+	require.NoError(t, err, "META must be persisted for agent templates")
+	require.Equal(t, "agent", loaded.Type)
+	require.Equal(t, "7.2.8-xen1", loaded.KernelVer)
+	require.Equal(t, testDigest, loaded.Digest)
+
+	// vmlinuz and initramfs must exist
+	_, err = os.Stat(filepath.Join(wantDir, "vmlinuz"))
+	require.NoError(t, err, "vmlinuz must be extracted")
+	_, err = os.Stat(filepath.Join(wantDir, "initramfs"))
+	require.NoError(t, err, "initramfs must be extracted")
+
+	// The builder must NOT have run (agent path skips image-builder)
+	assert.Empty(t, p.builderCalls)
 }
 
 func TestEnsureRunsBuilderWhenMissing(t *testing.T) {

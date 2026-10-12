@@ -136,9 +136,10 @@ func resolveTemplate(root, name string) (string, error) {
 }
 
 // loadRefTemplate resolves --template under root to a COMPLETE template dir
-// (META + template.raw) and returns its META. This is create's only
-// template touchpoint: no podman, no pull, no bake — a VM is a reference to
-// a bake `qlvm template create` already made.
+// and returns its META. Ostree templates require META + template.raw; agent
+// templates require META + vmlinuz + initramfs (no raw). This is create's
+// only template touchpoint: no podman, no pull, no bake — a VM is a
+// reference to a bake `qlvm template create` already made.
 func loadRefTemplate(root, name string) (*template.Template, error) {
 	dir, err := resolveTemplate(root, name)
 	if err != nil {
@@ -147,6 +148,15 @@ func loadRefTemplate(root, name string) (*template.Template, error) {
 	tpl, err := template.LoadMeta(dir)
 	if err != nil {
 		return nil, fmt.Errorf("template %s has no loadable META: %w; bake a complete one with qlvm template create <ref>", filepath.Base(dir), err)
+	}
+	// Agent templates carry vmlinuz/initramfs, not template.raw.
+	if template.IsAgent(tpl) {
+		for _, f := range []string{"vmlinuz", "initramfs"} {
+			if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+				return nil, fmt.Errorf("template %s is incomplete (no %s); bake it with qlvm template create <ref>", filepath.Base(dir), f)
+			}
+		}
+		return tpl, nil
 	}
 	if _, err := os.Stat(filepath.Join(dir, "template.raw")); err != nil {
 		return nil, fmt.Errorf("template %s is incomplete (no template.raw); bake it with qlvm template create <ref>", filepath.Base(dir))

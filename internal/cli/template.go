@@ -330,14 +330,16 @@ func templateListOutput(rows []tplRow) string {
 }
 
 // templateWarnings reports incomplete template dirs (no META, or META
-// without template.raw) — nothing in them is reusable.
+// without template.raw) — nothing in them is reusable. Agent templates
+// have vmlinuz/initramfs instead of template.raw, so they are never
+// warned about.
 func templateWarnings(rows []tplRow) string {
 	var b strings.Builder
 	for _, r := range rows {
 		switch {
 		case !r.Complete:
 			fmt.Fprintf(&b, "warning: %s is incomplete (no META); remove with: qlvm template delete --force\n", r.Dir)
-		case !r.HasRaw:
+		case !r.HasRaw && r.Type != "agent":
 			fmt.Fprintf(&b, "warning: %s has no template.raw (incomplete bake); remove with: qlvm template delete\n", r.Dir)
 		}
 	}
