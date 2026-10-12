@@ -11,8 +11,12 @@ import (
 func consoleCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "console <name>",
-		Short: "Attach to a running VM's console (agent VMs)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Attach to a VM's console (agent VMs)",
+		Long: `Attach to a VM's primary console (hvc0). The console is available for
+any existing domain, running or blocked. The local terminal is put in raw
+mode: Ctrl+C and other control characters go to the VM, not the local
+shell. Press Ctrl+] to detach and return to the shell.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			dir := vmDirOf(name)

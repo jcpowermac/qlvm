@@ -9,9 +9,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 	"xenbits.xenproject.org/git-http/xen.git/tools/golang/xenlight"
 
 	"github.com/jcpowermac/qlvm/internal/vm"
@@ -94,21 +98,22 @@ func stateOf(d xenlight.Dominfo) string {
 	return domainState(d.Dying, d.Running, d.Paused, d.Blocked)
 }
 
-
-// Console attaches to a running VM's primary console (TTY).
+// Console attaches to a VM's primary console (TTY). The console is
+// available for any existing domain (running or blocked), not just
+// running ones — xl console works on blocked domains too.
 // Uses xenlight PrimaryConsoleGetTty to find the TTY device, then
 // does bidirectional I/O between stdin/stdout and the TTY.
 func (x *libxlXen) Console(name string) error {
+	running, err := x.Running(name)
+	if err != nil {
+		return fmt.Errorf("domain %s: %w", name, err)
+	}
+	if !running {
+		return fmt.Errorf("domain %s is not running", name)
+	}
 	d, err := x.NameToDomid(name)
 	if err != nil {
 		return fmt.Errorf("domain %s: %w", name, err)
-	}
-	di, err := x.DomainInfo(d)
-	if err != nil {
-		return fmt.Errorf("domain %s: %w", name, err)
-	}
-	if !di.Running {
-		return fmt.Errorf("domain %s is not running", name)
 	}
 	ttyPath, err := x.PrimaryConsoleGetTty(uint32(d))
 	if err != nil {
@@ -117,27 +122,94 @@ func (x *libxlXen) Console(name string) error {
 	return connectConsole(ttyPath)
 }
 
+// consoleEscape is the detach key: Ctrl+] (SO, 0x1D), the telnet
+// convention. In raw mode Ctrl+C goes to the VM, so this is the only
+// way to return to the local shell.
+const consoleEscape = 0x1D
+
 // connectConsole does bidirectional I/O between stdin/stdout and the VM
-// console TTY. Blocks until the TTY closes (VM stopped) or an error occurs.
+// console TTY. Puts the local terminal in raw mode so input is passed
+// through unmodified (no signal generation, no local echo, no line
+// editing) and escape sequences reach the VM console intact. The terminal
+// is restored on exit.
+// Blocks until the TTY closes (VM stopped), the user presses Ctrl+] to
+// detach, or an error occurs.
 func connectConsole(ttyPath string) error {
 	fd, err := syscall.Open(ttyPath, syscall.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return fmt.Errorf("open console tty %s: %w", ttyPath, err)
 	}
 	defer syscall.Close(fd)
+
+	stdinFd := int(os.Stdin.Fd())
+	var oldState *term.State
+	if term.IsTerminal(stdinFd) {
+		oldState, err = term.MakeRaw(stdinFd)
+		if err != nil {
+			return fmt.Errorf("make raw terminal: %w", err)
+		}
+		defer term.Restore(stdinFd, oldState)
+
+		// Match the guest TTY size to the local terminal so full-screen
+		// apps and long output (e.g. the pi agent) use the full window.
+		if err := syncWinsize(stdinFd, fd); err != nil {
+			// Non-fatal: the guest may not support it, or the size
+			// query may fail on unusual terminals.
+			fmt.Fprintf(os.Stderr, "warning: could not set guest terminal size: %v\n", err)
+		}
+
+		// Keep the guest TTY in sync when the local terminal is resized.
+		winch := make(chan os.Signal, 1)
+		signal.Notify(winch, syscall.SIGWINCH)
+		go func() {
+			for range winch {
+				if err := syncWinsize(stdinFd, fd); err != nil {
+					// Ignore resize failures (the console may be closing).
+				}
+			}
+		}()
+		defer signal.Stop(winch)
+	}
+
+	stdoutFd := int(os.Stdout.Fd())
 	errCh := make(chan error, 2)
-	// stdin -> console
+	// shutdown signals both I/O goroutines to stop. Closing the console
+	// fd from the stdin goroutine while the stdout goroutine is blocked
+	// in syscall.Read on it is undefined (the read can hang); use a
+	// channel instead and let the deferred Close at the top of the
+	// function unblock the read.
+	var stopOnce sync.Once
+	shutdown := make(chan struct{})
+	stop := func() { stopOnce.Do(func() { close(shutdown) }) }
+	// stdin -> console; Ctrl+] (0x1D) detaches.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := os.Stdin.Read(buf)
+			n, err := syscall.Read(stdinFd, buf)
 			if err != nil || n == 0 {
+				stop()
 				errCh <- err
 				return
 			}
-			if _, err := syscall.Write(fd, buf[:n]); err != nil {
-				errCh <- err
-				return
+			// Filter out the escape byte before forwarding.
+			var out []byte
+			for _, b := range buf[:n] {
+				if b == consoleEscape {
+					// Detach: signal the read side to stop, then return
+					// nil (clean exit). The deferred syscall.Close(fd)
+					// unblocks the stdout goroutine's read.
+					stop()
+					errCh <- nil
+					return
+				}
+				out = append(out, b)
+			}
+			if len(out) > 0 {
+				if _, err := syscall.Write(fd, out); err != nil {
+					stop()
+					errCh <- err
+					return
+				}
 			}
 		}
 	}()
@@ -145,12 +217,19 @@ func connectConsole(ttyPath string) error {
 	go func() {
 		buf := make([]byte, 4096)
 		for {
+			select {
+			case <-shutdown:
+				return
+			default:
+			}
 			n, err := syscall.Read(fd, buf)
 			if err != nil || n == 0 {
+				stop()
 				errCh <- err
 				return
 			}
-			if _, err := os.Stdout.Write(buf[:n]); err != nil {
+			if _, err := syscall.Write(stdoutFd, buf[:n]); err != nil {
+				stop()
 				errCh <- err
 				return
 			}
@@ -172,6 +251,24 @@ func parseUUID(s string) (xenlight.Uuid, error) {
 	var u xenlight.Uuid
 	copy(u[:], b)
 	return u, nil
+}
+
+// syncWinsize copies the terminal size (rows, cols) from localFd to
+// targetFd. The guest console TTY needs this so that full-screen apps
+// and wrapped text match the user's local terminal dimensions.
+func syncWinsize(localFd, targetFd int) error {
+	ws, err := unix.IoctlGetWinsize(localFd, unix.TIOCGWINSZ)
+	if err != nil {
+		return fmt.Errorf("get local terminal size: %w", err)
+	}
+	if ws.Rows == 0 || ws.Cols == 0 {
+		// Zero size (detached terminal, pager, etc.): nothing to sync.
+		return nil
+	}
+	if err := unix.IoctlSetWinsize(targetFd, unix.TIOCSWINSZ, ws); err != nil {
+		return fmt.Errorf("set guest terminal size: %w", err)
+	}
+	return nil
 }
 
 // parseMAC parses a colon-separated MAC into xenlight.Mac ([6]byte).
