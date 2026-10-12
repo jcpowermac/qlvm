@@ -103,11 +103,11 @@ func (x *libxlXen) Console(name string) error {
 	if err != nil {
 		return fmt.Errorf("domain %s: %w", name, err)
 	}
-	info, err := x.Dominfo(d)
+	di, err := x.DomainInfo(d)
 	if err != nil {
 		return fmt.Errorf("domain %s: %w", name, err)
 	}
-	if !info.Running() {
+	if !di.Running {
 		return fmt.Errorf("domain %s is not running", name)
 	}
 	ttyPath, err := x.PrimaryConsoleGetTty(uint32(d))
