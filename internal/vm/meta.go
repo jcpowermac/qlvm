@@ -29,6 +29,8 @@ type Meta struct {
 	// Token authenticates the waypipe control channel (guest :4711); the
 	// same secret is baked into the guest's /etc/qvm/waypipe-token.
 	Token string `yaml:"token"`
+	// WorkspaceSizeMB is the size of the agent VM's workspace disk (0 = none).
+	WorkspaceSizeMB int `yaml:"workspace_size_mb"`
 }
 
 // Mount is one p9 share: Host path on dom0, Guest tag inside the VM.

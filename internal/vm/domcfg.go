@@ -114,7 +114,7 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 // kernel+initramfs boot (initramfs is root), static IP via kernel cmdline,
 // no ostree params, no root disk.
 func agentDomainConfig(vmDir string, m *Meta) *DomainSpec {
-	return &DomainSpec{
+	spec := &DomainSpec{
 		Type: "PVH",
 		Name: m.Name,
 		UUID: m.UUID,
@@ -130,4 +130,13 @@ func agentDomainConfig(vmDir string, m *Meta) *DomainSpec {
 		Nics: []DomainNic{{Mac: m.MAC, Script: "vif-ovn", Nictype: "vif"}},
 		P9S:         []DomainP9{},
 	}
+	if m.WorkspaceSizeMB > 0 {
+		spec.Disks = []DomainDisk{{
+			PdevPath:  filepath.Join(vmDir, "workspace.img"),
+			Vdev:      "xvdb",
+			Format:    "raw",
+			Readwrite: 1,
+		}}
+	}
+	return spec
 }

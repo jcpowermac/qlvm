@@ -37,13 +37,14 @@ type CreateDeps struct {
 // Spec is the user-requested VM; zero MemoryMB/VCPUs take defaults from cfg
 // per Type (app -> cfg.VM, disposable -> cfg.Disposable).
 type Spec struct {
-	Name     string
-	Domain   string
-	Type     string
-	Image    string
-	MemoryMB int
-	VCPUs    int
-	Mounts   []Mount
+	Name            string
+	Domain          string
+	Type            string
+	Image           string
+	MemoryMB        int
+	VCPUs           int
+	Mounts          []Mount
+	WorkspaceSizeMB int
 }
 
 // sshConfigFn is the seam Create calls for the app-type side effect, so tests
@@ -252,18 +253,29 @@ func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac 
 	if err := copyFile(filepath.Join(d.Tpl.Dir, "initramfs"), filepath.Join(vmDir, "initramfs")); err != nil {
 		return fail(fmt.Errorf("copy initramfs: %w", err))
 	}
+	// Workspace disk: default 4GB, --workspace-size 0 opts out.
+	workspaceSize := spec.WorkspaceSizeMB
+	if workspaceSize == 0 {
+		workspaceSize = 4096
+	}
+	if workspaceSize > 0 {
+		if err := CreateWorkspaceDisk(filepath.Join(vmDir, "workspace.img"), workspaceSize); err != nil {
+			return fail(fmt.Errorf("create workspace disk: %w", err))
+		}
+	}
 	m := &Meta{
-		Name:     spec.Name,
-		Type:     "agent",
-		Image:    spec.Image,
-		Digest:   d.Tpl.Digest,
-		Domain:   spec.Domain,
-		IP:       ip,
-		MAC:      mac,
-		MemoryMB: memory,
-		VCPUs:    vcpus,
-		UUID:     newUUID(),
-		Created:  time.Now(),
+		Name:            spec.Name,
+		Type:            "agent",
+		Image:           spec.Image,
+		Digest:          d.Tpl.Digest,
+		Domain:          spec.Domain,
+		IP:              ip,
+		MAC:             mac,
+		MemoryMB:        memory,
+		VCPUs:           vcpus,
+		UUID:            newUUID(),
+		Created:         time.Now(),
+		WorkspaceSizeMB: workspaceSize,
 	}
 	if err := m.Save(vmDir); err != nil {
 		return fail(fmt.Errorf("save meta: %w", err))

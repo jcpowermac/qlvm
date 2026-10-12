@@ -97,8 +97,16 @@ func TestCreate_AgentVM(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(vmDir, "disk.img")); err == nil {
 		t.Error("disk.img should not exist for agent VM")
 	}
-	// Verify meta.yaml saved
-	if _, err := LoadMeta(vmDir); err != nil {
+	// Verify workspace disk created (default 4GB)
+	if _, err := os.Stat(filepath.Join(vmDir, "workspace.img")); err != nil {
+		t.Errorf("workspace.img not created: %v", err)
+	}
+	// Verify meta.yaml saved with workspace size
+	meta, err := LoadMeta(vmDir)
+	if err != nil {
 		t.Errorf("meta.yaml not saved: %v", err)
+	}
+	if meta.WorkspaceSizeMB != 4096 {
+		t.Errorf("expected workspace size 4096, got %d", meta.WorkspaceSizeMB)
 	}
 }

@@ -55,3 +55,31 @@ func TestDomainConfig_Agent(t *testing.T) {
 		t.Errorf("agent VM should have no disks, got %d", len(spec.Disks))
 	}
 }
+
+func TestDomainConfig_AgentWithWorkspace(t *testing.T) {
+	m := &Meta{
+		Name:            "test-agent",
+		Type:            "agent",
+		UUID:            "12345678-1234-5678-1234-567812345678",
+		IP:              "10.100.0.5",
+		MAC:             "aa:bb:cc:dd:ee:ff",
+		MemoryMB:        2048,
+		VCPUs:           2,
+		WorkspaceSizeMB: 4096,
+	}
+	tpl := &template.Template{
+		Type: "agent",
+		Dir:  "/var/lib/qvm/templates/test",
+	}
+	spec := DomainConfig("/var/lib/qvm/vms/test-agent", m, tpl)
+
+	if len(spec.Disks) != 1 {
+		t.Fatalf("expected 1 disk, got %d", len(spec.Disks))
+	}
+	if spec.Disks[0].PdevPath != "/var/lib/qvm/vms/test-agent/workspace.img" {
+		t.Errorf("unexpected disk path: %s", spec.Disks[0].PdevPath)
+	}
+	if spec.Disks[0].Vdev != "xvdb" {
+		t.Errorf("expected xvdb, got %s", spec.Disks[0].Vdev)
+	}
+}
