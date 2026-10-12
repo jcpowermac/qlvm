@@ -36,6 +36,8 @@ type Podman interface {
 	ListBuilderContainers(ctx context.Context) ([]string, error)
 	// RemoveContainer removes a container; force also removes running ones.
 	RemoveContainer(ctx context.Context, id string, force bool) error
+	// InspectImage returns the image's config labels.
+	InspectImage(ctx context.Context, ref string) (map[string]string, error)
 }
 
 // Template is a built OS template. RootFlags is "subvol=root" on btrfs hosts,
@@ -295,6 +297,17 @@ func (p *podmanClient) RemoveContainer(ctx context.Context, id string, force boo
 	}
 	_, err := containers.Remove(p.ctx, id, &containers.RemoveOptions{Force: boolPtr(force)})
 	return err
+}
+
+func (p *podmanClient) InspectImage(ctx context.Context, ref string) (map[string]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	report, err := images.GetImage(p.ctx, ref, nil)
+	if err != nil {
+		return nil, err
+	}
+	return report.Config.Labels, nil
 }
 
 // NormalizeDigest prefixes a bare 64-hex digest with sha256:; anything

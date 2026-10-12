@@ -40,6 +40,7 @@ type fakePodman struct {
 	builderConts  []string // ids returned by ListBuilderContainers
 	removedConts  []string
 	removeContErr error
+	inspectFunc   func(ctx context.Context, ref string) (map[string]string, error)
 }
 
 type builderCall struct{ workdir, ref string }
@@ -67,6 +68,13 @@ func (f *fakePodman) RemoveContainer(_ context.Context, id string, _ bool) error
 	}
 	f.removedConts = append(f.removedConts, id)
 	return nil
+}
+
+func (f *fakePodman) InspectImage(ctx context.Context, ref string) (map[string]string, error) {
+	if f.inspectFunc != nil {
+		return f.inspectFunc(ctx, ref)
+	}
+	return map[string]string{}, nil
 }
 
 func TestDirFor(t *testing.T) {
