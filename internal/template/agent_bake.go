@@ -15,13 +15,9 @@ import (
 // and writes them to dir. Returns the Template metadata.
 // bakeAgentTemplate extracts kernel+initramfs from a local container image.
 // ref is the original image reference (for META), imageID is the local
-// image ID (digest) guaranteed available after Pull.
-func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID, dir string, log io.Writer) (*Template, error) {
-	// Inspect image for labels (use local imageID)
-	labels, err := pc.InspectImage(ctx, imageID)
-	if err != nil {
-		return nil, fmt.Errorf("inspect image: %w", err)
-	}
+// image ID (digest) guaranteed available after Pull, labels are the image
+// labels (already inspected by detectTemplateType, passed to avoid a second pull).
+func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labels map[string]string, dir string, log io.Writer) (*Template, error) {
 	kernelPath, ok := labels["io.qlvm.kernel"]
 	if !ok {
 		kernelPath = defaultAgentKernelPath(labels)

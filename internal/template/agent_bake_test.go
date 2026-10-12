@@ -50,7 +50,13 @@ func TestBakeAgentTemplate(t *testing.T) {
 		},
 		removeContErr: nil,
 	}
-	tpl, err := bakeAgentTemplate(context.Background(), pc, "test-image", "sha256:abcd1234", dir, io.Discard)
+	labels := map[string]string{
+		"io.qlvm.type":      "pvh-initramfs",
+		"io.qlvm.kernel":    "/usr/lib/modules/7.2.8-xen1/vmlinuz",
+		"io.qlvm.initramfs": "/usr/lib/modules/7.2.8-xen1/initramfs.img",
+		"PRETTY_NAME":       "Alpine Linux",
+	}
+	tpl, err := bakeAgentTemplate(context.Background(), pc, "test-image", "sha256:abcd1234", labels, dir, io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

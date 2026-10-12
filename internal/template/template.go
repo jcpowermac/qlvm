@@ -127,7 +127,7 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	}
 	// Agent templates: extract kernel/initramfs from the container instead
 	// of running image-builder. Use the digest (guaranteed local after Pull).
-	if tp, err := detectTemplateType(ctx, p, digest); err != nil {
+	if tp, labels, err := detectTemplateType(ctx, p, digest); err != nil {
 		if o.Log != nil {
 			fmt.Fprintf(o.Log, "warning: template type detection failed: %v\n", err)
 		}
@@ -138,7 +138,7 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, err
 		}
-		return bakeAgentTemplate(ctx, p, o.Ref, digest, dir, o.Log)
+		return bakeAgentTemplate(ctx, p, o.Ref, digest, labels, dir, o.Log)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err

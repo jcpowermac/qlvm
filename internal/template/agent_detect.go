@@ -10,13 +10,14 @@ const agentLabelValue = "pvh-initramfs"
 
 // detectTemplateType inspects the container image and returns "agent" if
 // it has the io.qlvm.type=pvh-initramfs label, "ostree" otherwise.
-func detectTemplateType(ctx context.Context, pc Podman, ref string) (string, error) {
+// It also returns the labels so the caller can reuse them (avoiding a second inspection).
+func detectTemplateType(ctx context.Context, pc Podman, ref string) (string, map[string]string, error) {
 	labels, err := pc.InspectImage(ctx, ref)
 	if err != nil {
-		return "", fmt.Errorf("inspect image %s: %w", ref, err)
+		return "", nil, fmt.Errorf("inspect image %s: %w", ref, err)
 	}
 	if labels != nil && labels[agentLabel] == agentLabelValue {
-		return "agent", nil
+		return "agent", labels, nil
 	}
-	return "ostree", nil
+	return "ostree", labels, nil
 }

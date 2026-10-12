@@ -11,12 +11,15 @@ func TestDetectTemplateType_Agent(t *testing.T) {
 			return map[string]string{"io.qlvm.type": "pvh-initramfs"}, nil
 		},
 	}
-	got, err := detectTemplateType(context.Background(), pc, "test")
+	got, labels, err := detectTemplateType(context.Background(), pc, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got != "agent" {
 		t.Errorf("expected agent, got %s", got)
+	}
+	if labels["io.qlvm.type"] != "pvh-initramfs" {
+		t.Error("expected labels to be returned")
 	}
 }
 
@@ -26,7 +29,7 @@ func TestDetectTemplateType_Ostree(t *testing.T) {
 			return map[string]string{}, nil
 		},
 	}
-	got, err := detectTemplateType(context.Background(), pc, "test")
+	got, _, err := detectTemplateType(context.Background(), pc, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
