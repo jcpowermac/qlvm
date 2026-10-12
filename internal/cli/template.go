@@ -31,16 +31,18 @@ const fstype = "xfs"
 
 // ensureTemplate pulls+bakes (if needed) the template for image and returns
 // it. The bake path: `template create` (vm create only references baked
-// templates, it never bakes).
-func ensureTemplate(ctx context.Context, out io.Writer, image string) (*template.Template, error) {
+// templates, it never bakes). prePulledDigest skips the pull if the caller
+// already pulled (avoids duplicate pulls).
+func ensureTemplate(ctx context.Context, out io.Writer, image, prePulledDigest string) (*template.Template, error) {
 	pod, err := template.NewPodman(ctx, podmanSocket)
 	if err != nil {
 		return nil, err
 	}
 	return template.Ensure(ctx, pod, template.EnsureOpts{
-		Root: installRoot,
-		Ref:  image,
-		Log:  out,
+		Root:            installRoot,
+		Ref:             image,
+		Log:             out,
+		PrePulledDigest: prePulledDigest,
 		Bake: func(dir string) error {
 			keys, err := sshAuthKeys()
 			if err != nil {
@@ -149,7 +151,7 @@ func templateCreateCmd() *cobra.Command {
 				Reap:   func() { reapStale(ctx, pod, installRoot, out) },
 				Remove: func() error { return os.RemoveAll(dir) },
 				Bake: func() error {
-					_, err := ensureTemplate(ctx, out, ref)
+					_, err := ensureTemplate(ctx, out, ref, digest)
 					return err
 				},
 			}); err != nil {

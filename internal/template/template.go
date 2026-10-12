@@ -67,6 +67,10 @@ type EnsureOpts struct {
 	Root string // qlvm state root; templates land in <Root>/templates
 	Ref  string // bootc image reference
 	Log  io.Writer
+	// PrePulledDigest, if set, skips the pull (the caller already pulled
+	// and has the digest). Used by the CLI which pulls first to compute
+	// the dir path before the force/exists check.
+	PrePulledDigest string
 	// Bake prepares the adopted raw rootfs (Task 8); it runs after builder
 	// output adoption and before META is saved, so a failed bake re-runs
 	// the whole build on the next Ensure.
@@ -114,13 +118,19 @@ func SlugFromRef(ref string) string { return slugFromRef(ref) }
 // present: pull -> digest -> skip if META matches, else run image-builder in
 // DirFor, adopt <dir>/*.raw as template.raw, bake, then save META.
 func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
-	digest, err := p.Pull(ctx, o.Ref)
-	if err != nil {
-		return nil, fmt.Errorf("pull %s: %w", o.Ref, err)
+	var digest string
+	if o.PrePulledDigest != "" {
+		digest = NormalizeDigest(o.PrePulledDigest)
+	} else {
+		var err error
+		digest, err = p.Pull(ctx, o.Ref)
+		if err != nil {
+			return nil, fmt.Errorf("pull %s: %w", o.Ref, err)
+		}
+		// pkg/bindings returns bare hex: canonicalize once at this boundary
+		// so dir names and META digests always carry the sha256: prefix.
+		digest = NormalizeDigest(digest)
 	}
-	// pkg/bindings returns bare hex: canonicalize once at this boundary so
-	// dir names and META digests always carry the sha256: prefix.
-	digest = NormalizeDigest(digest)
 	dir := DirFor(o.Root, slugFromRef(o.Ref), digest)
 	if t, err := LoadMeta(dir); err == nil && t.Digest == digest {
 		return t, nil
