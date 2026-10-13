@@ -261,7 +261,7 @@ func syncWinsize(localFd, targetFd int) error {
 	if err != nil {
 		return fmt.Errorf("get local terminal size: %w", err)
 	}
-	if ws.Rows == 0 || ws.Cols == 0 {
+	if ws.Row == 0 || ws.Col == 0 {
 		// Zero size (detached terminal, pager, etc.): nothing to sync.
 		return nil
 	}

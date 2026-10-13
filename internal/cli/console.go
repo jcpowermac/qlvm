@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +33,40 @@ shell. Press Ctrl+] to detach and return to the shell.`,
 				return err
 			}
 			defer func() { _ = x.Close() }()
+
+			// Auto-start if not running. The agent VM's init waits for
+			// console connection before starting pi, so we must start the
+			// VM first — otherwise the user has to manually `qlvm vm start`
+			// then `qlvm vm console` (racy: pi might start before the
+			// console connects and get the wrong terminal size).
+			running, err := x.Running(name)
+			if err != nil {
+				return fmt.Errorf("check %s: %w", name, err)
+			}
+			if !running {
+				fmt.Fprintf(cmd.ErrOrStderr(), "starting %s...\n", name)
+				if err := startVM(cmd.Context(), name); err != nil {
+					return fmt.Errorf("start %s: %w", name, err)
+				}
+				// Wait for the domain to actually be running. CreateDomain
+				// returns before the guest boots; connecting to the TTY too
+				// early fails.
+				deadline := time.Now().Add(30 * time.Second)
+				for {
+					running, err = x.Running(name)
+					if err != nil {
+						return fmt.Errorf("check %s: %w", name, err)
+					}
+					if running {
+						break
+					}
+					if !time.Now().Add(500 * time.Millisecond).Before(deadline) {
+						return fmt.Errorf("timed out waiting for %s to start", name)
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+
 			return x.Console(name)
 		},
 	}
