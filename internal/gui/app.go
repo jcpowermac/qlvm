@@ -1,28 +1,33 @@
 package gui
 
 import (
+	"os"
+	"path/filepath"
+	"time"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/ovs"
+	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
 )
 
 // App is the main GUI application.
 type App struct {
-	fyneApp fyne.App
-	window  fyne.Window
-	model   *AppModel
-
-	vmTable      *vmTable
+	fyneApp       fyne.App
+	window        fyne.Window
+	model         *AppModel
+	vmTable       *vmTable
 	templateTable *templateTable
-	actions      *Actions
-	logPane      *LogPane
+	actions       *Actions
+	logPane       *LogPane
 }
 
 // New creates the GUI application with the given model.
@@ -71,44 +76,112 @@ func (g *App) buildLayout() {
 	// Menu bar.
 	g.window.SetMainMenu(g.buildMenu())
 
-	// Content: filter + tabbed table views.
-	filter := widget.NewEntry()
-	filter.PlaceHolder = "Filter VMs/Templates"
-	filter.OnChanged = func(s string) {
-		g.model.SetFilter(s)
-		g.vmTable.Refresh()
-		g.templateTable.Refresh()
+	// Build content off-screen first, then set it.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		fyne.Do(func() {
+			// Content: filter + tabbed table views.
+			filter := widget.NewEntry()
+			filter.PlaceHolder = "Filter VMs/Templates"
+			filter.OnChanged = func(s string) {
+				g.model.SetFilter(s)
+				g.vmTable.Refresh()
+				g.templateTable.Refresh()
+			}
+
+			// VM table view.
+			g.vmTable = newVMTable(g.model, func(name string) {
+				ShowVMDetailDialog(g.window, g.model, name)
+			})
+
+			// Template table view.
+			g.templateTable = newTemplateTable(g.model, func(dir string) {
+				ShowTemplateDetailDialog(g.window, g.model, dir)
+			})
+
+			tabs := container.NewAppTabs(
+				container.NewTabItem("VMs", g.vmTable),
+				container.NewTabItem("Templates", g.templateTable),
+			)
+			tabs.SetTabLocation(container.TabLocationTop)
+			tabs.OnSelected = func(item *container.TabItem) {
+				g.model.SetTab(item.Text)
+			}
+
+			// Main content: filter at top, tabs below.
+			content := container.NewBorder(
+				filter, // top
+				nil,    // bottom
+				nil,    // left
+				nil,    // right
+				tabs,
+			)
+
+			g.window.SetContent(content)
+			canvas.Refresh(content)
+			g.window.RequestFocus()
+
+			// Load initial data.
+			go g.loadData()
+		})
+	}()
+}
+
+// loadData loads VMs, templates, and domain states from the control planes.
+func (g *App) loadData() {
+	// Load VM metadata.
+	vms := make(map[string]*vm.Meta)
+	entries, err := os.ReadDir(filepath.Join(installRoot, "vms"))
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			meta, err := vm.LoadMeta(filepath.Join(installRoot, "vms", e.Name()))
+			if err == nil {
+				vms[meta.Name] = meta
+			}
+		}
 	}
+	g.model.SetVMs(vms)
 
-	// VM table view.
-	g.vmTable = newVMTable(g.model, func(name string) {
-		ShowVMDetailDialog(g.window, g.model, name)
-	})
-
-	// Template table view.
-	g.templateTable = newTemplateTable(g.model, func(dir string) {
-		ShowTemplateDetailDialog(g.window, g.model, dir)
-	})
-
-	tabs := container.NewAppTabs(
-		container.NewTabItem("VMs", g.vmTable),
-		container.NewTabItem("Templates", g.templateTable),
-	)
-	tabs.SetTabLocation(container.TabLocationTop)
-	tabs.OnSelected = func(item *container.TabItem) {
-		g.model.SetTab(item.Text)
+	// Load template metadata.
+	tpls := make(map[string]*template.Template)
+	entries, err = os.ReadDir(filepath.Join(installRoot, "templates"))
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			tpl, err := template.LoadMeta(filepath.Join(installRoot, "templates", e.Name()))
+			if err == nil {
+				tpls[e.Name()] = tpl
+			}
+		}
 	}
+	g.model.SetTemplates(tpls)
 
-	// Main content: filter at top, tabs below.
-	content := container.NewBorder(
-		filter, // top
-		nil,    // bottom
-		nil,    // left
-		nil,    // right
-		tabs,
-	)
+	// Load domain states from Xen.
+	states := make(map[string]string)
+	if g.actions != nil && g.actions.xen != nil {
+		domains, err := g.actions.xen.List()
+		if err == nil {
+			for _, d := range domains {
+				states[d.Name] = d.State
+			}
+		}
+	}
+	g.model.SetDomainStates(states)
 
-	g.window.SetContent(content)
+	// Refresh the UI on the main thread.
+	fyne.Do(func() {
+		if g.vmTable != nil {
+			g.vmTable.Refresh()
+		}
+		if g.templateTable != nil {
+			g.templateTable.Refresh()
+		}
+	})
 }
 
 // buildMenu creates the application menu bar.
@@ -143,8 +216,7 @@ func (g *App) buildMenu() *fyne.MainMenu {
 
 	viewMenu := fyne.NewMenu("View",
 		fyne.NewMenuItem("Refresh", func() {
-			g.vmTable.Refresh()
-			g.templateTable.Refresh()
+			go g.loadData()
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Toggle Log", func() {
