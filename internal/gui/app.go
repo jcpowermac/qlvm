@@ -122,8 +122,15 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 	stopBtn := widget.NewButton("Stop", func() { g.runAction(g.actions.Stop) })
 	killBtn := widget.NewButton("Kill", func() { g.runAction(g.actions.Kill) })
 	deleteBtn := widget.NewButton("Delete", func() { g.runAction(g.actions.Delete) })
+	createBtn := widget.NewButton("Create VM", func() {
+		ShowCreateVMDialog(g.window, g.model, g.logPane.Add, func() {
+			// Refresh the VM list after creation.
+			g.vmList.Refresh()
+		})
+	})
 
 	actionBar := container.NewHBox(
+		createBtn,
 		startBtn,
 		stopBtn,
 		killBtn,
