@@ -29,6 +29,7 @@ type App struct {
 	templateTable *templateTable
 	actions       *Actions
 	logPane       *LogPane
+	logVisible    bool
 }
 
 // New creates the GUI application with the given model.
@@ -46,6 +47,24 @@ func New(model *AppModel) *App {
 
 	g.logPane = NewLogPane()
 	model.SetLogCallback(g.logPane.Add)
+
+	// Create Xen connection and Actions.
+	x, err := xenctl.New()
+	if err != nil {
+		model.Log(fmt.Sprintf("Warning: cannot connect to Xen: %v", err))
+	} else {
+		cfg := model.GetConfig()
+		if cfg == nil {
+			cfg, err = config.Load(defaultConfigPath)
+			if err != nil {
+				model.Log(fmt.Sprintf("Warning: cannot load config: %v", err))
+			} else {
+				model.SetConfig(cfg)
+			}
+		}
+		g.actions = NewActions(model, x, nil, nil, cfg, "", g.logPane.Add)
+	}
+
 	g.buildLayout()
 	g.window.ShowAndRun()
 	return g
@@ -93,7 +112,7 @@ func (g *App) buildLayout() {
 			}
 
 			// VM table view.
-			g.vmTable = newVMTable(g.model, g.window, func(name string) {
+			g.vmTable = newVMTable(g.model, g.window, g.actions, func(name string) {
 				// Single click just selects; right-click opens context menu.
 			})
 
@@ -111,12 +130,15 @@ func (g *App) buildLayout() {
 				g.model.SetTab(item.Text)
 			}
 
-			// Main content: filter at top, tabs below.
+			// Log pane (initially hidden).
+			g.logPane.Hide()
+
+			// Main content: filter at top, tabs in middle, log at bottom.
 			content := container.NewBorder(
-				filter, // top
-				nil,    // bottom
-				nil,    // left
-				nil,    // right
+				filter,  // top
+				g.logPane, // bottom
+				nil,     // left
+				nil,     // right
 				tabs,
 			)
 
@@ -255,7 +277,14 @@ func (g *App) buildMenu() *fyne.MainMenu {
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Toggle Log", func() {
-			// Toggle log pane visibility.
+			if g.logVisible {
+				g.logPane.Hide()
+				g.logVisible = false
+			} else {
+				g.logPane.Show()
+				g.logVisible = true
+			}
+			canvas.Refresh(g.window.Content())
 		}),
 	)
 

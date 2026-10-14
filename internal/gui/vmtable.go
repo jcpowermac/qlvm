@@ -13,6 +13,7 @@ type vmTable struct {
 	*rightClickTable
 	model    *AppModel
 	window   fyne.Window
+	actions  *Actions
 	onSelect func(name string)
 }
 
@@ -23,7 +24,7 @@ var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domai
 var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100, 120} // Name, Type, State, Memory, vCPUs, Domain, IP
 
 // newVMTable creates a VM table view.
-func newVMTable(model *AppModel, window fyne.Window, onSelect func(name string)) *vmTable {
+func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect func(name string)) *vmTable {
 	table := widget.NewTableWithHeaders(
 		func() (rows, cols int) {
 			return len(model.GetVMs()), len(vmTableColumns)
@@ -98,6 +99,7 @@ func newVMTable(model *AppModel, window fyne.Window, onSelect func(name string))
 	t := &vmTable{
 		model:    model,
 		window:   window,
+		actions:  actions,
 		onSelect: onSelect,
 	}
 	t.rightClickTable = newRightClickTable(table, func(pos fyne.Position) {
@@ -130,14 +132,26 @@ func (t *vmTable) showContextMenu(pos fyne.Position) {
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Start", func() {
-			t.model.Log(fmt.Sprintf("Start %s (pending wiring)", name))
+			if t.actions != nil {
+				t.actions.Start()
+			} else {
+				t.model.Log(fmt.Sprintf("Cannot start %s: no Xen connection", name))
+			}
 		}),
 		fyne.NewMenuItem("Stop", func() {
-			t.model.Log(fmt.Sprintf("Stop %s (pending wiring)", name))
+			if t.actions != nil {
+				t.actions.Stop()
+			} else {
+				t.model.Log(fmt.Sprintf("Cannot stop %s: no Xen connection", name))
+			}
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Delete", func() {
-			t.model.Log(fmt.Sprintf("Delete %s (pending wiring)", name))
+			if t.actions != nil {
+				t.actions.Delete()
+			} else {
+				t.model.Log(fmt.Sprintf("Cannot delete %s: no Xen connection", name))
+			}
 		}),
 	)
 
