@@ -217,16 +217,17 @@ func testPlan(t *testing.T, r *rec, noLease bool) *wiring {
 		},
 	}
 	p := &Plan{
-		OVN:       ovnFake,
-		OVS:       ovsFake,
-		FW:        fw.New(fwFake),
-		Netd:      netdMgr,
-		SD:        systemd.New(sdFake),
-		Storage:   func() error { r.add("storage"); return nil },
-		VifScript: func() error { r.add("vif"); return nil },
-		SaveCfg:   func() error { r.add("save"); return nil },
-		Dom0Check: func() (bool, error) { return true, nil },
-		Out:       io.Discard,
+		OVN:        ovnFake,
+		OVS:        ovsFake,
+		FW:         fw.New(fwFake),
+		Netd:       netdMgr,
+		SD:         systemd.New(sdFake),
+		Storage:    func() error { r.add("storage"); return nil },
+		Dom0Params: func() error { r.add("dom0-params"); return nil },
+		VifScript:  func() error { r.add("vif"); return nil },
+		SaveCfg:    func() error { r.add("save"); return nil },
+		Dom0Check:  func() (bool, error) { return true, nil },
+		Out:        io.Discard,
 	}
 	return &wiring{p: p, ovs: ovsFake, fw: fwFake, sd: sdFake}
 }
@@ -328,6 +329,7 @@ func TestInstallStepOrder(t *testing.T) {
 	require.NoError(t, Run(context.Background(), w.p, fixture(), Options{}))
 	assert.Equal(t, []string{
 		"storage",
+		"dom0-params",
 		"sd:openvswitch.service",
 		"sd:ovn-northd.service",
 		"sd:ovn-controller.service",

@@ -33,7 +33,7 @@ type Meta struct {
 	WorkspaceSizeMB int `yaml:"workspace_size_mb"`
 	// Cores is the list of physical CPU cores this VM is pinned to.
 	// Empty = auto-assigned (or no pinning if the host has no hybrid topology).
-	Cores []int `yaml:"cores"`
+	Cores []int `yaml:"cores,omitempty"`
 }
 
 // Mount is one p9 share: Host path on dom0, Guest tag inside the VM.
