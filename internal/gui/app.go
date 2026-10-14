@@ -148,8 +148,20 @@ func (g *App) buildLayout() {
 
 			// Load initial data.
 			go g.loadData()
+
+			// Auto-refresh: periodically reload VMs and domain states.
+			go g.startAutoRefresh()
 		})
 	}()
+}
+
+// startAutoRefresh periodically reloads VMs and domain states.
+func (g *App) startAutoRefresh() {
+	ticker := time.NewTicker(g.model.RunningInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		go g.loadData()
+	}
 }
 
 // defaultConfigPath is the qlvm configuration file.
