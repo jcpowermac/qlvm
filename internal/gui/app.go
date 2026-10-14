@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -129,12 +130,27 @@ func (g *App) buildLayout() {
 	}()
 }
 
+// defaultConfigPath is the qlvm configuration file.
+const defaultConfigPath = "/etc/qvm/qlvm.yaml"
+
 // loadData loads VMs, templates, and domain states from the control planes.
 func (g *App) loadData() {
+	// Load config if not already loaded.
+	if g.model.GetConfig() == nil {
+		cfg, err := config.Load(defaultConfigPath)
+		if err != nil {
+			g.model.Log(fmt.Sprintf("Failed to load config: %v", err))
+		} else {
+			g.model.SetConfig(cfg)
+		}
+	}
+
 	// Load VM metadata.
 	vms := make(map[string]*vm.Meta)
 	entries, err := os.ReadDir(filepath.Join(installRoot, "vms"))
-	if err == nil {
+	if err != nil {
+		g.model.Log(fmt.Sprintf("Failed to read VMs: %v", err))
+	} else {
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
@@ -150,7 +166,9 @@ func (g *App) loadData() {
 	// Load template metadata.
 	tpls := make(map[string]*template.Template)
 	entries, err = os.ReadDir(filepath.Join(installRoot, "templates"))
-	if err == nil {
+	if err != nil {
+		g.model.Log(fmt.Sprintf("Failed to read templates: %v", err))
+	} else {
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
@@ -167,10 +185,11 @@ func (g *App) loadData() {
 	states := make(map[string]string)
 	if g.actions != nil && g.actions.xen != nil {
 		domains, err := g.actions.xen.List()
-		if err == nil {
-			for _, d := range domains {
-				states[d.Name] = d.State
-			}
+		if err != nil {
+			g.model.Log(fmt.Sprintf("Failed to list Xen domains: %v", err))
+		}
+		for _, d := range domains {
+			states[d.Name] = d.State
 		}
 	}
 	g.model.SetDomainStates(states)

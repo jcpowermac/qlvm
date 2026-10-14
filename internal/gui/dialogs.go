@@ -14,6 +14,10 @@ import (
 // ShowCreateVMDialog shows the create VM dialog and creates the VM on OK.
 func ShowCreateVMDialog(parent fyne.Window, model *AppModel, log func(string), onCreated func()) {
 	cfg := model.GetConfig()
+	if cfg == nil {
+		dialog.ShowError(fmt.Errorf("config not loaded"), parent)
+		return
+	}
 	tpls := model.GetTemplates()
 
 	// Build template options.
