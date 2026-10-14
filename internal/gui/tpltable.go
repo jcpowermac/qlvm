@@ -154,7 +154,7 @@ func (t *templateTable) filteredTemplates() []TemplateEntry {
 		}
 		vmCount := 0
 		for _, meta := range vms {
-			if meta.Image == tpl.Image {
+			if meta.Image == tpl.Image && meta.Digest == tpl.Digest {
 				vmCount++
 			}
 		}

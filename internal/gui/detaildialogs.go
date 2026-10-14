@@ -24,7 +24,7 @@ func ShowTemplateDetailDialog(parent fyne.Window, model *AppModel, dir string) {
 	vms := model.GetVMs()
 	var vmNames []string
 	for name, meta := range vms {
-		if meta.Image == tpl.Image {
+		if meta.Image == tpl.Image && meta.Digest == tpl.Digest {
 			vmNames = append(vmNames, name)
 		}
 	}
