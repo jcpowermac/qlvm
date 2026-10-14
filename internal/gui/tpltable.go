@@ -166,10 +166,11 @@ func (t *templateTable) filteredTemplates() []TemplateEntry {
 		})
 	}
 
-	// Sort by image ref.
+	// Sort by image ref, then digest (stable ordering for same image).
 	for i := 0; i < len(entries); i++ {
 		for j := i + 1; j < len(entries); j++ {
-			if entries[i].Image > entries[j].Image {
+			if entries[i].Image > entries[j].Image ||
+				(entries[i].Image == entries[j].Image && entries[i].Digest > entries[j].Digest) {
 				entries[i], entries[j] = entries[j], entries[i]
 			}
 		}
