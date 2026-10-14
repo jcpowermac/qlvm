@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qlvm Kubernetes CRD + Controller — Implementation Plan</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --text: #24292e;
+    --heading: #1a1a1a;
+    --link: #0366d6;
+    --code-bg: #f6f8fa;
+    --code-border: #e1e4e8;
+    --blockquote-border: #dfe2e5;
+    --table-border: #dfe2e5;
+    --table-header-bg: #f6f8fa;
+    --task-header-bg: #eef2f7;
+    --accent: #0366d6;
+    --success: #28a745;
+    --warning: #f0ad4e;
+    --danger: #d73a49;
+    --sidebar-bg: #f6f8fa;
+    --sidebar-border: #e1e4e8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--text);
+    background: var(--bg);
+    margin: 0;
+    padding: 0;
+  }
+
+  .layout {
+    display: flex;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* Sidebar TOC */
+  .sidebar {
+    width: 280px;
+    min-width: 280px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    padding: 2rem 1.5rem;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+
+  .sidebar h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6a737d;
+    margin: 0 0 1rem 0;
+  }
+
+  .sidebar ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .sidebar li {
+    margin: 0.25rem 0;
+  }
+
+  .sidebar a {
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.9rem;
+    display: block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+
+  .sidebar a:hover {
+    background: #e1e4e8;
+  }
+
+  .sidebar a.task-link {
+    padding-left: 1rem;
+  }
+
+  .sidebar a.task-link::before {
+    content: "•";
+    margin-right: 0.5rem;
+    color: var(--accent);
+  }
+
+  /* Main content */
+  .content {
+    flex: 1;
+    padding: 3rem 4rem;
+    max-width: 900px;
+  }
+
+  /* Typography */
+  h1 {
+    font-size: 2.2rem;
+    font-weight: 700;
+    color: var(--heading);
+    margin: 0 0 1rem 0;
+    line-height: 1.2;
+  }
+
+  h2 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin: 2.5rem 0 1rem 0;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--blockquote-border);
+  }
+
+  h3 {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin: 2rem 0 0.75rem 0;
+  }
+
+  h4 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--heading);
+    margin: 1.5rem 0 0.5rem 0;
+  }
+
+  p {
+    margin: 0 0 1rem 0;
+  }
+
+  a {
+    color: var(--link);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  strong { font-weight: 600; }
+
+  em { font-style: italic; }
+
+  /* Blockquote / note */
+  blockquote {
+    border-left: 4px solid var(--accent);
+    background: #f1f8ff;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+
+  blockquote p {
+    margin: 0;
+  }
+
+  /* Code */
+  code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 3px;
+    padding: 0.15em 0.4em;
+  }
+
+  pre {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    border: 1px solid #333;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  /* Syntax highlighting (minimal) */
+  .keyword { color: #569cd6; }
+  .string { color: #ce9178; }
+  .comment { color: #6a9955; }
+  .type { color: #4ec9b0; }
+  .func { color: #dcdcaa; }
+  .number { color: #b5cea8; }
+  .yaml-key { color: #9cdcfe; }
+  .yaml-val { color: #ce9178; }
+  .yaml-comment { color: #6a9955; }
+
+  /* Tables */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.95rem;
+  }
+
+  th, td {
+    border: 1px solid var(--table-border);
+    padding: 0.6rem 0.8rem;
+    text-align: left;
+  }
+
+  th {
+    background: var(--table-header-bg);
+    font-weight: 600;
+  }
+
+  tr:nth-child(even) {
+    background: #f9f9f9;
+  }
+
+  /* Task sections */
+  .task {
+    background: #fff;
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1.5rem 2rem;
+    margin: 2rem 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+
+  .task h3 {
+    margin-top: 0;
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.5rem;
+  }
+
+  .task-files {
+    background: var(--task-header-bg);
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+
+  .task-files strong {
+    display: block;
+    margin-bottom: 0.4rem;
+    color: #6a737d;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+  }
+
+  .task-ruling {
+    background: #fff8e1;
+    border-left: 4px solid var(--warning);
+    border-radius: 0 4px 4px 0;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.95rem;
+  }
+
+  .task-ruling strong {
+    display: block;
+    margin-bottom: 0.3rem;
+    color: #856404;
+  }
+
+  .task-interfaces {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 4px;
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.9rem;
+  }
+
+  .task-interfaces strong {
+    display: block;
+    margin-bottom: 0.4rem;
+    color: #6a737d;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+  }
+
+  /* Steps */
+  .step {
+    margin: 1rem 0;
+    padding-left: 1rem;
+    border-left: 3px solid var(--code-border);
+  }
+
+  .step h4 {
+    margin-top: 0.5rem;
+    color: var(--success);
+  }
+
+  /* Checklist */
+  .checklist {
+    list-style: none;
+    padding-left: 0.5rem;
+  }
+
+  .checklist li {
+    margin: 0.3rem 0;
+    padding-left: 0.5rem;
+  }
+
+  /* Badge */
+  .badge {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2em 0.6em;
+    border-radius: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .badge-blue { background: #e1f0ff; color: #0366d6; }
+  .badge-green { background: #dcffe4; color: #28a745; }
+  .badge-yellow { background: #fff5b1; color: #856404; }
+
+  /* Review focus */
+  .review-focus {
+    background: #fff;
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1.5rem 2rem;
+    margin: 2rem 0;
+  }
+
+  .review-focus ol {
+    padding-left: 1.5rem;
+  }
+
+  .review-focus li {
+    margin: 0.75rem 0;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--code-border);
+  }
+
+  .review-focus li:last-child {
+    border-bottom: none;
+  }
+
+  /* Execution order diagram */
+  .exec-order {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 6px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    font-family: monospace;
+    font-size: 0.9rem;
+    line-height: 1.8;
+  }
+
+  /* Responsive */
+  @media (max-width: 1000px) {
+    .layout {
+      flex-direction: column;
+    }
+    .sidebar {
+      position: static;
+      width: 100%;
+      height: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--sidebar-border);
+    }
+    .content {
+      padding: 2rem 1.5rem;
+    }
+  }
+
+  /* Print */
+  @media print {
+    .sidebar { display: none; }
+    .content { max-width: 100%; padding: 1rem; }
+    pre { white-space: pre-wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <h2>Contents</h2>
+    <ul>
+      <li><a href="#goal">Goal & Architecture</a></li>
+      <li><a href="#constraints">Global Constraints</a></li>
+      <li><a href="#crd-model">CRD Model</a></li>
+      <li><a href="#review-focus">Review Focus</a></li>
+      <li><a href="#tasks">Tasks</a></li>
+      <li><a href="#task-1" class="task-link">Task 1: CRD Types</a></li>
+      <li><a href="#task-2" class="task-link">Task 2: Control Plane</a></li>
+      <li><a href="#task-3" class="task-link">Task 3: Controller Wiring</a></li>
+      <li><a href="#task-4" class="task-link">Task 4: VM Controller</a></li>
+      <li><a href="#task-5" class="task-link">Task 5: Template Controller</a></li>
+      <li><a href="#task-6" class="task-link">Task 6: Domain Controller</a></li>
+      <li><a href="#task-7" class="task-link">Task 7: CLI</a></li>
+      <li><a href="#task-8" class="task-link">Task 8: E2E Test</a></li>
+      <li><a href="#task-9" class="task-link">Task 9: Documentation</a></li>
+      <li><a href="#execution">Execution Order</a></li>
+      <li><a href="#effort">Estimated Effort</a></li>
+    </ul>
+  </nav>
+
+  <!-- Main content -->
+  <main class="content">
+
+    <h1>qlvm Kubernetes CRD + Controller</h1>
+    <p><span class="badge badge-blue">Option A</span> <span class="badge badge-green">Lightweight</span> <span class="badge badge-yellow">Research → Plan</span></p>
+    <p><em>Implementation Plan — 2026-10-13</em></p>
+
+    <blockquote>
+      <p><strong>For agentic workers:</strong> REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.</p>
+    </blockquote>
+
+    <h2 id="goal">Goal &amp; Architecture</h2>
+    <p><strong>Goal:</strong> Add a lightweight Kubernetes control plane (kube-apiserver + kine/SQLite) and a controller binary to qlvm, exposing VMs, Templates, and Domains as CRDs with watch-based reconciliation. No kubelet, no scheduler, no container runtime — just the API server and qlvm's controller.</p>
+
+    <p><strong>Architecture:</strong> Three processes at runtime: <code>kine</code> (SQLite etcd shim) → <code>kube-apiserver</code> (REST API) → <code>qlvm-controller</code> (controller-runtime watching CRDs, calling existing xenlight/libovsdb/godbus libraries). A new <code>qlvm k8s</code> CLI group starts/stops the control plane. Existing <code>qlvm vm/template</code> commands continue to work unchanged; users manage CRs via <code>kubectl</code> or the CLI.</p>
+
+    <p><strong>Tech Stack:</strong> Go (existing), controller-runtime, k8s.io/client-go, k8s.io/apimachinery, k8s.io/apiextensions-apiserver, controller-gen, kine binary, kube-apiserver binary. Existing qlvm packages (xenctl, ovn, ovs, template, vm, config) are reused as actuators.</p>
+
+    <p><strong>References:</strong> <a href="https://github.com/giantswarm/k8senv">k8senv</a> (subprocess management pattern), <a href="https://github.com/k3s-io/kine">kine</a> (SQLite etcd shim).</p>
+
+    <h2 id="constraints">Global Constraints</h2>
+    <ul>
+      <li><strong>Module path:</strong> <code>github.com/jcpowermac/qlvm</code> (unchanged)</li>
+      <li><strong>TDD:</strong> every task starts with a failing test</li>
+      <li><strong>Lint:</strong> <code>golangci-lint run</code> must pass at every commit</li>
+      <li><strong>Clean repo:</strong> no vendor names, no real IPs (example space <code>10.100.x</code> / <code>192.168.1.x</code> only)</li>
+      <li><strong>os/exec exception:</strong> subprocess management of kine/kube-apiserver is permitted (control plane infrastructure, not management-plane operations)</li>
+      <li><strong>Integration tests:</strong> <code>//go:build integration</code>, never run in default <code>go test ./...</code></li>
+      <li><strong>Binary distribution:</strong> kine and kube-apiserver are external binaries (not embedded)</li>
+      <li><strong>Storage:</strong> Single SQLite file at <code>/var/lib/qvm/k8s/kine.db</code></li>
+      <li><strong>API group:</strong> <code>qlvm.io</code>, version <code>v1</code></li>
+      <li><strong>Namespace:</strong> All CRs in <code>default</code> namespace</li>
+    </ul>
+
+    <h2 id="crd-model">CRD Model</h2>
+
+    <h3>VM (<code>qlvm.io/v1 VM</code>)</h3>
+    <pre><code><span class="yaml-key">apiVersion:</span> <span class="yaml-val">qlvm.io/v1</span>
+<span class="yaml-key">kind:</span> <span class="yaml-val">VM</span>
+<span class="yaml-key">metadata:</span>
+  <span class="yaml-key">name:</span> <span class="yaml-val">work-laptop</span>
+<span class="yaml-key">spec:</span>
+  <span class="yaml-key">template:</span> <span class="yaml-val">fedora-44-a1b2c3d4</span>    <span class="yaml-comment"># template CR name or dir slug</span>
+  <span class="yaml-key">domain:</span> <span class="yaml-val">work</span>                    <span class="yaml-comment"># domain CR name</span>
+  <span class="yaml-key">type:</span> <span class="yaml-val">app</span>                       <span class="yaml-comment"># app | disposable</span>
+  <span class="yaml-key">memoryMB:</span> <span class="yaml-val">4096</span>
+  <span class="yaml-key">vcpus:</span> <span class="yaml-val">2</span>
+  <span class="yaml-key">mounts:</span>                         <span class="yaml-comment"># optional</span>
+    <span class="yaml-key">-</span> <span class="yaml-key">host:</span> <span class="yaml-val">/home/user/projects</span>
+      <span class="yaml-key">guest:</span> <span class="yaml-val">/mnt/projects</span>
+  <span class="yaml-key">workspaceSizeMB:</span> <span class="yaml-val">0</span>              <span class="yaml-comment"># optional, 0 = none</span>
+<span class="yaml-key">status:</span>
+  <span class="yaml-key">state:</span> <span class="yaml-val">running</span>                  <span class="yaml-comment"># absent | created | running | stopped</span>
+  <span class="yaml-key">ip:</span> <span class="yaml-val">10.100.1.10</span>
+  <span class="yaml-key">mac:</span> <span class="yaml-val">aa:bb:cc:dd:ee:ff</span>
+  <span class="yaml-key">uuid:</span> <span class="yaml-val">...</span>
+  <span class="yaml-key">conditions:</span>
+    <span class="yaml-key">-</span> <span class="yaml-key">type:</span> <span class="yaml-val">Ready</span>
+      <span class="yaml-key">status:</span> <span class="yaml-val">"True"</span>
+      <span class="yaml-key">reason:</span> <span class="yaml-val">Running</span>
+      <span class="yaml-key">message:</span> <span class="yaml-val">VM is running</span></code></pre>
+
+    <h3>Template (<code>qlvm.io/v1 Template</code>)</h3>
+    <pre><code><span class="yaml-key">apiVersion:</span> <span class="yaml-val">qlvm.io/v1</span>
+<span class="yaml-key">kind:</span> <span class="yaml-val">Template</span>
+<span class="yaml-key">metadata:</span>
+  <span class="yaml-key">name:</span> <span class="yaml-val">fedora-44</span>
+<span class="yaml-key">spec:</span>
+  <span class="yaml-key">imageRef:</span> <span class="yaml-val">quay.io/example/fedora:44</span>
+  <span class="yaml-key">force:</span> <span class="yaml-val">false</span>                    <span class="yaml-comment"># trigger re-bake when true</span>
+<span class="yaml-key">status:</span>
+  <span class="yaml-key">state:</span> <span class="yaml-val">ready</span>                    <span class="yaml-comment"># baking | ready | failed</span>
+  <span class="yaml-key">dir:</span> <span class="yaml-val">fedora-44-a1b2c3d4</span>
+  <span class="yaml-key">digest:</span> <span class="yaml-val">sha256:...</span>
+  <span class="yaml-key">kernel:</span> <span class="yaml-val">6.15.0-...</span>
+  <span class="yaml-key">rootUUID:</span> <span class="yaml-val">...</span>
+  <span class="yaml-key">ostreePath:</span> <span class="yaml-val">...</span>
+  <span class="yaml-key">sizeBytes:</span> <span class="yaml-val">...</span>
+  <span class="yaml-key">conditions:</span>
+    <span class="yaml-key">-</span> <span class="yaml-key">type:</span> <span class="yaml-val">Ready</span>
+      <span class="yaml-key">status:</span> <span class="yaml-val">"True"</span>
+      <span class="yaml-key">reason:</span> <span class="yaml-val">Built</span></code></pre>
+
+    <h3>Domain (<code>qlvm.io/v1 Domain</code>)</h3>
+    <pre><code><span class="yaml-key">apiVersion:</span> <span class="yaml-val">qlvm.io/v1</span>
+<span class="yaml-key">kind:</span> <span class="yaml-val">Domain</span>
+<span class="yaml-key">metadata:</span>
+  <span class="yaml-key">name:</span> <span class="yaml-val">work</span>
+<span class="yaml-key">spec:</span>
+  <span class="yaml-key">subnet:</span> <span class="yaml-val">"10.100.1"</span>              <span class="yaml-comment"># first three octets</span>
+  <span class="yaml-key">gateway:</span> <span class="yaml-val">"10.100.1.1"</span>
+<span class="yaml-key">status:</span>
+  <span class="yaml-key">state:</span> <span class="yaml-val">ready</span>                    <span class="yaml-comment"># provisioning | ready | failed</span>
+  <span class="yaml-key">switchName:</span> <span class="yaml-val">qlvm-ds-work</span>
+  <span class="yaml-key">routerName:</span> <span class="yaml-val">qlvm-gw-work</span>
+  <span class="yaml-key">conditions:</span>
+    <span class="yaml-key">-</span> <span class="yaml-key">type:</span> <span class="yaml-val">Ready</span>
+      <span class="yaml-key">status:</span> <span class="yaml-val">"True"</span>
+      <span class="yaml-key">reason:</span> <span class="yaml-val">Provisioned</span></code></pre>
+
+    <h2 id="review-focus">Review Focus</h2>
+    <div class="review-focus">
+      <ol>
+        <li><strong>kine/apiserver startup ordering:</strong> apiserver must not start until kine's TCP port is ready and serving. → test in Task 2</li>
+        <li><strong>CRD installation before controller start:</strong> controller must not begin watching until all 3 CRDs are Established. → test in Task 3</li>
+        <li><strong>VM controller idempotency:</strong> reconcile must be safe to call multiple times with the same spec (no duplicate OVN ports, no duplicate libxl domains). → test in Task 4</li>
+        <li><strong>Template bake failure handling:</strong> if image-builder fails, status must be <code>failed</code> with error message, and CR must be re-queueable. → test in Task 5</li>
+        <li><strong>Graceful shutdown:</strong> <code>qlvm k8s stop</code> must stop controller → apiserver → kine in reverse order, preserving SQLite DB. Running VMs must NOT be killed on control plane stop. → test in Task 7</li>
+        <li><strong>Port binding conflicts:</strong> if ports 6443 or 2379 are in use, startup must fail with a clear error, not hang. → test in Task 2</li>
+      </ol>
+    </div>
+
+    <h2 id="tasks">Tasks</h2>
+
+    <!-- Task 1 -->
+    <div class="task" id="task-1">
+      <h3>Task 1: Controller-runtime scaffolding + CRD types</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>api/qlvm.io/v1/groupversion_info.go</code></li>
+          <li>Create: <code>api/qlvm.io/v1/vm_types.go</code>, <code>vm_types_test.go</code></li>
+          <li>Create: <code>api/qlvm.io/v1/template_types.go</code>, <code>template_types_test.go</code></li>
+          <li>Create: <code>api/qlvm.io/v1/domain_types.go</code>, <code>domain_types_test.go</code></li>
+          <li>Create: <code>api/qlvm.io/v1/zz_generated.deepcopy.go</code> (generated)</li>
+          <li>Create: <code>config/crd/*.yaml</code> (generated)</li>
+          <li>Modify: <code>go.mod</code>, <code>Makefile</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        CRD Go types live in <code>api/qlvm.io/v1/</code> following standard kubebuilder layout. Deepcopy generated by controller-gen, not hand-written. CRD YAML manifests committed to <code>config/crd/</code>.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>VM</code>, <code>VMSpec</code>, <code>VMStatus</code>, <code>MountSpec</code>, <code>Template</code>, <code>TemplateSpec</code>, <code>TemplateStatus</code>, <code>Domain</code>, <code>DomainSpec</code>, <code>DomainStatus</code>, <code>AddToScheme</code>, <code>GetConditions</code>/<code>SetConditions</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> defaulting, validation (MemoryMB < 64, empty fields, bad subnet format), conditions round-trip, scheme registration</li>
+          <li><strong>Verify failure:</strong> <code>go test ./api/qlvm.io/v1/...</code> — FAIL</li>
+          <li><strong>Implement:</strong> types with kubebuilder markers, <code>make generate manifests</code>, Makefile targets</li>
+          <li><strong>Verify pass:</strong> <code>go test ./api/qlvm.io/v1/... && make lint</code> — PASS</li>
+          <li><strong>Commit:</strong> <code>feat: CRD types for VM, Template, Domain</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 2 -->
+    <div class="task" id="task-2">
+      <h3>Task 2: Control plane manager (kine + kube-apiserver)</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/apimgr/apimgr.go</code>, <code>apimgr_test.go</code></li>
+          <li>Create: <code>internal/apimgr/kine.go</code>, <code>kine_test.go</code></li>
+          <li>Create: <code>internal/apimgr/apiserver.go</code>, <code>apiserver_test.go</code></li>
+          <li>Create: <code>internal/apimgr/certs.go</code>, <code>certs_test.go</code></li>
+          <li>Create: <code>internal/apimgr/config.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        <code>internal/apimgr</code> manages kine and kube-apiserver subprocesses (k8senv pattern). Start kine first, wait for TCP readiness, then start apiserver. Shutdown reverse order. TLS certs generated on first start. Token auth. State dir: <code>/var/lib/qvm/k8s/</code>. Ports: apiserver <code>:6443</code>, kine <code>:2379</code>.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>Config</code>, <code>Manager</code>, <code>New(cfg)</code>, <code>Start(ctx)</code>, <code>Stop(ctx)</code>, <code>RESTConfig()</code>, <code>IsRunning()</code>, <code>APIServerURL()</code>, <code>WriteKubeconfig(path)</code>, <code>FindBinary(name, fallbacks)</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> config defaults/validation, cert generation/reuse, kine start/stop (skip if binary missing), port conflict, full lifecycle</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/apimgr/...</code> — FAIL</li>
+          <li><strong>Implement:</strong> Config, Certs (crypto/x509), Kine (exec.Cmd + TCP wait), APIServer (exec.Cmd + /healthz wait), Manager (coordination, PID file, kubeconfig)</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/apimgr/...</code> — PASS (integration tests skip if binaries not installed)</li>
+          <li><strong>Commit:</strong> <code>feat: kine + kube-apiserver control plane manager</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 3 -->
+    <div class="task" id="task-3">
+      <h3>Task 3: Controller framework wiring + CRD installation</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>cmd/qlvm-controller/main.go</code></li>
+          <li>Create: <code>internal/controller/controller.go</code>, <code>controller_test.go</code></li>
+          <li>Modify: <code>Makefile</code> (add <code>controller</code> build target)</li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        <code>cmd/qlvm-controller</code> starts controller-runtime Manager with REST config from apimgr, installs CRDs from <code>config/crd/*.yaml</code> (embedded or on disk), registers controllers (stubs), runs until stopped. CRDs must be Established before controllers start.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>NewManager(ctx, cfg)</code>, <code>InstallCRDs(ctx, client)</code>, <code>WaitForCRDs(ctx, client, names)</code>, <code>RunControllers(ctx, mgr)</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> InstallCRDs (verify CRDs exist), WaitForCRDs, NewManager (scheme), stub controllers start</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/controller/...</code> — FAIL</li>
+          <li><strong>Implement:</strong> main.go with flags, manager setup (metrics off, no leader election), CRD installation via apiextensions client, controller stubs</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/controller/...</code> — PASS, build <code>bin/qlvm-controller</code></li>
+          <li><strong>Commit:</strong> <code>feat: controller framework wiring + CRD installation</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 4 -->
+    <div class="task" id="task-4">
+      <h3>Task 4: VM controller</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/controller/vm_controller.go</code>, <code>vm_controller_test.go</code></li>
+          <li>Create: <code>internal/controller/vm_actuator.go</code>, <code>vm_actuator_test.go</code></li>
+          <li>Create: <code>internal/controller/vm_actuator_fake.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        VM controller watches VM CRs. Reconcile: Create (reflink template, bake networkd, OVN port, libxl domain), Start, Delete (cleanup OVN, remove domain/disk), Update (spec changes → restart/recreate). Actuator interface wraps existing <code>internal/vm</code>, <code>internal/ovn</code>, <code>internal/xenctl</code> for testability.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>VMActuator</code> (Create, Start, Stop, Delete, GetState, List), <code>RealVMActuator</code>, <code>VMReconciler.Reconcile</code>, <code>VMReconciler.SetupWithManager</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> reconcile create/start/delete/idempotent/error/spec-change (fake client + fake actuator), real actuator integration tests</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/controller/... -run TestReconcile</code> — FAIL</li>
+          <li><strong>Implement:</strong> RealVMActuator (wraps existing packages), VMReconciler (finalizers, state machine, status updates)</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/controller/...</code> — PASS</li>
+          <li><strong>Commit:</strong> <code>feat: VM controller with reconcile loop</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 5 -->
+    <div class="task" id="task-5">
+      <h3>Task 5: Template controller</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/controller/template_controller.go</code>, <code>template_controller_test.go</code></li>
+          <li>Create: <code>internal/controller/template_actuator.go</code>, <code>template_actuator_test.go</code></li>
+          <li>Create: <code>internal/controller/template_actuator_fake.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        Template controller watches Template CRs. Reconcile: Bake (via image-builder, long-running → requeue-based polling), Force rebuild (delete + re-bake, reset Force), Delete (remove dir if no VMs reference it, else block). Baking is async: set status to "baking", requeue, check completion on next reconcile.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>TemplateActuator</code> (Bake, Remove, GetMeta, List, ReferencedBy), <code>RealTemplateActuator</code>, <code>TemplateReconciler.Reconcile</code>, <code>TemplateReconciler.SetupWithManager</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> bake, force rebuild, bake error (status failed, requeue), delete (referenced vs not), idempotent</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/controller/... -run TestTemplate</code> — FAIL</li>
+          <li><strong>Implement:</strong> RealTemplateActuator (wraps <code>internal/template</code>), TemplateReconciler (async bake pattern)</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/controller/...</code> — PASS</li>
+          <li><strong>Commit:</strong> <code>feat: Template controller with bake reconciliation</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 6 -->
+    <div class="task" id="task-6">
+      <h3>Task 6: Domain controller</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/controller/domain_controller.go</code>, <code>domain_controller_test.go</code></li>
+          <li>Create: <code>internal/controller/domain_actuator.go</code>, <code>domain_actuator_test.go</code></li>
+          <li>Create: <code>internal/controller/domain_actuator_fake.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        Domain controller watches Domain CRs. Reconcile: Provision (create OVN switch/router via <code>internal/ovn</code>), Update (subnet/gateway changes), Delete (remove OVN if no VMs, else block deletion with condition).
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>DomainActuator</code> (Provision, Remove, GetState, VMsInDomain), <code>RealDomainActuator</code>, <code>DomainReconciler.Reconcile</code>, <code>DomainReconciler.SetupWithManager</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> provision, provision error, delete empty, delete with VMs (blocked), idempotent</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/controller/... -run TestDomain</code> — FAIL</li>
+          <li><strong>Implement:</strong> RealDomainActuator (wraps <code>internal/ovn</code>), DomainReconciler</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/controller/...</code> — PASS</li>
+          <li><strong>Commit:</strong> <code>feat: Domain controller with OVN reconciliation</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 7 -->
+    <div class="task" id="task-7">
+      <h3>Task 7: CLI k8s subcommands</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/cli/k8s.go</code>, <code>k8s_test.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        <code>qlvm k8s</code> command group: <code>start</code> (kine + apiserver + controller), <code>stop</code> (reverse order), <code>status</code>, <code>logs</code>, <code>kubeconfig</code>. Controller started as subprocess. Foreground mode by default; systemd unit for service mode.
+      </div>
+      <div class="task-interfaces">
+        <strong>Interfaces</strong>
+        <code>NewK8sCmd()</code>, subcommands: start, stop, status, logs, kubeconfig. Flags: <code>--state-dir</code>, <code>--kine-binary</code>, <code>--apiserver-binary</code>, <code>--controller-binary</code>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing tests:</strong> command parsing, flags, kubeconfig output</li>
+          <li><strong>Verify failure:</strong> <code>go test ./internal/cli/... -run TestK8s</code> — FAIL</li>
+          <li><strong>Implement:</strong> k8s command group using apimgr, controller subprocess management, PID tracking</li>
+          <li><strong>Verify pass:</strong> <code>go test ./internal/cli/...</code> — PASS, manual test with binaries</li>
+          <li><strong>Commit:</strong> <code>feat: qlvm k8s CLI commands</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 8 -->
+    <div class="task" id="task-8">
+      <h3>Task 8: End-to-end integration test</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Create: <code>internal/itest/k8s_e2e_test.go</code></li>
+        </ul>
+      </div>
+      <div class="task-ruling">
+        <strong>Ruling</strong>
+        Full E2E test: start control plane → create Domain CR → verify OVN → create Template CR → verify bake → create VM CR → verify Xen domain → patch VM → verify update → delete VM → verify cleanup → delete template/domain → stop control plane → verify VMs not killed. Guarded by <code>QVM_K8S_ITEST=1</code>.
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write failing test:</strong> full lifecycle via client-go, wait helpers for each resource state</li>
+          <li><strong>Verify failure:</strong> <code>QVM_K8S_ITEST=1 go test -tags=integration ./internal/itest/... -run TestK8sE2E</code> — FAIL</li>
+          <li><strong>Fix issues:</strong> run test, fix bugs in controllers/apimgr/CLI (timing, races, error handling)</li>
+          <li><strong>Verify pass:</strong> same command — PASS</li>
+          <li><strong>Commit:</strong> <code>test: end-to-end K8s CRD controller integration test</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Task 9 -->
+    <div class="task" id="task-9">
+      <h3>Task 9: Documentation + README updates</h3>
+      <div class="task-files">
+        <strong>Files</strong>
+        <ul class="checklist">
+          <li>Modify: <code>README.md</code> (add K8s section)</li>
+          <li>Create: <code>docs/k8s.md</code></li>
+          <li>Create: <code>hack/systemd/qlvm-k8s.service</code></li>
+          <li>Modify: <code>Makefile</code> (add <code>install-k8s</code>)</li>
+        </ul>
+      </div>
+      <div class="step">
+        <h4>Steps</h4>
+        <ol>
+          <li><strong>Write docs:</strong> <code>docs/k8s.md</code> (architecture, installation, usage, CRD reference, troubleshooting), README section, systemd unit, Makefile target</li>
+          <li><strong>Verify:</strong> review docs for accuracy, validate systemd unit syntax</li>
+          <li><strong>Commit:</strong> <code>docs: K8s control plane documentation</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <h2 id="execution">Execution Order</h2>
+    <p>Tasks are sequential where dependencies exist, but some can be parallelized:</p>
+    <div class="exec-order">
+1. <strong>Task 1</strong> (CRD types) — must come first
+2. <strong>Task 2</strong> (Control plane) — after Task 1 deps
+3. <strong>Task 3</strong> (Controller wiring) — depends on 1 + 2
+4. <strong>Task 4</strong> (VM controller) — depends on 3
+5. <strong>Task 5</strong> (Template controller) — depends on 3 <span style="color: #28a745">[parallel with 4]</span>
+6. <strong>Task 6</strong> (Domain controller) — depends on 3 <span style="color: #28a745">[parallel with 4 + 5]</span>
+7. <strong>Task 7</strong> (CLI) — depends on 2 <span style="color: #28a745">[parallel with 3-6]</span>
+8. <strong>Task 8</strong> (E2E test) — depends on all above
+9. <strong>Task 9</strong> (Docs) — depends on all above
+
+Critical path: 1 → 2 → 3 → 4 → 8 → 9
+Parallelizable: 5, 6 (after 3), 7 (after 2)
+    </div>
+
+    <h2 id="effort">Estimated Effort</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Task</th>
+          <th>Estimate</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Task 1: CRD types</td><td>1-2 hours</td><td>Type definitions + controller-gen</td></tr>
+        <tr><td>Task 2: Control plane</td><td>3-4 hours</td><td>Subprocess mgmt, certs, TLS</td></tr>
+        <tr><td>Task 3: Controller wiring</td><td>2-3 hours</td><td>Manager setup, CRD install</td></tr>
+        <tr><td>Task 4: VM controller</td><td>4-6 hours</td><td>Most complex — Xen/OVN integration</td></tr>
+        <tr><td>Task 5: Template controller</td><td>2-3 hours</td><td>Async bake pattern</td></tr>
+        <tr><td>Task 6: Domain controller</td><td>2-3 hours</td><td>OVN switch/router mgmt</td></tr>
+        <tr><td>Task 7: CLI</td><td>2-3 hours</td><td>Command group + subprocess mgmt</td></tr>
+        <tr><td>Task 8: E2E test</td><td>2-4 hours</td><td>Integration + bug fixing</td></tr>
+        <tr><td>Task 9: Documentation</td><td>1-2 hours</td><td>Docs, systemd, README</td></tr>
+        <tr><td><strong>Total</strong></td><td><strong>20-32 hours</strong></td><td></td></tr>
+      </tbody>
+    </table>
+
+    <hr style="margin: 3rem 0; border: none; border-top: 1px solid #dfe2e5;">
+    <p style="color: #6a737d; font-size: 0.9rem;">
+      Plan saved: <code>docs/superpowers/plans/2026-10-13-qlvm-k8s-crd-controller.md</code> ·
+      HTML view: <code>docs/superpowers/plans/2026-10-13-qlvm-k8s-crd-controller.html</code>
+    </p>
+
+  </main>
+</div>
+</body>
+</html>
