@@ -5,7 +5,6 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -20,18 +19,17 @@ type App struct {
 	window  fyne.Window
 	model   *AppModel
 
-	vmList         *VMListView
-	templateList   *TemplateListView
-	configPanel    *ConfigPanel
-	actions        *Actions
-	logPane        *LogPane
+	vmTable      *vmTable
+	templateTable *templateTable
+	actions      *Actions
+	logPane      *LogPane
 }
 
 // New creates the GUI application with the given model.
 func New(model *AppModel) *App {
 	a := app.NewWithID("io.qlvm.gui")
 	w := a.NewWindow("qlvm GUI")
-	w.Resize(fyne.NewSize(900, 600))
+	w.Resize(fyne.NewSize(1000, 600))
 	w.SetMaster()
 
 	g := &App{
@@ -40,18 +38,18 @@ func New(model *AppModel) *App {
 		model:   model,
 	}
 
+	g.logPane = NewLogPane()
 	g.buildLayout()
 	g.window.ShowAndRun()
 	return g
 }
 
 // NewWithDependencies creates the GUI application with explicit control
-// plane dependencies (for testing or when the control planes are already
-// initialized).
+// plane dependencies.
 func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath string) *App {
 	a := app.NewWithID("io.qlvm.gui")
 	w := a.NewWindow("qlvm GUI")
-	w.Resize(fyne.NewSize(900, 600))
+	w.Resize(fyne.NewSize(1000, 600))
 	w.SetMaster()
 
 	g := &App{
@@ -68,94 +66,93 @@ func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.Vi
 	return g
 }
 
-// buildLayout creates the main window layout with left pane (VM/template
-// list) and right pane (context-sensitive config).
+// buildLayout creates the main window with menu bar and content area.
 func (g *App) buildLayout() {
-	// Left pane: navigation tabs + list + action bar.
-	leftPane := g.buildLeftPane()
+	// Menu bar.
+	g.window.SetMainMenu(g.buildMenu())
 
-	// Right pane: context-sensitive config panel.
-	rightPane := g.buildRightPane()
-
-	// Split the window into left and right panes.
-	split := container.NewHSplit(leftPane, rightPane)
-	split.SetOffset(0.35)
-
-	g.window.SetContent(split)
-}
-
-// buildLeftPane creates the left navigation pane with tabs and a list.
-func (g *App) buildLeftPane() fyne.CanvasObject {
-	// Filter/search box.
+	// Content: filter + tabbed table views.
 	filter := widget.NewEntry()
 	filter.PlaceHolder = "Filter VMs/Templates"
 	filter.OnChanged = func(s string) {
 		g.model.SetFilter(s)
-		g.vmList.Refresh()
+		g.vmTable.Refresh()
+		g.templateTable.Refresh()
 	}
 
-	// VM list view.
-	g.vmList = NewVMListView(g.model)
-	g.vmList.OnSelectionChange = func(name string) {
-		g.configPanel.Refresh()
-	}
+	// VM table view.
+	g.vmTable = newVMTable(g.model, func(name string) {
+		ShowVMDetailDialog(g.window, g.model, name)
+	})
 
-	// Template list view.
-	g.templateList = NewTemplateListView(g.model)
-	g.templateList.OnSelectionChange = func(dir string) {
-		g.configPanel.Refresh()
-	}
+	// Template table view.
+	g.templateTable = newTemplateTable(g.model, func(dir string) {
+		ShowTemplateDetailDialog(g.window, g.model, dir)
+	})
 
-	// Tab container for VMs/Templates.
 	tabs := container.NewAppTabs(
-		container.NewTabItem("VMs", g.vmList),
-		container.NewTabItem("Templates", g.templateList),
+		container.NewTabItem("VMs", g.vmTable),
+		container.NewTabItem("Templates", g.templateTable),
 	)
-	tabs.SetTabLocation(container.TabLocationLeading)
+	tabs.SetTabLocation(container.TabLocationTop)
 	tabs.OnSelected = func(item *container.TabItem) {
 		g.model.SetTab(item.Text)
-		g.configPanel.Refresh()
 	}
 
-	// Action bar at the bottom with lifecycle buttons.
-	startBtn := widget.NewButton("Start", func() { g.runAction(g.actions.Start) })
-	stopBtn := widget.NewButton("Stop", func() { g.runAction(g.actions.Stop) })
-	killBtn := widget.NewButton("Kill", func() { g.runAction(g.actions.Kill) })
-	deleteBtn := widget.NewButton("Delete", func() { g.runAction(g.actions.Delete) })
-	createVMBtn := widget.NewButton("Create VM", func() {
-		ShowCreateVMDialog(g.window, g.model, g.logPane.Add, func() {
-			g.vmList.Refresh()
-		})
-	})
-	createTplBtn := widget.NewButton("Create Template", func() {
-		ShowCreateTemplateDialog(g.window, g.model, g.logPane.Add, func() {
-			g.templateList.Refresh()
-		})
-	})
-	deleteTplBtn := widget.NewButton("Delete Template", func() {
-		ShowDeleteTemplateDialog(g.window, g.model, g.logPane.Add, func() {
-			g.templateList.Refresh()
-			g.configPanel.Refresh()
-		})
-	})
+	// Main content: filter at top, tabs below.
+	content := container.NewBorder(
+		filter, // top
+		nil,    // bottom
+		nil,    // left
+		nil,    // right
+		tabs,
+	)
 
-	actionBar := container.NewHBox(
-		createVMBtn,
-		createTplBtn,
-		deleteTplBtn,
-		startBtn,
-		stopBtn,
-		killBtn,
-		deleteBtn,
-		layout.NewSpacer(),
-		widget.NewButton("Refresh", func() {
-			g.vmList.Refresh()
-			g.templateList.Refresh()
-			g.configPanel.Refresh()
+	g.window.SetContent(content)
+}
+
+// buildMenu creates the application menu bar.
+func (g *App) buildMenu() *fyne.MainMenu {
+	fileMenu := fyne.NewMenu("File",
+		fyne.NewMenuItem("Create VM", func() {
+			ShowCreateVMDialog(g.window, g.model, g.logPane.Add, g.vmTable.Refresh)
+		}),
+		fyne.NewMenuItem("Create Template", func() {
+			ShowCreateTemplateDialog(g.window, g.model, g.logPane.Add, g.templateTable.Refresh)
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Quit", func() {
+			g.window.Close()
 		}),
 	)
 
-	return container.NewBorder(filter, actionBar, nil, nil, tabs)
+	vmMenu := fyne.NewMenu("VM",
+		fyne.NewMenuItem("Start", func() { g.runAction(g.actions.Start) }),
+		fyne.NewMenuItem("Stop", func() { g.runAction(g.actions.Stop) }),
+		fyne.NewMenuItem("Kill", func() { g.runAction(g.actions.Kill) }),
+		fyne.NewMenuItem("Restart", func() { g.runAction(g.actions.Restart) }),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Delete", func() { g.runAction(g.actions.Delete) }),
+	)
+
+	templateMenu := fyne.NewMenu("Template",
+		fyne.NewMenuItem("Delete", func() {
+			ShowDeleteTemplateDialog(g.window, g.model, g.logPane.Add, g.templateTable.Refresh)
+		}),
+	)
+
+	viewMenu := fyne.NewMenu("View",
+		fyne.NewMenuItem("Refresh", func() {
+			g.vmTable.Refresh()
+			g.templateTable.Refresh()
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Toggle Log", func() {
+			// Toggle log pane visibility.
+		}),
+	)
+
+	return fyne.NewMainMenu(fileMenu, vmMenu, templateMenu, viewMenu)
 }
 
 // runAction runs an action and shows errors in a dialog.
@@ -163,10 +160,4 @@ func (g *App) runAction(fn func() error) {
 	if err := fn(); err != nil {
 		dialog.ShowError(err, g.window)
 	}
-}
-
-// buildRightPane creates the right context-sensitive config panel.
-func (g *App) buildRightPane() fyne.CanvasObject {
-	g.configPanel = NewConfigPanel(g.model)
-	return g.configPanel
 }
