@@ -25,6 +25,9 @@ type DomainSpec struct {
 	Disks       []DomainDisk
 	Nics        []DomainNic
 	P9S         []DomainP9
+	// CPUs is the list of physical CPU cores this domain is pinned to.
+	// Empty = no pinning (Xen scheduler decides).
+	CPUs []int
 }
 
 // DomainDisk is one libxl-style disk entry in a DomainSpec.
@@ -107,6 +110,7 @@ func DomainConfig(vmDir string, m *Meta, tpl *template.Template) *DomainSpec {
 		}},
 		Nics: []DomainNic{{Mac: m.MAC, Script: "vif-ovn", Nictype: "vif"}},
 		P9S:  p9s,
+		CPUs: m.Cores,
 	}
 }
 
@@ -129,6 +133,7 @@ func agentDomainConfig(vmDir string, m *Meta) *DomainSpec {
 		Disks:       []DomainDisk{},
 		Nics: []DomainNic{{Mac: m.MAC, Script: "vif-ovn", Nictype: "vif"}},
 		P9S:         []DomainP9{},
+		CPUs:        m.Cores,
 	}
 	if m.WorkspaceSizeMB > 0 {
 		spec.Disks = []DomainDisk{{

@@ -31,6 +31,9 @@ type Meta struct {
 	Token string `yaml:"token"`
 	// WorkspaceSizeMB is the size of the agent VM's workspace disk (0 = none).
 	WorkspaceSizeMB int `yaml:"workspace_size_mb"`
+	// Cores is the list of physical CPU cores this VM is pinned to.
+	// Empty = auto-assigned (or no pinning if the host has no hybrid topology).
+	Cores []int `yaml:"cores"`
 }
 
 // Mount is one p9 share: Host path on dom0, Guest tag inside the VM.
