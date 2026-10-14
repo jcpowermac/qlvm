@@ -122,15 +122,27 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 	stopBtn := widget.NewButton("Stop", func() { g.runAction(g.actions.Stop) })
 	killBtn := widget.NewButton("Kill", func() { g.runAction(g.actions.Kill) })
 	deleteBtn := widget.NewButton("Delete", func() { g.runAction(g.actions.Delete) })
-	createBtn := widget.NewButton("Create VM", func() {
+	createVMBtn := widget.NewButton("Create VM", func() {
 		ShowCreateVMDialog(g.window, g.model, g.logPane.Add, func() {
-			// Refresh the VM list after creation.
 			g.vmList.Refresh()
+		})
+	})
+	createTplBtn := widget.NewButton("Create Template", func() {
+		ShowCreateTemplateDialog(g.window, g.model, g.logPane.Add, func() {
+			g.templateList.Refresh()
+		})
+	})
+	deleteTplBtn := widget.NewButton("Delete Template", func() {
+		ShowDeleteTemplateDialog(g.window, g.model, g.logPane.Add, func() {
+			g.templateList.Refresh()
+			g.configPanel.Refresh()
 		})
 	})
 
 	actionBar := container.NewHBox(
-		createBtn,
+		createVMBtn,
+		createTplBtn,
+		deleteTplBtn,
 		startBtn,
 		stopBtn,
 		killBtn,
@@ -138,6 +150,7 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 		layout.NewSpacer(),
 		widget.NewButton("Refresh", func() {
 			g.vmList.Refresh()
+			g.templateList.Refresh()
 			g.configPanel.Refresh()
 		}),
 	)
