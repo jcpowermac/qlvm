@@ -36,6 +36,22 @@ func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir str
 		},
 	)
 
+	// Show only column headers (no row headers).
+	table.ShowHeaderRow = true
+	table.ShowHeaderColumn = false
+
+	// Override header content to show column names instead of A, B, C...
+	table.UpdateHeader = func(id widget.TableCellID, cell fyne.CanvasObject) {
+		if id.Row < 0 {
+			// Column header.
+			cell.(*widget.Label).SetText(templateTableColumns[id.Col])
+			cell.(*widget.Label).TextStyle = fyne.TextStyle{Bold: true}
+		} else if id.Col < 0 {
+			// Row header (shouldn't appear since ShowHeaderColumn=false).
+			cell.(*widget.Label).SetText("")
+		}
+	}
+
 	// Set default column widths (enables resizing).
 	for i, w := range templateTableDefaultWidths {
 		table.SetColumnWidth(i, w)
