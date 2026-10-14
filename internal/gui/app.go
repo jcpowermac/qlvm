@@ -4,8 +4,14 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/ovs"
+	"github.com/jcpowermac/qlvm/internal/vm"
+	"github.com/jcpowermac/qlvm/internal/xenctl"
 )
 
 // App is the main GUI application.
@@ -14,8 +20,10 @@ type App struct {
 	window  fyne.Window
 	model   *AppModel
 
-	vmList     *VMListView
+	vmList      *VMListView
 	configPanel *ConfigPanel
+	actions     *Actions
+	logPane     *LogPane
 }
 
 // New creates the GUI application with the given model.
@@ -30,6 +38,29 @@ func New(model *AppModel) *App {
 		window:  w,
 		model:   model,
 	}
+
+	g.buildLayout()
+	g.window.ShowAndRun()
+	return g
+}
+
+// NewWithDependencies creates the GUI application with explicit control
+// plane dependencies (for testing or when the control planes are already
+// initialized).
+func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath string) *App {
+	a := app.NewWithID("io.qlvm.gui")
+	w := a.NewWindow("qlvm GUI")
+	w.Resize(fyne.NewSize(900, 600))
+	w.SetMaster()
+
+	g := &App{
+		fyneApp: a,
+		window:  w,
+		model:   model,
+	}
+
+	g.logPane = NewLogPane()
+	g.actions = NewActions(model, x, o, v, cfg, coremapPath, g.logPane.Add)
 
 	g.buildLayout()
 	g.window.ShowAndRun()
@@ -79,9 +110,17 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 		g.configPanel.Refresh()
 	}
 
-	// Action bar at the bottom.
+	// Action bar at the bottom with lifecycle buttons.
+	startBtn := widget.NewButton("Start", func() { g.runAction(g.actions.Start) })
+	stopBtn := widget.NewButton("Stop", func() { g.runAction(g.actions.Stop) })
+	killBtn := widget.NewButton("Kill", func() { g.runAction(g.actions.Kill) })
+	deleteBtn := widget.NewButton("Delete", func() { g.runAction(g.actions.Delete) })
+
 	actionBar := container.NewHBox(
-		widget.NewButton("Create VM", func() {}),
+		startBtn,
+		stopBtn,
+		killBtn,
+		deleteBtn,
 		layout.NewSpacer(),
 		widget.NewButton("Refresh", func() {
 			g.vmList.Refresh()
@@ -90,6 +129,13 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 	)
 
 	return container.NewBorder(filter, actionBar, nil, nil, tabs)
+}
+
+// runAction runs an action and shows errors in a dialog.
+func (g *App) runAction(fn func() error) {
+	if err := fn(); err != nil {
+		dialog.ShowError(err, g.window)
+	}
 }
 
 // buildRightPane creates the right context-sensitive config panel.
