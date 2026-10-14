@@ -15,6 +15,9 @@ type templateTable struct {
 	onSelect func(dir string)
 }
 
+// templateTableDefaultWidths are the default column widths.
+var templateTableDefaultWidths = []float32{300, 250, 80} // Image, Digest, VMs
+
 // templateTableColumns defines the column headers.
 var templateTableColumns = []string{"Image", "Digest", "VMs"}
 
@@ -36,6 +39,11 @@ func newTemplateTable(model *AppModel, onSelect func(dir string)) *templateTable
 			t.updateCell(id, cell)
 		},
 	)
+
+	// Set default column widths (enables resizing).
+	for i, w := range templateTableDefaultWidths {
+		t.SetColumnWidth(i, w)
+	}
 
 	t.Table.CreateHeader = func() fyne.CanvasObject {
 		return widget.NewLabel("")
@@ -123,3 +131,5 @@ func (t *templateTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject
 
 	label.SetText(text)
 }
+
+

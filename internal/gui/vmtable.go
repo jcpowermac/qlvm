@@ -15,6 +15,9 @@ type vmTable struct {
 	onSelect func(name string)
 }
 
+// vmTableDefaultWidths are the default column widths.
+var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100, 120} // Name, Type, State, Memory, vCPUs, Domain, IP
+
 // vmTableColumns defines the column headers.
 var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domain", "IP"}
 
@@ -36,6 +39,11 @@ func newVMTable(model *AppModel, onSelect func(name string)) *vmTable {
 			t.updateCell(id, cell)
 		},
 	)
+
+	// Set default column widths (enables resizing).
+	for i, w := range vmTableDefaultWidths {
+		t.SetColumnWidth(i, w)
+	}
 
 	t.Table.CreateHeader = func() fyne.CanvasObject {
 		return widget.NewLabel("")
@@ -144,22 +152,4 @@ func (t *vmTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject) {
 	label.SetText(text)
 }
 
-// columnWidths returns the width for each column.
-func (t *vmTable) ColumnWidth(id int) fyne.Size {
-	switch id {
-	case 0:
-		return fyne.NewSize(150, 0) // Name
-	case 1:
-		return fyne.NewSize(80, 0)  // Type
-	case 2:
-		return fyne.NewSize(80, 0)  // State
-	case 3:
-		return fyne.NewSize(80, 0)  // Memory
-	case 4:
-		return fyne.NewSize(60, 0)  // vCPUs
-	case 5:
-		return fyne.NewSize(80, 0)  // Domain
-	default:
-		return fyne.NewSize(100, 0) // IP
-	}
-}
+
