@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -106,6 +108,9 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 			}
 			return nil
 		},
+		Dom0Params: func() error {
+			return writeDom0Params(cfg)
+		},
 		VifScript: func() error {
 			return InstallVifScript("/etc/xen/scripts/vif-ovn", filepath.Join(filepath.Dir(exe), "qlvm-vif"))
 		},
@@ -116,6 +121,34 @@ func newInstallPlan(cfg *config.Config, configPath string) (*setup.Plan, error) 
 			return cfg.Save(configPath)
 		},
 	}, nil
+}
+
+// dom0ParamsPath returns where the dom0 boot parameters are written.
+// Tests can override it via the DOM0_PARAMS_PATH environment variable.
+func dom0ParamsPath() string {
+	if p := os.Getenv("DOM0_PARAMS_PATH"); p != "" {
+		return p
+	}
+	return "/etc/qvm/xen-boot-params.conf"
+}
+
+// writeDom0Params writes the dom0 boot parameters to dom0ParamsPath.
+// These parameters are read by the xen-dom0-refresh script (in the os
+// repo) and appended to the multiboot2 line in /boot/grub2/user.cfg.
+// The file format is space-separated key=value pairs.
+func writeDom0Params(cfg *config.Config) error {
+	var params []string
+	params = append(params, fmt.Sprintf("dom0_mem=%dM", cfg.Dom0.MemoryMB))
+	params = append(params, fmt.Sprintf("dom0_max_vcpus=%d", cfg.Dom0.VCPUs))
+	if cfg.Dom0.Pinned() {
+		params = append(params, fmt.Sprintf("dom0_vcpus_pin=%d", cfg.Dom0.VCPUs))
+	}
+	content := strings.Join(params, " ") + "\n"
+	path := dom0ParamsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func init() {

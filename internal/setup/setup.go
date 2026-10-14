@@ -37,9 +37,10 @@ type Plan struct {
 	FW      *fw.Manager
 	Netd    *netd.Manager
 	SD      *systemd.Manager
-	Storage   func() error // /var/lib/qvm + tree
-	VifScript func() error // qlvm-vif at /etc/xen/scripts/vif-ovn
-	SaveCfg   func() error // write the config file (final step)
+	Storage    func() error // /var/lib/qvm + tree
+	Dom0Params func() error // write /etc/qvm/xen-boot-params.conf
+	VifScript  func() error // qlvm-vif at /etc/xen/scripts/vif-ovn
+	SaveCfg    func() error // write the config file (final step)
 
 	// Dom0Check reports whether this host is dom0; defaults to IsDom0.
 	Dom0Check func() (bool, error)
@@ -109,6 +110,12 @@ func Run(ctx context.Context, p *Plan, cfg *config.Config, opts Options) error {
 	}
 
 	if err := step("storage", p.Storage); err != nil {
+		return err
+	}
+
+	if err := step("dom0-params", func() error {
+		return p.Dom0Params()
+	}); err != nil {
 		return err
 	}
 
