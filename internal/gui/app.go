@@ -20,10 +20,11 @@ type App struct {
 	window  fyne.Window
 	model   *AppModel
 
-	vmList      *VMListView
-	configPanel *ConfigPanel
-	actions     *Actions
-	logPane     *LogPane
+	vmList         *VMListView
+	templateList   *TemplateListView
+	configPanel    *ConfigPanel
+	actions        *Actions
+	logPane        *LogPane
 }
 
 // New creates the GUI application with the given model.
@@ -99,10 +100,16 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 		g.configPanel.Refresh()
 	}
 
+	// Template list view.
+	g.templateList = NewTemplateListView(g.model)
+	g.templateList.OnSelectionChange = func(dir string) {
+		g.configPanel.Refresh()
+	}
+
 	// Tab container for VMs/Templates.
 	tabs := container.NewAppTabs(
 		container.NewTabItem("VMs", g.vmList),
-		container.NewTabItem("Templates", widget.NewLabel("Template list placeholder")),
+		container.NewTabItem("Templates", g.templateList),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
 	tabs.OnSelected = func(item *container.TabItem) {
