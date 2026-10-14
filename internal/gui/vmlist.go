@@ -12,6 +12,9 @@ import (
 type VMListView struct {
 	*widget.List
 	model *AppModel
+
+	// OnSelectionChange is called when a VM is selected.
+	OnSelectionChange func(name string)
 }
 
 // NewVMListView creates a VM list view bound to the app model.
@@ -36,6 +39,9 @@ func NewVMListView(model *AppModel) *VMListView {
 		vms := l.filteredVMs()
 		if id < len(vms) {
 			l.model.SelectVM(vms[id].Name)
+			if l.OnSelectionChange != nil {
+				l.OnSelectionChange(vms[id].Name)
+			}
 		}
 	}
 

@@ -13,6 +13,9 @@ type App struct {
 	fyneApp fyne.App
 	window  fyne.Window
 	model   *AppModel
+
+	vmList     *VMListView
+	configPanel *ConfigPanel
 }
 
 // New creates the GUI application with the given model.
@@ -56,19 +59,24 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 	filter.PlaceHolder = "Filter VMs/Templates"
 	filter.OnChanged = func(s string) {
 		g.model.SetFilter(s)
+		g.vmList.Refresh()
 	}
 
 	// VM list view.
-	vmList := NewVMListView(g.model)
+	g.vmList = NewVMListView(g.model)
+	g.vmList.OnSelectionChange = func(name string) {
+		g.configPanel.Refresh()
+	}
 
 	// Tab container for VMs/Templates.
 	tabs := container.NewAppTabs(
-		container.NewTabItem("VMs", vmList),
+		container.NewTabItem("VMs", g.vmList),
 		container.NewTabItem("Templates", widget.NewLabel("Template list placeholder")),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
 	tabs.OnSelected = func(item *container.TabItem) {
 		g.model.SetTab(item.Text)
+		g.configPanel.Refresh()
 	}
 
 	// Action bar at the bottom.
@@ -76,7 +84,8 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 		widget.NewButton("Create VM", func() {}),
 		layout.NewSpacer(),
 		widget.NewButton("Refresh", func() {
-			vmList.Refresh()
+			g.vmList.Refresh()
+			g.configPanel.Refresh()
 		}),
 	)
 
@@ -85,5 +94,6 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 
 // buildRightPane creates the right context-sensitive config panel.
 func (g *App) buildRightPane() fyne.CanvasObject {
-	return widget.NewLabel("Select a VM or template to view its configuration.")
+	g.configPanel = NewConfigPanel(g.model)
+	return g.configPanel
 }
