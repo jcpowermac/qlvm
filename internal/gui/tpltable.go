@@ -8,59 +8,121 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// templateTable displays templates in a table with columns.
+// templateTable displays templates in a table with columns and right-click context menu.
 type templateTable struct {
-	*widget.Table
+	*rightClickTable
 	model    *AppModel
+	window   fyne.Window
 	onSelect func(dir string)
 }
-
-// templateTableDefaultWidths are the default column widths.
-var templateTableDefaultWidths = []float32{300, 250, 80} // Image, Digest, VMs
 
 // templateTableColumns defines the column headers.
 var templateTableColumns = []string{"Image", "Digest", "VMs"}
 
-// newTemplateTable creates a template table view.
-func newTemplateTable(model *AppModel, onSelect func(dir string)) *templateTable {
-	t := &templateTable{
-		model:    model,
-		onSelect: onSelect,
-	}
+// templateTableDefaultWidths are the default column widths.
+var templateTableDefaultWidths = []float32{300, 250, 80} // Image, Digest, VMs
 
-	t.Table = widget.NewTable(
+// newTemplateTable creates a template table view.
+func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir string)) *templateTable {
+	table := widget.NewTableWithHeaders(
 		func() (rows, cols int) {
-			return len(t.filteredTemplates()), len(templateTableColumns)
+			return len(model.GetTemplates()), len(templateTableColumns)
 		},
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			t.updateCell(id, cell)
+			// Will be updated by the templateTable wrapper.
 		},
 	)
 
 	// Set default column widths (enables resizing).
 	for i, w := range templateTableDefaultWidths {
-		t.SetColumnWidth(i, w)
+		table.SetColumnWidth(i, w)
 	}
 
-	t.Table.CreateHeader = func() fyne.CanvasObject {
-		return widget.NewLabel("")
-	}
-	t.Table.UpdateHeader = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		cell.(*widget.Label).SetText(templateTableColumns[id.Col])
-		cell.(*widget.Label).TextStyle = fyne.TextStyle{Bold: true}
-	}
+	// Single click selects the row (no dialog).
+	table.OnSelected = func(id widget.TableCellID) {
+		tpls := model.GetTemplates()
+		vms := model.GetVMs()
+		filter := strings.ToLower(model.FilterText())
 
-	t.Table.OnSelected = func(id widget.TableCellID) {
-		tpls := t.filteredTemplates()
-		if id.Row < len(tpls) && t.onSelect != nil {
-			t.onSelect(tpls[id.Row].Dir)
+		entries := make([]TemplateEntry, 0, len(tpls))
+		for dir, tpl := range tpls {
+			if filter != "" && !strings.Contains(strings.ToLower(tpl.Image), filter) {
+				continue
+			}
+			vmCount := 0
+			for _, meta := range vms {
+				if meta.Image == tpl.Image {
+					vmCount++
+				}
+			}
+			entries = append(entries, TemplateEntry{
+				Dir:     dir,
+				Image:   tpl.Image,
+				Digest:  tpl.Digest,
+				VMCount: vmCount,
+			})
+		}
+		// Sort by image ref.
+		for i := 0; i < len(entries); i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[i].Image > entries[j].Image {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+		if id.Row < len(entries) {
+			model.SelectTemplate(entries[id.Row].Dir)
 		}
 	}
 
+	t := &templateTable{
+		model:    model,
+		window:   window,
+		onSelect: onSelect,
+	}
+	t.rightClickTable = newRightClickTable(table, func(pos fyne.Position) {
+		t.showContextMenu(pos)
+	})
+
+	// Override the cell update function.
+	t.rightClickTable.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
+		t.updateCell(id, cell)
+	}
+
+	// Override the length function to use filtered templates.
+	t.rightClickTable.Length = func() (rows int, cols int) {
+		return len(t.filteredTemplates()), len(templateTableColumns)
+	}
+
 	return t
+}
+
+// showContextMenu shows the right-click context menu for the selected template.
+func (t *templateTable) showContextMenu(pos fyne.Position) {
+	dir := t.model.SelectedTemplateDir()
+	if dir == "" {
+		return
+	}
+
+	tpls := t.model.GetTemplates()
+	if _, ok := tpls[dir]; !ok {
+		return
+	}
+
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Details...", func() {
+			ShowTemplateDetailDialog(t.window, t.model, dir)
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Delete", func() {
+			ShowDeleteTemplateDialog(t.window, t.model, t.model.Log, t.Refresh)
+		}),
+	)
+
+	widget.ShowPopUpMenuAtPosition(menu, t.window.Canvas(), pos)
 }
 
 // filteredTemplates returns templates matching the current filter.
@@ -131,5 +193,3 @@ func (t *templateTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject
 
 	label.SetText(text)
 }
-
-

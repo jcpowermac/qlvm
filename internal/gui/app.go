@@ -44,6 +44,7 @@ func New(model *AppModel) *App {
 	}
 
 	g.logPane = NewLogPane()
+	model.SetLogCallback(g.logPane.Add)
 	g.buildLayout()
 	g.window.ShowAndRun()
 	return g
@@ -64,6 +65,7 @@ func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.Vi
 	}
 
 	g.logPane = NewLogPane()
+	model.SetLogCallback(g.logPane.Add)
 	g.actions = NewActions(model, x, o, v, cfg, coremapPath, g.logPane.Add)
 
 	g.buildLayout()
@@ -90,13 +92,13 @@ func (g *App) buildLayout() {
 			}
 
 			// VM table view.
-			g.vmTable = newVMTable(g.model, func(name string) {
-				ShowVMDetailDialog(g.window, g.model, name)
+			g.vmTable = newVMTable(g.model, g.window, func(name string) {
+				// Single click just selects; right-click opens context menu.
 			})
 
 			// Template table view.
-			g.templateTable = newTemplateTable(g.model, func(dir string) {
-				ShowTemplateDetailDialog(g.window, g.model, dir)
+			g.templateTable = newTemplateTable(g.model, g.window, func(dir string) {
+				// Single click just selects; right-click opens context menu.
 			})
 
 			tabs := container.NewAppTabs(
@@ -200,6 +202,13 @@ func (g *App) buildMenu() *fyne.MainMenu {
 	)
 
 	vmMenu := fyne.NewMenu("VM",
+		fyne.NewMenuItem("Details...", func() {
+			name := g.model.SelectedVMName()
+			if name != "" {
+				ShowVMDetailDialog(g.window, g.model, name)
+			}
+		}),
+		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Start", func() { g.runAction(g.actions.Start) }),
 		fyne.NewMenuItem("Stop", func() { g.runAction(g.actions.Stop) }),
 		fyne.NewMenuItem("Kill", func() { g.runAction(g.actions.Kill) }),
@@ -209,6 +218,13 @@ func (g *App) buildMenu() *fyne.MainMenu {
 	)
 
 	templateMenu := fyne.NewMenu("Template",
+		fyne.NewMenuItem("Details...", func() {
+			dir := g.model.SelectedTemplateDir()
+			if dir != "" {
+				ShowTemplateDetailDialog(g.window, g.model, dir)
+			}
+		}),
+		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Delete", func() {
 			ShowDeleteTemplateDialog(g.window, g.model, g.logPane.Add, g.templateTable.Refresh)
 		}),

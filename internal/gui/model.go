@@ -43,6 +43,9 @@ type AppModel struct {
 
 	// Refresh interval for stopped VMs.
 	StoppedInterval time.Duration
+
+	// logFn is the callback for operation output.
+	logFn func(string)
 }
 
 // NewAppModel creates an AppModel with default refresh intervals.
@@ -179,4 +182,21 @@ func (m *AppModel) FilterText() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.Filter
+}
+
+// Log sends a message to the log callback.
+func (m *AppModel) Log(msg string) {
+	m.mu.RLock()
+	logFn := m.logFn
+	m.mu.RUnlock()
+	if logFn != nil {
+		logFn(msg)
+	}
+}
+
+// SetLogCallback sets the log callback.
+func (m *AppModel) SetLogCallback(fn func(string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logFn = fn
 }

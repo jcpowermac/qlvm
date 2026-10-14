@@ -8,59 +8,124 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// vmTable displays VMs in a table with columns.
+// vmTable displays VMs in a table with columns and right-click context menu.
 type vmTable struct {
-	*widget.Table
+	*rightClickTable
 	model    *AppModel
+	window   fyne.Window
 	onSelect func(name string)
 }
-
-// vmTableDefaultWidths are the default column widths.
-var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100, 120} // Name, Type, State, Memory, vCPUs, Domain, IP
 
 // vmTableColumns defines the column headers.
 var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domain", "IP"}
 
-// newVMTable creates a VM table view.
-func newVMTable(model *AppModel, onSelect func(name string)) *vmTable {
-	t := &vmTable{
-		model:    model,
-		onSelect: onSelect,
-	}
+// vmTableDefaultWidths are the default column widths.
+var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100, 120} // Name, Type, State, Memory, vCPUs, Domain, IP
 
-	t.Table = widget.NewTable(
+// newVMTable creates a VM table view.
+func newVMTable(model *AppModel, window fyne.Window, onSelect func(name string)) *vmTable {
+	table := widget.NewTableWithHeaders(
 		func() (rows, cols int) {
-			return len(t.filteredVMs()), len(vmTableColumns)
+			return len(model.GetVMs()), len(vmTableColumns)
 		},
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			t.updateCell(id, cell)
+			// Will be updated by the vmTable wrapper.
 		},
 	)
 
 	// Set default column widths (enables resizing).
 	for i, w := range vmTableDefaultWidths {
-		t.SetColumnWidth(i, w)
+		table.SetColumnWidth(i, w)
 	}
 
-	t.Table.CreateHeader = func() fyne.CanvasObject {
-		return widget.NewLabel("")
-	}
-	t.Table.UpdateHeader = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		cell.(*widget.Label).SetText(vmTableColumns[id.Col])
-		cell.(*widget.Label).TextStyle = fyne.TextStyle{Bold: true}
-	}
+	// Single click selects the row (no dialog).
+	table.OnSelected = func(id widget.TableCellID) {
+		vms := model.GetVMs()
+		states := model.GetDomainStates()
+		filter := strings.ToLower(model.FilterText())
 
-	t.Table.OnSelected = func(id widget.TableCellID) {
-		vms := t.filteredVMs()
-		if id.Row < len(vms) && t.onSelect != nil {
-			t.onSelect(vms[id.Row].Name)
+		entries := make([]VMEntry, 0, len(vms))
+		for name, meta := range vms {
+			if filter != "" && !strings.Contains(strings.ToLower(name), filter) {
+				continue
+			}
+			state := "stopped"
+			if s, ok := states[name]; ok {
+				state = s
+			}
+			entries = append(entries, VMEntry{
+				Name:   name,
+				Type:   meta.Type,
+				State:  state,
+				Memory: meta.MemoryMB,
+				VCpus:  meta.VCPUs,
+				Domain: meta.Domain,
+				IP:     meta.IP,
+			})
+		}
+		// Sort by name.
+		for i := 0; i < len(entries); i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[i].Name > entries[j].Name {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+		if id.Row < len(entries) {
+			model.SelectVM(entries[id.Row].Name)
 		}
 	}
 
+	t := &vmTable{
+		model:    model,
+		window:   window,
+		onSelect: onSelect,
+	}
+	t.rightClickTable = newRightClickTable(table, func(pos fyne.Position) {
+		t.showContextMenu(pos)
+	})
+
+	// Override the cell update function.
+	t.rightClickTable.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
+		t.updateCell(id, cell)
+	}
+
+	// Override the length function to use filtered VMs.
+	t.rightClickTable.Length = func() (rows int, cols int) {
+		return len(t.filteredVMs()), len(vmTableColumns)
+	}
+
 	return t
+}
+
+// showContextMenu shows the right-click context menu for the selected VM.
+func (t *vmTable) showContextMenu(pos fyne.Position) {
+	name := t.model.SelectedVMName()
+	if name == "" {
+		return
+	}
+
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Details...", func() {
+			ShowVMDetailDialog(t.window, t.model, name)
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Start", func() {
+			t.model.Log(fmt.Sprintf("Start %s (pending wiring)", name))
+		}),
+		fyne.NewMenuItem("Stop", func() {
+			t.model.Log(fmt.Sprintf("Stop %s (pending wiring)", name))
+		}),
+		fyne.NewMenuItemSeparator(),
+		fyne.NewMenuItem("Delete", func() {
+			t.model.Log(fmt.Sprintf("Delete %s (pending wiring)", name))
+		}),
+	)
+
+	widget.ShowPopUpMenuAtPosition(menu, t.window.Canvas(), pos)
 }
 
 // filteredVMs returns VMs matching the current filter, sorted by name.
@@ -151,5 +216,3 @@ func (t *vmTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject) {
 
 	label.SetText(text)
 }
-
-
