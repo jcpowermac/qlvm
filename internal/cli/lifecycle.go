@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/ovn"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/template"
@@ -195,7 +196,7 @@ func deleteCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("home dir: %w", err)
 			}
-			if err := xenctl.Delete(ctx, x, nb, br, home, vmDirOf(name), name); err != nil {
+			if err := xenctl.Delete(ctx, x, nb, br, home, vmDirOf(name), name, coremap.DefaultPath); err != nil {
 				return err
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", name)

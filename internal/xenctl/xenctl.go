@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
@@ -91,7 +92,9 @@ func Start(ctx context.Context, x Xen, vp ovs.VifPorter, m *vm.Meta, vmDir strin
 // Delete removes a VM: destroy if running -> drop the OVN switch port ->
 // clean stale vif ports -> remove the VM state dir -> drop the ssh config
 // block (app type only; meta is read before the dir goes away).
-func Delete(ctx context.Context, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home, vmDir, name string) error {
+// coremapPath is the path to coremap.yaml; if set and the VM had cores
+// assigned, they are freed back to the pool.
+func Delete(ctx context.Context, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home, vmDir, name, coremapPath string) error {
 	m, err := vm.LoadMeta(vmDir)
 	if err != nil {
 		return fmt.Errorf("delete %s: load meta: %w", name, err)
@@ -126,6 +129,14 @@ func Delete(ctx context.Context, x Xen, op vm.OVNPorter, vp ovs.VifPorter, home,
 	if m.Type == "app" {
 		if err := vm.RemoveSSHConfig(home, name); err != nil {
 			return fmt.Errorf("delete %s: ssh config: %w", name, err)
+		}
+	}
+	// Free the VM's cores back to the pool.
+	if coremapPath != "" && len(m.Cores) > 0 {
+		cm, err := coremap.Load(coremapPath)
+		if err == nil {
+			cm.Free(name)
+			_ = cm.Save(coremapPath) // non-fatal: coremap will be rebuilt next create
 		}
 	}
 	return nil

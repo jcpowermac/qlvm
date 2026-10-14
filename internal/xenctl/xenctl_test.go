@@ -159,7 +159,7 @@ func TestDeleteOrdering(t *testing.T) {
 	vif := &fakeVif{stale: []string{"vif7.0"}, events: &events}
 	ovn := &fakeOVN{events: &events}
 
-	require.NoError(t, Delete(context.Background(), x, ovn, vif, home, vmDir, m.Name))
+	require.NoError(t, Delete(context.Background(), x, ovn, vif, home, vmDir, m.Name, ""))
 	require.Equal(t, []string{"destroy:vm1", "ovndel:vm1", "vifdel:vif7.0"}, events,
 		"Destroy -> DelLSPort -> stale port cleanup, in that order")
 	_, err := os.Stat(vmDir)
@@ -184,7 +184,7 @@ func TestDeleteSkipsSSHForDisposable(t *testing.T) {
 	vif := &fakeVif{events: &events}
 	ovn := &fakeOVN{events: &events}
 
-	require.NoError(t, Delete(context.Background(), x, ovn, vif, home, vmDir, m.Name))
+	require.NoError(t, Delete(context.Background(), x, ovn, vif, home, vmDir, m.Name, ""))
 	require.Equal(t, []string{"ovndel:vm1"}, events, "stopped VM: no destroy, no stale cleanup needed")
 	_, err := os.Stat(vmDir)
 	require.True(t, os.IsNotExist(err), "vmDir removed")
@@ -206,7 +206,7 @@ func TestDeleteToleratesMissingLSPort(t *testing.T) {
 	vif := &fakeVif{events: &[]string{}}
 	ovn := &errOVN{err: errors.New(`switch port "vm1" not found`)}
 
-	require.NoError(t, Delete(context.Background(), x, ovn, vif, t.TempDir(), vmDir, "vm1"),
+	require.NoError(t, Delete(context.Background(), x, ovn, vif, t.TempDir(), vmDir, "vm1", ""),
 		"a retry after an interrupted delete must not strand the vmDir")
 	_, statErr := os.Stat(vmDir)
 	require.True(t, os.IsNotExist(statErr), "vmDir removed despite missing port")
@@ -221,6 +221,6 @@ func TestDeleteStopsRunningVM(t *testing.T) {
 	vif := &fakeVif{events: &events}
 	ovn := &fakeOVN{events: &events}
 
-	require.NoError(t, Delete(context.Background(), x, ovn, vif, t.TempDir(), vmDir, "vm1"))
+	require.NoError(t, Delete(context.Background(), x, ovn, vif, t.TempDir(), vmDir, "vm1", ""))
 	require.Equal(t, []string{"destroy:vm1", "ovndel:vm1"}, events)
 }

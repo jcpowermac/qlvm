@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/template"
 )
@@ -32,6 +33,10 @@ type CreateDeps struct {
 	Reflink func(dst, src string) error
 	Root    string
 	FSType  string
+	// CoremapPath is the path to coremap.yaml; empty = no CPU pinning.
+	CoremapPath string
+	// Dom0VCPUs is the dom0's vcpu count (for coremap dom0 core exclusion).
+	Dom0VCPUs int
 }
 
 // Spec is the user-requested VM; zero MemoryMB/VCPUs take defaults from cfg
@@ -45,6 +50,9 @@ type Spec struct {
 	VCPUs           int
 	Mounts          []Mount
 	WorkspaceSizeMB int
+	// Cores is the explicit list of physical CPU cores to pin this VM to.
+	// Empty = auto-assign (E-first) via coremap.
+	Cores []int
 }
 
 // sshConfigFn is the seam Create calls for the app-type side effect, so tests
@@ -98,6 +106,40 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		return nil, fmt.Errorf("%s: memory %d MB is below the %d MB minimum (the unit is megabytes — 4 GB is 4096)", spec.Name, memory, config.MinMemoryMB)
 	}
 	vmDir := filepath.Join(d.Root, "vms", spec.Name)
+
+	// CPU core assignment: manual (spec.Cores) or auto (coremap, E-first).
+	var cores []int
+	if d.CoremapPath != "" {
+		vmCores, err := existingVMCores(d.Root)
+		if err != nil {
+			return nil, fmt.Errorf("load existing VM cores: %w", err)
+		}
+		cm, err := coremap.Ensure(d.CoremapPath, d.Dom0VCPUs, vmCores)
+		if err != nil {
+			return nil, fmt.Errorf("ensure coremap: %w", err)
+		}
+		if len(spec.Cores) > 0 {
+			// Manual pinning: validate the cores are available.
+			free := cm.FreeCores()
+			for _, c := range spec.Cores {
+				if !free[c] {
+					return nil, fmt.Errorf("%s: core %d is not available (already assigned or dom0)", spec.Name, c)
+				}
+			}
+			cores = spec.Cores
+			cm.Assignments = append(cm.Assignments, coremap.Assignment{VM: spec.Name, Cores: cores})
+		} else {
+			// Auto-placement: E-first, then P.
+			cores, err = cm.Allocate(vcpus)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", spec.Name, err)
+			}
+			cm.SetVMName(spec.Name)
+		}
+		if err := cm.Save(d.CoremapPath); err != nil {
+			return nil, fmt.Errorf("save coremap: %w", err)
+		}
+	}
 	if _, err := LoadMeta(vmDir); err == nil {
 		return nil, fmt.Errorf("%s: VM already exists", spec.Name)
 	}
@@ -122,7 +164,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	}
 	// Agent VMs: no disk reflink, no networkd bake — kernel/initramfs only.
 	if template.IsAgent(d.Tpl) {
-		return createAgentVM(ctx, d, spec, vmDir, ip, mac, memory, vcpus, fail)
+		return createAgentVM(ctx, d, spec, vmDir, ip, mac, memory, vcpus, cores, fail)
 	}
 	disk := filepath.Join(vmDir, "disk.img")
 	if err := d.Reflink(disk, filepath.Join(d.Tpl.Dir, "template.raw")); err != nil {
@@ -172,6 +214,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		UUID:     newUUID(),
 		Created:  time.Now(),
 		Token:    token,
+		Cores:    cores,
 	}
 	if err := m.Save(vmDir); err != nil {
 		return fail(fmt.Errorf("save meta: %w", err))
@@ -186,6 +229,33 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		}
 	}
 	return m, nil
+}
+
+// existingVMCores loads the core assignments from all existing VM meta files
+// under Root/vms. Returns a map of VM name -> cores.
+func existingVMCores(root string) (map[string][]int, error) {
+	entries, err := os.ReadDir(filepath.Join(root, "vms"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	vmCores := make(map[string][]int)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m, err := LoadMeta(filepath.Join(root, "vms", e.Name()))
+		if err != nil {
+			// Unreadable meta = not counted (same as maxDomainHostnum).
+			continue
+		}
+		if len(m.Cores) > 0 {
+			vmCores[m.Name] = m.Cores
+		}
+	}
+	return vmCores, nil
 }
 
 // maxDomainHostnum returns the highest host number assigned to a domain's
@@ -251,7 +321,7 @@ func newUUID() string {
 // createAgentVM prepares an agent VM: copies kernel/initramfs from the
 // template dir (per-VM state), saves meta. No disk reflink, no networkd
 // bake, no control token bake (agent VMs use console, not ssh).
-func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, fail func(error) (*Meta, error)) (*Meta, error) {
+func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, cores []int, fail func(error) (*Meta, error)) (*Meta, error) {
 	// Copy kernel/initramfs from template to VM dir (per-VM state)
 	if err := copyFile(filepath.Join(d.Tpl.Dir, "vmlinuz"), filepath.Join(vmDir, "vmlinuz")); err != nil {
 		return fail(fmt.Errorf("copy kernel: %w", err))
@@ -282,6 +352,7 @@ func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac 
 		UUID:            newUUID(),
 		Created:         time.Now(),
 		WorkspaceSizeMB: workspaceSize,
+		Cores:           cores,
 	}
 	if err := m.Save(vmDir); err != nil {
 		return fail(fmt.Errorf("save meta: %w", err))

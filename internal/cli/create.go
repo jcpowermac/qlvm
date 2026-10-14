@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/mounts"
 	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/ovn"
@@ -21,6 +23,7 @@ func createCmd() *cobra.Command {
 	var domain, typ, tplRef string
 	var memory, vcpus, workspaceSize int
 	var mountFlags []string
+	var coresFlag string
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -61,13 +64,19 @@ func createCmd() *cobra.Command {
 				}
 				ms = append(ms, vm.Mount{Host: host, Guest: guest})
 			}
+			cores, err := parseCoresFlag(coresFlag)
+			if err != nil {
+				return err
+			}
 			meta, err := vm.Create(cmd.Context(), vm.CreateDeps{
-				OVN:     nb,
-				Tpl:     tpl,
-				FS:      ostree.NewFS(nil),
-				Reflink: mounts.Reflink,
-				Root:    installRoot,
-				FSType:  fstype,
+				OVN:         nb,
+				Tpl:         tpl,
+				FS:          ostree.NewFS(nil),
+				Reflink:     mounts.Reflink,
+				Root:        installRoot,
+				FSType:      fstype,
+				CoremapPath: coremap.DefaultPath,
+				Dom0VCPUs:   cfg.Dom0.VCPUs,
 			}, cfg, vm.Spec{
 				Name:            name,
 				Domain:          domain,
@@ -77,6 +86,7 @@ func createCmd() *cobra.Command {
 				VCPUs:           vcpus,
 				Mounts:          ms,
 				WorkspaceSizeMB: workspaceSize,
+				Cores:           cores,
 			})
 			if err != nil {
 				return err
@@ -94,6 +104,7 @@ func createCmd() *cobra.Command {
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPUs (default: per-type config)")
 	cmd.Flags().IntVar(&workspaceSize, "workspace-size", 0, "workspace disk size in MB for agent VMs (default 4096, 0 = ephemeral)")
 	cmd.Flags().StringArrayVar(&mountFlags, "mount", nil, "p9 mount host:guest (repeatable)")
+	cmd.Flags().StringVar(&coresFlag, "cores", "", "CPU cores to pin (e.g. \"6-7\" or \"6,7,8\"); empty = auto-assign (E-first)")
 	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath, "path to qlvm.yaml")
 	_ = cmd.MarkFlagRequired("template")
 	return cmd
@@ -173,6 +184,52 @@ func mountSuffix(ms []vm.Mount) string {
 		parts = append(parts, m.Guest+"->"+m.Host)
 	}
 	return ", mounts " + strings.Join(parts, ", ")
+}
+
+// parseCoresFlag parses the --cores flag value into a slice of core IDs.
+// Accepts comma-separated values and/or ranges (e.g. "6,7" or "6-8").
+func parseCoresFlag(s string) ([]int, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var cores []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "-") {
+			// Range: start-end
+			startStr, endStr, ok := strings.Cut(part, "-")
+			if !ok {
+				return nil, fmt.Errorf("--cores %q: invalid range %q", s, part)
+			}
+			start, err := strconv.Atoi(strings.TrimSpace(startStr))
+			if err != nil {
+				return nil, fmt.Errorf("--cores %q: invalid start %q", s, startStr)
+			}
+			end, err := strconv.Atoi(strings.TrimSpace(endStr))
+			if err != nil {
+				return nil, fmt.Errorf("--cores %q: invalid end %q", s, endStr)
+			}
+			if start > end {
+				return nil, fmt.Errorf("--cores %q: range start %d > end %d", s, start, end)
+			}
+			for c := start; c <= end; c++ {
+				cores = append(cores, c)
+			}
+		} else {
+			c, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("--cores %q: invalid core ID %q", s, part)
+			}
+			cores = append(cores, c)
+		}
+	}
+	if len(cores) == 0 {
+		return nil, fmt.Errorf("--cores %q: no cores specified", s)
+	}
+	return cores, nil
 }
 
 func init() {
