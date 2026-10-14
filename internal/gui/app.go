@@ -51,9 +51,19 @@ func (g *App) buildLayout() {
 
 // buildLeftPane creates the left navigation pane with tabs and a list.
 func (g *App) buildLeftPane() fyne.CanvasObject {
+	// Filter/search box.
+	filter := widget.NewEntry()
+	filter.PlaceHolder = "Filter VMs/Templates"
+	filter.OnChanged = func(s string) {
+		g.model.SetFilter(s)
+	}
+
+	// VM list view.
+	vmList := NewVMListView(g.model)
+
 	// Tab container for VMs/Templates.
 	tabs := container.NewAppTabs(
-		container.NewTabItem("VMs", widget.NewLabel("VM list placeholder")),
+		container.NewTabItem("VMs", vmList),
 		container.NewTabItem("Templates", widget.NewLabel("Template list placeholder")),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
@@ -65,10 +75,12 @@ func (g *App) buildLeftPane() fyne.CanvasObject {
 	actionBar := container.NewHBox(
 		widget.NewButton("Create VM", func() {}),
 		layout.NewSpacer(),
-		widget.NewButton("Refresh", func() {}),
+		widget.NewButton("Refresh", func() {
+			vmList.Refresh()
+		}),
 	)
 
-	return container.NewBorder(nil, actionBar, nil, nil, tabs)
+	return container.NewBorder(filter, actionBar, nil, nil, tabs)
 }
 
 // buildRightPane creates the right context-sensitive config panel.
