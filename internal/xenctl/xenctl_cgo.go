@@ -86,20 +86,20 @@ int qlvm_create_domain(libxl_ctx *ctx,
     d.b_info.ramdisk = qlvm_qstr(ramdisk);
     d.b_info.cmdline = qlvm_qstr(cmdline);
 
-    // CPU pinning: set the domain's allowed CPUs as a bitmask in c_info.cpus.
+    // CPU pinning: set the domain's allowed CPUs as a bitmask in b_info.cpumap.
     // ncpus is the number of cores to pin; cpus is the list of core IDs.
-    // libxl_flexarray_uint8 is a byte array where bit i is set if CPU i is
-    // allowed. The size is (max_cpu_id + 7) / 8 bytes.
+    // libxl_bitmap is a byte array where bit i is set if CPU i is allowed.
+    // The size is (max_cpu_id + 8) / 8 bytes (libxl rounds up to byte boundaries).
     if (ncpus > 0 && cpus != NULL) {
         int max_cpu = cpus[0];
         for (i = 1; i < ncpus; i++) {
             if (cpus[i] > max_cpu) max_cpu = cpus[i];
         }
         uint32_t nbytes = (uint32_t)((max_cpu + 8) / 8);
-        d.c_info.cpus.size = nbytes;
-        d.c_info.cpus.map = calloc(nbytes, 1);
+        d.b_info.cpumap.size = nbytes;
+        d.b_info.cpumap.map = calloc(nbytes, 1);
         for (i = 0; i < ncpus; i++) {
-            d.c_info.cpus.map[cpus[i] / 8] |= (uint8_t)(1u << (cpus[i] % 8));
+            d.b_info.cpumap.map[cpus[i] / 8] |= (uint8_t)(1u << (cpus[i] % 8));
         }
     }
 
@@ -247,12 +247,12 @@ func cgoCreateDomain(spec *vm.DomainSpec) error {
 	var cCpus *C.int
 	var nCpus C.int
 	if len(spec.CPUs) > 0 {
-		cCpus = (*C.int)(C.malloc(C.size_t(len(spec.CPUs)) * C.size_t(unsafe.Sizeof(C.int(0)))))
-		defer C.free(unsafe.Pointer(cCpus))
+		slice := make([]C.int, len(spec.CPUs))
 		for i, c := range spec.CPUs {
-			cCpus[i] = C.int(c)
+			slice[i] = C.int(c)
 		}
-		nCpus = C.int(len(spec.CPUs))
+		cCpus = &slice[0]
+		nCpus = C.int(len(slice))
 	}
 
 	var domid C.uint

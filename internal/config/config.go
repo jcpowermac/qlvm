@@ -27,6 +27,7 @@ type Config struct {
 	Disposable VMDefaults `yaml:"disposable"`
 	Agent      VMDefaults `yaml:"agent"`
 	Firewall   Firewall   `yaml:"firewall"`
+	Dom0       Dom0       `yaml:"dom0"`
 }
 
 // Network describes the dom0 physical LAN side of the config.
@@ -57,6 +58,31 @@ type VMDefaults struct {
 	VCPUs    int    `yaml:"vcpus"`
 }
 
+// Dom0 holds the dom0 resource limits applied via Xen boot params.
+type Dom0 struct {
+	MemoryMB int   `yaml:"memory_mb"` // dom0 memory in MB (default 32768)
+	VCPUs    int   `yaml:"vcpus"`     // dom0 max vCPUs (default 2)
+	Pin      *bool `yaml:"pin"`       // pin dom0 to P cores (default true)
+}
+
+// Pinned reports whether dom0 CPU pinning is enabled (nil = true).
+func (d *Dom0) Pinned() bool {
+	if d.Pin == nil {
+		return true
+	}
+	return *d.Pin
+}
+
+// ApplyDefaults fills zero-valued Dom0 fields with their defaults.
+func (d *Dom0) ApplyDefaults() {
+	if d.MemoryMB == 0 {
+		d.MemoryMB = 32768
+	}
+	if d.VCPUs == 0 {
+		d.VCPUs = 2
+	}
+}
+
 // Firewall holds the dom0-egress policy.
 type Firewall struct {
 	Egress Egress `yaml:"egress"`
@@ -81,6 +107,7 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	c.Dom0.ApplyDefaults()
 	return &c, nil
 }
 
@@ -143,6 +170,12 @@ func (c *Config) Validate() error {
 	}
 	checkDefaults("vm", c.VM)
 	checkDefaults("disposable", c.Disposable)
+	if c.Dom0.VCPUs <= 0 {
+		problems = append(problems, "dom0.vcpus must be > 0")
+	}
+	if c.Dom0.MemoryMB < MinMemoryMB {
+		problems = append(problems, fmt.Sprintf("dom0.memory_mb %d: below %d MB minimum", c.Dom0.MemoryMB, MinMemoryMB))
+	}
 	if len(problems) > 0 {
 		return errors.New("invalid config: " + strings.Join(problems, "; "))
 	}
