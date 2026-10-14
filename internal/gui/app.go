@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -30,6 +31,7 @@ type App struct {
 	actions       *Actions
 	logPane       *LogPane
 	logVisible    bool
+	statusLabel   *widget.Label
 }
 
 // New creates the GUI application with the given model.
@@ -133,12 +135,29 @@ func (g *App) buildLayout() {
 			// Log pane (initially hidden).
 			g.logPane.Hide()
 
-			// Main content: filter at top, tabs in middle, log at bottom.
+			// Status bar.
+			g.statusLabel = widget.NewLabel(g.statusText())
+			statusBar := container.NewBorder(
+				nil, nil,
+				widget.NewLabelWithStyle("qlvm", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				g.statusLabel,
+				nil,
+			)
+			statusBar.Resize(fyne.NewSize(0, 24))
+
+			// Main content: filter at top, tabs in middle, log + status at bottom.
+			bottom := container.NewBorder(
+				nil,
+				statusBar,
+				nil,
+				nil,
+				g.logPane,
+			)
 			content := container.NewBorder(
-				filter,  // top
-				g.logPane, // bottom
-				nil,     // left
-				nil,     // right
+				filter, // top
+				bottom, // bottom
+				nil,    // left
+				nil,    // right
 				tabs,
 			)
 
@@ -162,6 +181,26 @@ func (g *App) startAutoRefresh() {
 	for range ticker.C {
 		go g.loadData()
 	}
+}
+
+// statusText returns the status bar text.
+func (g *App) statusText() string {
+	parts := []string{}
+	if g.actions != nil && g.actions.xen != nil {
+		parts = append(parts, "Xen: connected")
+	} else {
+		parts = append(parts, "Xen: not connected")
+	}
+	vms := g.model.GetVMs()
+	states := g.model.GetDomainStates()
+	running := 0
+	for name := range vms {
+		if s, ok := states[name]; ok && s == "running" {
+			running++
+		}
+	}
+	parts = append(parts, fmt.Sprintf("VMs: %d (%d running)", len(vms), running))
+	return strings.Join(parts, "  |  ")
 }
 
 // defaultConfigPath is the qlvm configuration file.
@@ -235,6 +274,9 @@ func (g *App) loadData() {
 		}
 		if g.templateTable != nil {
 			g.templateTable.Refresh()
+		}
+		if g.statusLabel != nil {
+			g.statusLabel.SetText(g.statusText())
 		}
 	})
 }
