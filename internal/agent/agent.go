@@ -432,6 +432,9 @@ func (a *Agent) ListDomains() ([]DomainInfo, error) {
 
 // GetVM returns a single VM by name, merging meta.yaml with live Xen state.
 func (a *Agent) GetVM(name string) (*VMInfo, error) {
+	if err := validateVMName(name); err != nil {
+		return nil, err
+	}
 	domainDir := filepath.Join(a.root, "vms", name)
 	m, err := vm.LoadMeta(domainDir)
 	if err != nil {
@@ -457,6 +460,9 @@ func (a *Agent) GetVM(name string) (*VMInfo, error) {
 
 // GetTemplate returns a single template by directory name.
 func (a *Agent) GetTemplate(dir string) (*TemplateInfo, error) {
+	if dir == "" || strings.Contains(dir, "/") || strings.Contains(dir, "\\") || strings.Contains(dir, "..") {
+		return nil, fmt.Errorf("invalid template directory %q", dir)
+	}
 	templatesDir := filepath.Join(a.root, "templates")
 	if _, err := os.Stat(filepath.Join(templatesDir, dir)); err != nil {
 		if os.IsNotExist(err) {
