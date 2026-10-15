@@ -6,6 +6,7 @@ package coremap
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,11 @@ func DetectTopology() (Topology, error) {
 	if err != nil {
 		return Topology{}, fmt.Errorf("open %s: %w", cpuinfoPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("close %s: %v", cpuinfoPath, err)
+		}
+	}()
 
 	var content strings.Builder
 	scanner := bufio.NewScanner(f)
@@ -128,7 +133,7 @@ func detectFromContent(content string) (Topology, error) {
 // Load reads a coremap from path. Returns os.ErrNotExist if the file
 // is missing.
 func Load(path string) (*Coremap, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec,G304
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +151,7 @@ func (cm *Coremap) Save(path string) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

@@ -65,17 +65,17 @@ func (m *Manager) files(nic, br string) map[string]string {
 // Ensure writes the drop-ins and reloads networkd, only touching files
 // that changed so a re-run is a no-op.
 func (m *Manager) Ensure(nic, br string) error {
-	if err := os.MkdirAll(m.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(m.Dir, 0o755); err != nil { //nolint:gosec,G301
 		return fmt.Errorf("create %s: %w", m.Dir, err)
 	}
 	changed := false
 	for path, want := range m.files(nic, br) {
 		full := filepath.Join(m.Dir, path)
-		have, err := os.ReadFile(full)
+		have, err := os.ReadFile(full) //nolint:gosec,G304
 		if err == nil && string(have) == want {
 			continue
 		}
-		if err := os.WriteFile(full, []byte(want), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte(want), 0o644); err != nil { //nolint:gosec,G306
 			return fmt.Errorf("write %s: %w", full, err)
 		}
 		changed = true

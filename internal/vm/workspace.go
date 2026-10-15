@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -16,7 +17,11 @@ func CreateWorkspaceDisk(path string, sizeMB int) error {
 	if err != nil {
 		return fmt.Errorf("create workspace disk: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("close workspace disk %s: %v", path, err)
+		}
+	}()
 	if err := f.Truncate(int64(sizeMB) * 1024 * 1024); err != nil {
 		return fmt.Errorf("truncate workspace disk: %w", err)
 	}

@@ -48,11 +48,11 @@ func (f *fakeConn) ZoneQueryService(zonePath, svc string) (bool, error) {
 	f.log("ZoneQueryService:" + zonePath + ":" + svc)
 	return f.services[zonePath+":"+svc], nil
 }
-func (f *fakeConn) ZoneQueryInterface(zonePath, dev string) (bool, error) {
+func (f *fakeConn) ZoneQueryInterface(_, dev string) (bool, error) {
 	f.log("ZoneQueryInterface:" + dev)
 	return f.zoneIfaces[dev], nil
 }
-func (f *fakeConn) ZoneAddInterface(zonePath, dev string) error {
+func (f *fakeConn) ZoneAddInterface(_, dev string) error {
 	f.log("ZoneAddInterface:" + dev)
 	if f.zoneIfaces == nil {
 		f.zoneIfaces = map[string]bool{}

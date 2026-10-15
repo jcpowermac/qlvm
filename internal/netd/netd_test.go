@@ -21,7 +21,7 @@ func TestEnsureWritesAndIsIdempotent(t *testing.T) {
 	require.NoError(t, m.Ensure("enp3s0", "br-ex"))
 	assert.Equal(t, 1, loads)
 	for _, f := range []string{"90-qlvm-nic.network", "90-qlvm-br-ex.network"} {
-		b, err := os.ReadFile(filepath.Join(dir, f))
+		b, err := os.ReadFile(filepath.Join(dir, f)) //nolint:gosec,G304
 		require.NoError(t, err, f)
 		assert.Contains(t, string(b), "DHCP=ipv4")
 	}

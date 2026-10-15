@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -139,7 +140,9 @@ func Ensure(ctx context.Context, p Podman, o EnsureOpts) (*Template, error) {
 	// of running image-builder. Use the digest (guaranteed local after Pull).
 	if tp, labels, err := detectTemplateType(ctx, p, digest); err != nil {
 		if o.Log != nil {
-			fmt.Fprintf(o.Log, "warning: template type detection failed: %v\n", err)
+			if _, ferr := fmt.Fprintf(o.Log, "warning: template type detection failed: %v\n", err); ferr != nil {
+				log.Printf("write to log: %v", ferr)
+			}
 		}
 		// Detection failed: fall through to ostree path (legacy behavior).
 		// If the user intended an agent template, they will see the warning

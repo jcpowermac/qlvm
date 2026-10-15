@@ -50,7 +50,9 @@ TTY directly. Run it with sudo.`,
 				return fmt.Errorf("check %s: %w", name, err)
 			}
 			if !running {
-				fmt.Fprintf(cmd.ErrOrStderr(), "starting %s...\n", name)
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "starting %s...\n", name); err != nil {
+					return fmt.Errorf("write: %w", err)
+				}
 				if err := startVM(cmd.Context(), name); err != nil {
 					return fmt.Errorf("start %s: %w", name, err)
 				}

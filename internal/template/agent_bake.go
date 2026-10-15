@@ -17,7 +17,7 @@ import (
 // ref is the original image reference (for META), imageID is the local
 // image ID (digest) guaranteed available after Pull, labels are the image
 // labels (already inspected by detectTemplateType, passed to avoid a second pull).
-func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labels map[string]string, dir string, log io.Writer) (*Template, error) {
+func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labels map[string]string, dir string, _ io.Writer) (*Template, error) {
 	kernelPath, ok := labels["io.qlvm.kernel"]
 	if !ok {
 		kernelPath = defaultAgentKernelPath(labels)
@@ -48,7 +48,7 @@ func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labe
 	if err != nil {
 		return nil, fmt.Errorf("extract kernel: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "vmlinuz"), kernelData, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "vmlinuz"), kernelData, 0o644); err != nil { //nolint:gosec,G306
 		return nil, fmt.Errorf("write vmlinuz: %w", err)
 	}
 

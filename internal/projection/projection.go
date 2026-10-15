@@ -36,8 +36,11 @@ const ControlPort = 4711
 type Connect string
 
 const (
-	ConnectSSH   Connect = "ssh"
-	ConnectTCP   Connect = "tcp"
+	// ConnectSSH tunnels the waypipe control channel over guest SSH.
+	ConnectSSH Connect = "ssh"
+	// ConnectTCP uses a TCP socket to the guest IP.
+	ConnectTCP Connect = "tcp"
+	// ConnectVsock uses virtio-vsock.
 	ConnectVsock Connect = "vsock"
 )
 

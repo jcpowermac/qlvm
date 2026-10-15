@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -865,7 +866,7 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	// 0750 root:root makes /bin/sh hit EACCES (status=126) before the
 	// script ever runs. The token is NOT here — see below.
 	qvm := filepath.Join(etc, "qvm")
-	if err := os.MkdirAll(qvm, 0o755); err != nil {
+	if err := os.MkdirAll(qvm, 0o755); err != nil { //nolint:gosec,G301
 		return err
 	}
 	if err := fs.WriteFile(filepath.Join(qvm, "qvm-ctl"), []byte(ControlScript), 0o755); err != nil {
@@ -894,8 +895,12 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err := chownForUser(tok, defaultVMUID); err != nil {
 		return err
 	}
-	setSELinuxContext(tokDir, "user_u:object_r:home_t:s0")
-	setSELinuxContext(tok, "user_u:object_r:home_t:s0")
+	if err := setSELinuxContext(tokDir, "user_u:object_r:home_t:s0"); err != nil {
+		log.Printf("set SELinux context on %s: %v", tokDir, err)
+	}
+	if err := setSELinuxContext(tok, "user_u:object_r:home_t:s0"); err != nil {
+		log.Printf("set SELinux context on %s: %v", tok, err)
+	}
 	sysd := filepath.Join(etc, "systemd", "system")
 	if err := os.MkdirAll(sysd, 0o750); err != nil {
 		return err

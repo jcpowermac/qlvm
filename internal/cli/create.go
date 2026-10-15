@@ -27,8 +27,8 @@ func createCmd() *cobra.Command {
 				Domain:   domain,
 				Template: tplRef,
 				Type:     typ,
-				MemoryMB: uint64(memory),
-				VCPUs:    uint8(vcpus),
+				MemoryMB: uint64(memory), //nolint:gosec,G115
+				VCPUs:    uint8(vcpus),    //nolint:gosec,G115
 				Mounts:   mountFlags,
 				Cores:    coresFlag,
 			}

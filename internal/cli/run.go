@@ -19,7 +19,7 @@ import (
 // Xen state source at all (libxl needs root and /run/xenstored/socket is
 // 0600 root on the dom0). A down VM surfaces as waypipe/ssh's own failure
 // instead. Kept as a no-op for backward compatibility with tests.
-func assertVMRunning(name string) error {
+func assertVMRunning(_ string) error {
 	return nil
 }
 

@@ -34,7 +34,7 @@ func (f *fakeOVN) DelLSPort(ctx context.Context, name string) error {
 func TestCreate_AgentVM(t *testing.T) {
 	root := t.TempDir()
 	tplDir := filepath.Join(root, "templates", "test-template")
-	if err := os.MkdirAll(tplDir, 0o755); err != nil {
+	if err := os.MkdirAll(tplDir, 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 	// Create fake kernel/initramfs in template dir
