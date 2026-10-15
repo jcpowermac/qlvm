@@ -625,6 +625,12 @@ var (
 // validateVMName rejects names that would be unsafe for Xen domain names
 // or filesystem paths: empty, containing path separators or traversal
 // sequences, or containing characters outside the allowed set.
+// validNameChar reports whether r is allowed in a VM or template name.
+func validNameChar(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.'
+}
+
 func validateVMName(name string) error {
 	if name == "" {
 		return errors.New("VM name must not be empty")
@@ -639,9 +645,10 @@ func validateVMName(name string) error {
 		return errors.New("VM name must not contain path traversal sequences")
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
-			return fmt.Errorf("VM name must contain only alphanumeric characters, hyphens, underscores, or dots; got %q", name)
+		if validNameChar(r) {
+			continue
 		}
+		return fmt.Errorf("VM name must contain only alphanumeric characters, hyphens, underscores, or dots; got %q", name)
 	}
 	return nil
 }

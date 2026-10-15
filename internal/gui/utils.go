@@ -23,21 +23,6 @@ func formatSize(bytes uint64) string {
 	return fmt.Sprintf("%d GB", bytes)
 }
 
-// formatCores formats a list of core IDs as a string.
-func formatCores(cores []int) string {
-	if len(cores) == 0 {
-		return "auto"
-	}
-	result := ""
-	for i, c := range cores {
-		if i > 0 {
-			result += ", "
-		}
-		result += fmt.Sprintf("%d", c)
-	}
-	return result
-}
-
 // truncateDigest truncates a digest to its first 12 hex characters
 // (standard Docker/OCI display format, e.g. sha256:6293750d9ed2…).
 func truncateDigest(digest string) string {

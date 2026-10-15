@@ -105,12 +105,12 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 	})
 
 	// Override the cell update function.
-	t.rightClickTable.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
+	t.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
 		t.updateCell(id, cell)
 	}
 
 	// Override the length function to use filtered VMs.
-	t.rightClickTable.Length = func() (rows int, cols int) {
+	t.Length = func() (rows int, cols int) {
 		return len(t.filteredVMs()), len(vmTableColumns)
 	}
 

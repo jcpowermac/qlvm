@@ -146,11 +146,4 @@ func (f *fakeClient) Close() error {
 	return nil
 }
 
-// progress emits a progress signal to the subscribed callback.
-func (f *fakeClient) progress(id, message string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.progressFunc != nil {
-		f.progressFunc(id, message)
-	}
-}
+

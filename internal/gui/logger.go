@@ -30,10 +30,7 @@ func NewLogPane() *LogPane {
 
 	scroll := container.NewScroll(l.entry)
 
-	l.Container = fyne.NewContainerWithLayout(
-		layout.NewVBoxLayout(),
-		scroll,
-	)
+	l.Container = container.New(layout.NewVBoxLayout(), scroll)
 
 	return l
 }
