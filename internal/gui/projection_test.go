@@ -141,7 +141,7 @@ vcpus: 1
 	// Create a temp config without dom0_ip.
 	cfgDir := t.TempDir()
 	cfgPath := filepath.Join(cfgDir, "qlvm.yaml")
-	require.NoError(t, os.WriteFile(cfgPath, []byte("network:\n  router_ip: 10.100.0.1\n"), 0o644))
+	require.NoError(t, os.WriteFile(cfgPath, []byte("network:\n  router_ip: 10.100.0.1\n"), 0o644)) //nolint:gosec,G306
 	origCfgPath := guiConfigPath
 	guiConfigPath = cfgPath
 	defer func() { guiConfigPath = origCfgPath }()
