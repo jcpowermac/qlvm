@@ -280,8 +280,8 @@ func TestCreateVMAgentTemplateTypeConflict(t *testing.T) {
 	tplDir := filepath.Join(root, "templates", "agent-test-template")
 	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
 	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: agent-ref\ndigest: sha256:def456\ntype: agent\n"), 0o644)) //nolint:gosec,G306
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "vmlinuz"), []byte("kernel"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "initramfs"), []byte("initramfs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "vmlinuz"), []byte("kernel"), 0o755)) //nolint:gosec,G306
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "initramfs"), []byte("initramfs"), 0o755)) //nolint:gosec,G306
 
 	a := New(&trackingXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 

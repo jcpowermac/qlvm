@@ -210,7 +210,7 @@ func TestListTemplates(t *testing.T) {
 	// DirOfRef for quay.io/fedora/fedora:42 with digest sha256:abc123.
 	dirName := template.SlugFromRef("quay.io/fedora/fedora:42") + "-" + template.NormalizeDigest("sha256:abc123")
 	tplDir := filepath.Join(root, "templates", dirName)
-	require.NoError(t, os.MkdirAll(tplDir, 0o755))
+	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
 
 	// Write META file using the template package's struct.
 	tmpl := &template.Template{
