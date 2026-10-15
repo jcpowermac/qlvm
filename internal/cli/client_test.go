@@ -211,7 +211,7 @@ func TestGetClientCachesSuccess(t *testing.T) {
 
 // TestAgentClientSatisfiesDaemonClient verifies that agent.Client
 // implements the DaemonClient interface.
-func TestAgentClientSatisfiesDaemonClient(t *testing.T) {
+func TestAgentClientSatisfiesDaemonClient(_ *testing.T) {
 	// This is a compile-time check: if agent.Client doesn't implement
 	// DaemonClient, this assignment will fail to compile.
 	var _ DaemonClient = (*agent.Client)(nil)

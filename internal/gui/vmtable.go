@@ -32,7 +32,7 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
-		func(_ widget.TableCellID, cell fyne.CanvasObject) {
+		func(_ widget.TableCellID, _ fyne.CanvasObject) {
 			// Will be updated by the vmTable wrapper.
 		},
 	)

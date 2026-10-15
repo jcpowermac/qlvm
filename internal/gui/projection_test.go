@@ -102,7 +102,7 @@ vcpus: 1
 	// Capture the waypipe args to verify they match the SSH invocation.
 	var capturedArgs []string
 	origWaypipe := guiRunWaypipe
-	guiRunWaypipe = func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
+	guiRunWaypipe = func(args []string, _ io.Reader, _, _ io.Writer) error {
 		capturedArgs = args
 		return nil
 	}
@@ -223,7 +223,7 @@ func TestActionsRunApp(t *testing.T) {
 	// Capture the waypipe args.
 	var capturedArgs []string
 	origWaypipe := guiRunWaypipe
-	guiRunWaypipe = func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
+	guiRunWaypipe = func(args []string, _ io.Reader, _, _ io.Writer) error {
 		capturedArgs = args
 		return nil
 	}

@@ -32,7 +32,7 @@ func newTemplateTable(model *AppModel, window fyne.Window, client Client, onSele
 		func() fyne.CanvasObject {
 			return widget.NewLabel("")
 		},
-		func(_ widget.TableCellID, cell fyne.CanvasObject) {
+		func(_ widget.TableCellID, _ fyne.CanvasObject) {
 			// Will be updated by the templateTable wrapper.
 		},
 	)

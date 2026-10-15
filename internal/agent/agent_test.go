@@ -373,7 +373,7 @@ func TestCreateTemplateSuccess(t *testing.T) {
 	a.podmanFactory = func(_ context.Context, _ string) (template.Podman, error) {
 		return pod, nil
 	}
-	a.bakeFn = func(_ context.Context, dir, _fstype, _keys string) error {
+	a.bakeFn = func(_ context.Context, dir, _, _ string) error {
 		bakeCalled = true
 		bakeDir = dir
 		return nil
@@ -598,7 +598,7 @@ func TestProvisionVMRunnerError(t *testing.T) {
 }
 
 // setupProvisionTest creates a temp provision dir with base/dotfiles content.
-func setupProvisionTest(t *testing.T, vmName string) string {
+func setupProvisionTest(t *testing.T, _ string) string {
 	t.Helper()
 	provDir := t.TempDir()
 	dotDir := filepath.Join(provDir, "base", "dotfiles")
