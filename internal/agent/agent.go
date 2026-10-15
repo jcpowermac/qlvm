@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -163,6 +165,10 @@ type Agent struct {
 	coremapPath string
 	root        string // qlvm state root (/var/lib/qvm)
 
+	// podmanFactory creates the Podman client for template operations.
+	// Defaults to template.NewPodman; tests inject a fake.
+	podmanFactory func(ctx context.Context, socket string) (template.Podman, error)
+
 	// Progress signal state (mutex-protected).
 	mu       sync.Mutex
 	progress map[string]*ProgressTracker
@@ -182,13 +188,14 @@ type ProgressTracker struct {
 // state root (e.g. /var/lib/qvm) where VM and template state is stored.
 func New(x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath, root string) *Agent {
 	return &Agent{
-		xen:         x,
-		ovn:         o,
-		ovs:         v,
-		cfg:         cfg,
-		coremapPath: coremapPath,
-		root:        root,
-		progress:    make(map[string]*ProgressTracker),
+		xen:           x,
+		ovn:           o,
+		ovs:           v,
+		cfg:           cfg,
+		coremapPath:   coremapPath,
+		root:          root,
+		podmanFactory: template.NewPodman,
+		progress:      make(map[string]*ProgressTracker),
 	}
 }
 
@@ -897,14 +904,157 @@ func (a *Agent) stopForced(name string) error {
 
 // --- Template methods ---
 
-// CreateTemplate bakes a new template from a container image. Returns the template directory.
+// podmanSocket is the podman REST socket (podman.socket unit).
+const podmanSocket = "unix:///run/podman/podman.sock"
+
+// fstype is the filesystem for both the template bake and the VM disk.
+const fstype = "xfs"
+
+// CreateTemplate bakes a new template from a container image. It pulls the
+// image, reaps stale builder containers, and bakes the template via
+// template.Ensure with the ostree bake callback. Returns the template
+// directory name (basename). Long-running: emits Progress signals at each
+// phase.
 func (a *Agent) CreateTemplate(image string, force bool) (string, error) {
-	return "", fmt.Errorf("CreateTemplate: not implemented (Task 6)")
+	if image == "" {
+		return "", fmt.Errorf("image is required")
+	}
+
+	ctx := context.Background()
+	opID := "template-create-" + template.SlugFromRef(image)
+	a.emitProgress(opID, "pulling image")
+	defer a.emitProgressDone(opID)
+
+	pod, err := a.podmanFactory(ctx, podmanSocket)
+	if err != nil {
+		return "", fmt.Errorf("podman: %w", err)
+	}
+
+	digest, err := pod.Pull(ctx, image)
+	if err != nil {
+		return "", fmt.Errorf("pull %s: %w", image, err)
+	}
+
+	dirName := template.DirOfRef(a.root, image, template.NormalizeDigest(digest))
+	dirName = filepath.Base(dirName)
+
+	// Check if template already exists.
+	exists := false
+	if _, err := os.Stat(filepath.Join(a.root, "templates", dirName)); err == nil {
+		exists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("stat template %s: %w", dirName, err)
+	}
+
+	if exists && !force {
+		return "", fmt.Errorf("template %s already exists; re-bake with force", dirName)
+	}
+
+	// If forcing a re-bake, check that no VM references the template.
+	if exists {
+		refs := a.vmTemplateRefs()
+		fullDir := filepath.Join(a.root, "templates", dirName)
+		if vms := refs[fullDir]; len(vms) > 0 {
+			return "", fmt.Errorf("template %s is referenced by VMs %s; delete those VMs first", dirName, strings.Join(vms, ", "))
+		}
+	}
+
+	a.emitProgress(opID, "reaping stale resources")
+	// Reap exited image-builder containers (best effort).
+	if err := template.ReapBuilderContainers(ctx, pod, io.Discard); err != nil {
+		// Warning only — the bake proceeds.
+		_ = err
+	}
+
+	// Remove the existing template if re-baking.
+	if exists {
+		if err := os.RemoveAll(filepath.Join(a.root, "templates", dirName)); err != nil {
+			return "", fmt.Errorf("remove existing template %s: %w", dirName, err)
+		}
+	}
+
+	a.emitProgress(opID, "baking template")
+	keys, err := sshAuthKeys()
+	if err != nil {
+		return "", err
+	}
+
+	_, err = template.Ensure(ctx, pod, template.EnsureOpts{
+		Root:            a.root,
+		Ref:             image,
+		Log:             io.Discard,
+		PrePulledDigest: digest,
+		Bake: func(dir string) error {
+			return ostree.BakeTemplate(ctx, ostree.NewFS(nil), dir, fstype, keys)
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("bake template %s: %w", dirName, err)
+	}
+
+	a.emitProgress(opID, "done")
+	return dirName, nil
 }
 
-// DeleteTemplate removes a template directory.
+// DeleteTemplate removes a template directory by name. Refuses if any VM
+// references the template.
 func (a *Agent) DeleteTemplate(dir string) error {
-	return fmt.Errorf("DeleteTemplate: not implemented (Task 6)")
+	if dir == "" || strings.Contains(dir, "/") || strings.Contains(dir, "\\") || strings.Contains(dir, "..") {
+		return fmt.Errorf("invalid template directory %q", dir)
+	}
+
+	fullDir := filepath.Join(a.root, "templates", dir)
+	if _, err := os.Stat(fullDir); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("template %q not found", dir)
+		}
+		return fmt.Errorf("stat template %q: %w", dir, err)
+	}
+
+	// Check if any VM references this template.
+	refs := a.vmTemplateRefs()
+	if vms := refs[fullDir]; len(vms) > 0 {
+		return fmt.Errorf("template %s is referenced by VMs %s; delete those VMs first", dir, strings.Join(vms, ", "))
+	}
+
+	if err := os.RemoveAll(fullDir); err != nil {
+		return fmt.Errorf("remove template %s: %w", dir, err)
+	}
+	return nil
+}
+
+// sshAuthKeys collects the id_*.pub identities of the calling user and
+// SUDO_USER (the desktop user who runs qlvm vm run). Baked into every VM's
+// authorized_keys; empty result is a hard error.
+func sshAuthKeys() (string, error) {
+	var homes []string
+	if h, err := os.UserHomeDir(); err == nil {
+		homes = append(homes, h)
+	}
+	if su := os.Getenv("SUDO_USER"); su != "" && su != "root" {
+		if u, err := user.Lookup(su); err == nil && u.HomeDir != "" {
+			homes = append(homes, u.HomeDir)
+		}
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, h := range homes {
+		for _, n := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"} {
+			b, err := os.ReadFile(filepath.Join(h, ".ssh", n)) // #nosec G304 G703 -- homes from $HOME/passwd, fixed file names
+			if err != nil {
+				continue
+			}
+			k := strings.TrimSpace(string(b))
+			if k != "" && !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return "", fmt.Errorf("no ssh identity: run `ssh-keygen -t ed25519` as the desktop user before baking a template (qlvm vm run sshes into VMs with it)")
+	}
+	return strings.Join(keys, "\n") + "\n", nil
 }
 
 // --- Auxiliary methods ---
