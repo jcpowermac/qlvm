@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -89,5 +90,43 @@ func TestAppLoadData(t *testing.T) {
 	}
 	if tpls["fedora"].Image != "quay.io/fedora/fedora:44" {
 		t.Errorf("expected fedora template, got %q", tpls["fedora"].Image)
+	}
+}
+
+func TestConnectionErrorMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected string
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: "",
+		},
+		{
+			name:     "daemon not running",
+			err:      fmt.Errorf("daemon not running: org.freedesktop.DBus.Error.NameHasNoOwner"),
+			expected: "qlvm-agent is not running; run `sudo systemctl start qlvm-agent`",
+		},
+		{
+			name:     "system bus not available",
+			err:      fmt.Errorf("connect system bus: dial unix /run/dbus/system_bus_socket: connect: no such file or directory"),
+			expected: "cannot connect to qlvm-agent daemon: connect system bus: dial unix /run/dbus/system_bus_socket: connect: no such file or directory",
+		},
+		{
+			name:     "generic error",
+			err:      fmt.Errorf("unexpected failure"),
+			expected: "cannot connect to qlvm-agent daemon: unexpected failure",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := connectionErrorMessage(tt.err)
+			if got != tt.expected {
+				t.Errorf("connectionErrorMessage() = %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }

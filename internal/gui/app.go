@@ -51,8 +51,7 @@ func New(model *AppModel) *App {
 	// Connect to the D-Bus daemon.
 	c, err := agent.NewClient()
 	if err != nil {
-		model.Log(fmt.Sprintf("Error: cannot connect to qlvm-agent daemon: %v", err))
-		model.Log("The daemon must be running (systemctl start qlvm-agent) for the GUI to work.")
+		model.Log(fmt.Sprintf("Error: %s", connectionErrorMessage(err)))
 	} else {
 		g.client = c
 		g.cancelProgress = c.SubscribeProgress(func(id, message string) {
@@ -314,6 +313,19 @@ func (g *App) buildMenu() *fyne.MainMenu {
 	)
 
 	return fyne.NewMainMenu(fileMenu, vmMenu, templateMenu, viewMenu)
+}
+
+// connectionErrorMessage returns a user-friendly error message for D-Bus
+// connection failures. If the daemon is not running, it provides
+// instructions to start it. Otherwise it reports the underlying error.
+func connectionErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(err.Error(), "daemon not running") {
+		return "qlvm-agent is not running; run `sudo systemctl start qlvm-agent`"
+	}
+	return fmt.Sprintf("cannot connect to qlvm-agent daemon: %v", err)
 }
 
 // runAction runs an action and shows errors in a dialog.
