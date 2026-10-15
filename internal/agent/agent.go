@@ -364,8 +364,8 @@ func (a *Agent) metaToVMInfo(m *vm.Meta, running map[string]xenctl.DomainInfo) V
 		Name:      m.Name,
 		Type:      m.Type,
 		State:     "stopped",
-		MemoryMB:  uint64(m.MemoryMB),
-		VCPUs:     uint8(m.VCPUs),
+		MemoryMB:  uint64(m.MemoryMB), //nolint:gosec,G115
+		VCPUs:     uint8(m.VCPUs),     //nolint:gosec,G115
 		Domain:    m.Domain,
 		Image:     m.Image,
 		Digest:    m.Digest,
@@ -459,7 +459,7 @@ func (a *Agent) templateDirToInfo(name string, refs map[string][]string) Templat
 
 	// Get raw image size if present.
 	if fi, err := os.Stat(filepath.Join(dir, "template.raw")); err == nil {
-		info.SizeBytes = uint64(fi.Size())
+		info.SizeBytes = uint64(fi.Size()) //nolint:gosec,G115
 	}
 
 	return info
@@ -819,8 +819,8 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 		domain = a.cfg.Domains[0].Name
 	}
 
-	memory := int(opts.MemoryMB)
-	vcpus := int(opts.VCPUs)
+	memory := int(opts.MemoryMB) //nolint:gosec,G115
+	vcpus := int(opts.VCPUs)     //nolint:gosec,G115
 
 	a.emitProgress(opID, "creating VM")
 	meta, err := vm.Create(context.Background(), vm.CreateDeps{

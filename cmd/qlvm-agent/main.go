@@ -49,7 +49,7 @@ func main() {
 			}
 			return
 		default:
-			log.Fatalf("unknown subcommand: %s", os.Args[1])
+			log.Fatalf("unknown subcommand: %s", os.Args[1]) //nolint:gosec,G706
 		}
 	}
 
@@ -98,7 +98,7 @@ func main() {
 // runExternalCommand runs a command and returns its error, capturing
 // combined output for error messages.
 func runExternalCommand(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) //nolint:gosec,G204
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %v: %s", name, joinStrings(args), err, string(out))

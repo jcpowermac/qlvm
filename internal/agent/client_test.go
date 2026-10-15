@@ -26,7 +26,9 @@ func TestClientConnects(t *testing.T) {
 		t.Logf("daemon not running; skipping connect check: %v", err)
 		return
 	}
-	defer client.Close()
+	if err := client.Close(); err != nil {
+		t.Logf("close client: %v", err)
+	}
 	// If we got here, the client connected successfully.
 }
 
@@ -51,7 +53,11 @@ func TestProgressSignals(t *testing.T) {
 	if err != nil {
 		t.Skipf("daemon not running; skipping progress signal test: %v", err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Logf("close client: %v", err)
+		}
+	}()
 
 	var cancel func()
 	callback := func(id, message string) {

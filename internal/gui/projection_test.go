@@ -20,7 +20,11 @@ import (
 func TestRunAppWaylandDisplayMissing(t *testing.T) {
 	orig := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "")
-	defer func() { os.Setenv("WAYLAND_DISPLAY", orig) }()
+	defer func() {
+		if err := os.Setenv("WAYLAND_DISPLAY", orig); err != nil {
+			t.Logf("restore WAYLAND_DISPLAY: %v", err)
+		}
+	}()
 
 	err := guiRunWaypipe([]string{"--test"}, nil, io.Discard, io.Discard)
 	require.Error(t, err)
@@ -59,7 +63,11 @@ vcpus: 1
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	defer func() { os.Setenv("WAYLAND_DISPLAY", origWayland) }()
+	defer func() {
+		if err := os.Setenv("WAYLAND_DISPLAY", origWayland); err != nil {
+			t.Logf("restore WAYLAND_DISPLAY: %v", err)
+		}
+	}()
 
 	err := RunApp(context.Background(), "testvm", "firefox", projection.ConnectTCP, io.Discard, io.Discard)
 	require.Error(t, err)
@@ -85,7 +93,11 @@ vcpus: 1
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	defer func() { os.Setenv("WAYLAND_DISPLAY", origWayland) }()
+	defer func() {
+		if err := os.Setenv("WAYLAND_DISPLAY", origWayland); err != nil {
+			t.Logf("restore WAYLAND_DISPLAY: %v", err)
+		}
+	}()
 
 	// Capture the waypipe args to verify they match the SSH invocation.
 	var capturedArgs []string
@@ -136,7 +148,11 @@ vcpus: 1
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	defer func() { os.Setenv("WAYLAND_DISPLAY", origWayland) }()
+	defer func() {
+		if err := os.Setenv("WAYLAND_DISPLAY", origWayland); err != nil {
+			t.Logf("restore WAYLAND_DISPLAY: %v", err)
+		}
+	}()
 
 	err := RunApp(context.Background(), "testvm", "firefox", projection.ConnectTCP, io.Discard, io.Discard)
 	require.Error(t, err)
@@ -198,7 +214,11 @@ func TestActionsRunApp(t *testing.T) {
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	defer func() { os.Setenv("WAYLAND_DISPLAY", origWayland) }()
+	defer func() {
+		if err := os.Setenv("WAYLAND_DISPLAY", origWayland); err != nil {
+			t.Logf("restore WAYLAND_DISPLAY: %v", err)
+		}
+	}()
 
 	// Capture the waypipe args.
 	var capturedArgs []string
