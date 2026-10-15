@@ -486,7 +486,7 @@ type fakeProvisionRunner struct {
 	err   error
 }
 
-func (f *fakeProvisionRunner) Run(ctx context.Context, host string, ops []provisioner.Op) error {
+func (f *fakeProvisionRunner) Run(_ context.Context, host string, ops []provisioner.Op) error {
 	f.hosts = append(f.hosts, host)
 	f.ops = append(f.ops, ops...)
 	return f.err

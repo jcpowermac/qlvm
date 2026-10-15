@@ -137,7 +137,7 @@ func TestWriteServiceFile(t *testing.T) {
 	err := WriteServiceFile(path)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, ServiceFile(), data)
 }
@@ -149,7 +149,7 @@ func TestWriteDBusPolicy(t *testing.T) {
 	err := WriteDBusPolicy(path)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, DBusPolicy(), data)
 }
@@ -161,7 +161,7 @@ func TestWritePolkitAction(t *testing.T) {
 	err := WritePolkitAction(path)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, PolkitAction(), data)
 }

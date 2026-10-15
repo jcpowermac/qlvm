@@ -321,7 +321,7 @@ func newUUID() string {
 // createAgentVM prepares an agent VM: copies kernel/initramfs from the
 // template dir (per-VM state), saves meta. No disk reflink, no networkd
 // bake, no control token bake (agent VMs use console, not ssh).
-func createAgentVM(ctx context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, cores []int, fail func(error) (*Meta, error)) (*Meta, error) {
+func createAgentVM(_ context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, cores []int, fail func(error) (*Meta, error)) (*Meta, error) {
 	// Copy kernel/initramfs from template to VM dir (per-VM state)
 	if err := copyFile(filepath.Join(d.Tpl.Dir, "vmlinuz"), filepath.Join(vmDir, "vmlinuz")); err != nil {
 		return fail(fmt.Errorf("copy kernel: %w", err))

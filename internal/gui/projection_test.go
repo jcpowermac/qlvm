@@ -51,7 +51,7 @@ func TestRunAppTokenMissing(t *testing.T) {
 	defer func() { guiQlvmRoot = origRoot }()
 
 	vmDir := filepath.Join(guiQlvmRoot, "vms", "testvm")
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	// Meta without a token.
 	meta := `name: testvm
 type: app
@@ -59,7 +59,7 @@ ip: 10.100.1.5
 memory_mb: 1024
 vcpus: 1
 `
-	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644)) //nolint:gosec,G306
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
@@ -82,14 +82,14 @@ func TestRunAppSSHSucceeds(t *testing.T) {
 	defer func() { guiQlvmRoot = origRoot }()
 
 	vmDir := filepath.Join(guiQlvmRoot, "vms", "testvm")
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	meta := `name: testvm
 type: app
 ip: 10.100.1.5
 memory_mb: 1024
 vcpus: 1
 `
-	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644)) //nolint:gosec,G306
 
 	origWayland := os.Getenv("WAYLAND_DISPLAY")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
@@ -128,7 +128,7 @@ func TestRunAppTCPNoDom0IP(t *testing.T) {
 	defer func() { guiQlvmRoot = origRoot }()
 
 	vmDir := filepath.Join(guiQlvmRoot, "vms", "testvm")
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	meta := `name: testvm
 type: app
 ip: 10.100.1.5
@@ -136,7 +136,7 @@ token: tok-test-123
 memory_mb: 1024
 vcpus: 1
 `
-	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644)) //nolint:gosec,G306
 
 	// Create a temp config without dom0_ip.
 	cfgDir := t.TempDir()
@@ -167,7 +167,7 @@ func TestRunAppMetaLoad(t *testing.T) {
 	defer func() { guiQlvmRoot = origRoot }()
 
 	vmDir := filepath.Join(guiQlvmRoot, "vms", "testvm")
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	meta := `name: testvm
 type: app
 ip: 10.100.1.5
@@ -177,7 +177,7 @@ vcpus: 2
 token: tok
 uuid: 1234-5678
 `
-	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644)) //nolint:gosec,G306
 
 	// Load the meta directly to verify it parses correctly.
 	m, err := vm.LoadMeta(vmDir)
@@ -208,7 +208,7 @@ func TestActionsRunApp(t *testing.T) {
 
 	// Create a valid VM meta.
 	vmDir := filepath.Join(guiQlvmRoot, "vms", "testvm")
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	require.NoError(t, os.WriteFile(filepath.Join(vmDir, "meta.yaml"),
 		[]byte("name: testvm\ntype: app\nip: 10.100.1.5\nmemory_mb: 1024\nvcpus: 1\n"), 0o644))
 
