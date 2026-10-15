@@ -133,14 +133,14 @@ func (t *vmTable) showContextMenu(pos fyne.Position) {
 			if t.actions != nil {
 				t.actions.Start()
 			} else {
-				t.model.Log(fmt.Sprintf("Cannot start %s: no Xen connection", name))
+				t.model.Log(fmt.Sprintf("Cannot start %s: no agent connection", name))
 			}
 		}),
 		fyne.NewMenuItem("Stop", func() {
 			if t.actions != nil {
 				t.actions.Stop()
 			} else {
-				t.model.Log(fmt.Sprintf("Cannot stop %s: no Xen connection", name))
+				t.model.Log(fmt.Sprintf("Cannot stop %s: no agent connection", name))
 			}
 		}),
 		fyne.NewMenuItemSeparator(),
@@ -148,7 +148,7 @@ func (t *vmTable) showContextMenu(pos fyne.Position) {
 			if t.actions != nil {
 				t.actions.Delete()
 			} else {
-				t.model.Log(fmt.Sprintf("Cannot delete %s: no Xen connection", name))
+				t.model.Log(fmt.Sprintf("Cannot delete %s: no agent connection", name))
 			}
 		}),
 	)
