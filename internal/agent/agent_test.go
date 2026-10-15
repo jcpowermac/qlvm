@@ -97,12 +97,12 @@ func TestProgressEmitWithoutBus(t *testing.T) {
 	a.mu.Unlock()
 	assert.Equal(t, "working", tracker.Message)
 
-	// Mark as done.
+	// Mark as done — entry is removed from the map to free memory.
 	a.emitProgressDone("op1")
 	a.mu.Lock()
-	tracker = a.progress["op1"]
+	_, exists := a.progress["op1"]
 	a.mu.Unlock()
-	assert.True(t, tracker.Done)
+	assert.False(t, exists, "progress entry should be removed after done")
 
 	// emitProgressDone for unknown id should not panic.
 	a.emitProgressDone("unknown")
@@ -562,10 +562,12 @@ func TestProvisionVMSuccess(t *testing.T) {
 	root, home := setupVMTest(t, "testvm")
 	provDir := setupProvisionTest(t, "testvm")
 	runner := &fakeProvisionRunner{}
+	capture := &progressCapture{}
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 	a.provisionRunner = runner
 	a.provisionDir = provDir
 	a.homeDir = home
+	a.progressHook = capture.hook
 
 	err := a.ProvisionVM("testvm")
 	require.NoError(t, err)
@@ -574,16 +576,10 @@ func TestProvisionVMSuccess(t *testing.T) {
 	assert.NotEmpty(t, runner.hosts, "runner should have been called")
 	assert.NotEmpty(t, runner.ops, "runner should have received ops")
 
-	// Verify progress was tracked.
-	a.mu.Lock()
-	// Find the provision operation tracker (ID is now a UUID).
-	var tracker *ProgressTracker
-	for _, tr := range a.progress {
-		tracker = tr
-	}
-	a.mu.Unlock()
-	require.NotNil(t, tracker, "progress tracker should exist")
-	assert.True(t, tracker.Done, "progress should be marked done")
+	// Verify progress was tracked — use progressHook since the map is cleaned up.
+	require.NotEmpty(t, capture.events, "should have captured progress events")
+	last := capture.events[len(capture.events)-1]
+	assert.True(t, last.done, "last event should be ProgressDone")
 }
 
 func TestProvisionVMRunnerError(t *testing.T) {
@@ -644,6 +640,7 @@ func TestSyncKernelSSHConnectError(t *testing.T) {
 
 func TestSyncKernelSuccess(t *testing.T) {
 	root, _ := setupVMTest(t, "testvm")
+	capture := &progressCapture{}
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 	a.kernelHost = &fakeKernelHost{
 		runOutput: "kernel-core-6.11.9-300.fc44.x86_64",
@@ -652,6 +649,7 @@ func TestSyncKernelSuccess(t *testing.T) {
 			"/boot/initramfs-6.11.9-300.fc44.img": []byte("initramfs data"),
 		},
 	}
+	a.progressHook = capture.hook
 
 	err := a.SyncKernel("testvm")
 	require.NoError(t, err)
@@ -669,16 +667,10 @@ func TestSyncKernelSuccess(t *testing.T) {
 		require.NoError(t, err, "alias %s should exist", name)
 	}
 
-	// Verify progress was tracked.
-	a.mu.Lock()
-	// Find the sync-kernel operation tracker (ID is now a UUID).
-	var tracker *ProgressTracker
-	for _, tr := range a.progress {
-		tracker = tr
-	}
-	a.mu.Unlock()
-	require.NotNil(t, tracker, "progress tracker should exist")
-	assert.True(t, tracker.Done, "progress should be marked done")
+	// Verify progress was tracked — use progressHook since the map is cleaned up.
+	require.NotEmpty(t, capture.events, "should have captured progress events")
+	last := capture.events[len(capture.events)-1]
+	assert.True(t, last.done, "last event should be ProgressDone")
 }
 
 func TestSyncKernelKernelQueryError(t *testing.T) {

@@ -1416,6 +1416,7 @@ func (a *Agent) emitProgressDone(id string) {
 	if t, ok := a.progress[id]; ok {
 		t.Done = true
 	}
+	delete(a.progress, id) // free memory after completion
 	a.mu.Unlock()
 
 	if a.progressHook != nil {
