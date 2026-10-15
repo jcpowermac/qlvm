@@ -176,6 +176,7 @@ type fakePodman struct {
 	listBuilderErr        error
 	removeContainerErr    error
 	runImageBuilderErr    error
+	runImageBuilderCreatesRaw bool
 	inspectImageLabels    map[string]string
 	inspectImageErr       error
 	createContainerID     string
@@ -187,6 +188,7 @@ type fakePodman struct {
 	listCalls         int
 	removeCalls       []string
 	runCalls          int
+	runImageBuilderWorkdir string
 	inspectCalls      int
 	createCalls       int
 	copyCalls         int
@@ -197,8 +199,18 @@ func (f *fakePodman) Pull(_ context.Context, _ string) (string, error) {
 	return f.pullDigest, f.pullErr
 }
 
-func (f *fakePodman) RunImageBuilder(_ context.Context, _, _ string, _ io.Writer) error {
+func (f *fakePodman) RunImageBuilder(_ context.Context, workdir, _ string, _ io.Writer) error {
 	f.runCalls++
+	f.runImageBuilderWorkdir = workdir
+	if f.runImageBuilderCreatesRaw {
+		rawDir := filepath.Join(workdir, "image")
+		if err := os.MkdirAll(rawDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(rawDir, "fedora.raw"), []byte("fake"), 0o644); err != nil {
+			return err
+		}
+	}
 	return f.runImageBuilderErr
 }
 
@@ -352,6 +364,53 @@ func TestCreateTemplateExistsForceVMReferences(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "referenced by VMs")
 	assert.Contains(t, err.Error(), "testvm")
+}
+
+func TestCreateTemplateSuccess(t *testing.T) {
+	root := setupTemplateTest(t)
+
+	image := "quay.io/fedora/fedora:42"
+	digest := "sha256:abc"
+
+	// Use a fake podman whose RunImageBuilder creates a raw file so
+	// template.Ensure's adoptRaw step succeeds and proceeds to the bake.
+	pod := &fakePodman{
+		pullDigest:                  digest,
+		runImageBuilderCreatesRaw: true,
+	}
+
+	var bakeCalled bool
+	var bakeDir string
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.podmanFactory = func(_ context.Context, _ string) (template.Podman, error) {
+		return pod, nil
+	}
+	a.bakeFn = func(_ context.Context, dir, _fstype, _keys string) error {
+		bakeCalled = true
+		bakeDir = dir
+		return nil
+	}
+
+	dirName, err := a.CreateTemplate(image, false)
+	require.NoError(t, err)
+
+	// Verify the template dir was created and returned.
+	require.NotEmpty(t, dirName)
+	expectedDir := filepath.Join(root, "templates", dirName)
+	_, err = os.Stat(expectedDir)
+	require.NoError(t, err, "template dir should exist: %s", expectedDir)
+
+	// Verify the bake callback was invoked with the correct dir.
+	assert.True(t, bakeCalled, "bake callback should have been invoked")
+	assert.Equal(t, expectedDir, bakeDir, "bake callback should receive the template dir")
+
+	// Verify podman pull and run-image-builder were called.
+	assert.Equal(t, 1, pod.pullCalls)
+	assert.NotEmpty(t, pod.runImageBuilderWorkdir, "RunImageBuilder should have been called with the template dir")
+
+	// Verify a META file was created by template.Ensure.
+	_, err = os.Stat(filepath.Join(expectedDir, "META"))
+	require.NoError(t, err, "META file should exist after successful bake")
 }
 
 func TestDeleteTemplateEmptyDir(t *testing.T) {

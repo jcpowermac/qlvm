@@ -10,15 +10,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/sys/unix"
 
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/coremap"
@@ -169,6 +173,10 @@ type Agent struct {
 	// Defaults to template.NewPodman; tests inject a fake.
 	podmanFactory func(ctx context.Context, socket string) (template.Podman, error)
 
+	// bakeFn bakes a template directory. Defaults to ostree.BakeTemplate;
+	// tests inject a recording fake.
+	bakeFn func(ctx context.Context, dir, fstype, sshAuthKeys string) error
+
 	// Progress signal state (mutex-protected).
 	mu       sync.Mutex
 	progress map[string]*ProgressTracker
@@ -195,7 +203,10 @@ func New(x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, core
 		coremapPath:   coremapPath,
 		root:          root,
 		podmanFactory: template.NewPodman,
-		progress:      make(map[string]*ProgressTracker),
+		bakeFn: func(ctx context.Context, dir, fstype, sshAuthKeys string) error {
+			return ostree.BakeTemplate(ctx, ostree.NewFS(nil), dir, fstype, sshAuthKeys)
+		},
+		progress: make(map[string]*ProgressTracker),
 	}
 }
 
@@ -960,7 +971,11 @@ func (a *Agent) CreateTemplate(image string, force bool) (string, error) {
 	}
 
 	a.emitProgress(opID, "reaping stale resources")
-	// Reap exited image-builder containers (best effort).
+	// Reap stale loop devices, leftover bake scratch mounts, and exited
+	// image-builder containers (best effort — a killed prior bake can leave
+	// any of these behind and they break the next bake).
+	staleLoops(ctx, a.root, io.Discard)
+	leftoverBakeMounts(io.Discard)
 	if err := template.ReapBuilderContainers(ctx, pod, io.Discard); err != nil {
 		// Warning only — the bake proceeds.
 		_ = err
@@ -985,7 +1000,7 @@ func (a *Agent) CreateTemplate(image string, force bool) (string, error) {
 		Log:             io.Discard,
 		PrePulledDigest: digest,
 		Bake: func(dir string) error {
-			return ostree.BakeTemplate(ctx, ostree.NewFS(nil), dir, fstype, keys)
+			return a.bakeFn(ctx, dir, fstype, keys)
 		},
 	})
 	if err != nil {
@@ -1023,9 +1038,102 @@ func (a *Agent) DeleteTemplate(dir string) error {
 	return nil
 }
 
-// sshAuthKeys collects the id_*.pub identities of the calling user and
-// SUDO_USER (the desktop user who runs qlvm vm run). Baked into every VM's
-// authorized_keys; empty result is a hard error.
+// loopLineRe matches `losetup -a` lines. The backing path may carry a
+// " (deleted)" suffix; group 2 captures the path without it.
+var loopLineRe = regexp.MustCompile(`^(/\S+)(?: \([^)]*\))?:.*\(([^()]+)(?: \(deleted\))?\)\s*$`)
+
+// parseLoopLines returns the loop devices in `losetup -a` output whose
+// backing file is under root and no longer exists (stale loops).
+func parseLoopLines(output, root string) []string {
+	prefix := root + string(filepath.Separator)
+	var out []string
+	for _, line := range strings.Split(output, "\n") {
+		m := loopLineRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		path := strings.TrimSpace(m[2])
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// staleLoops detaches loop devices under root whose backing file was deleted
+// (a killed create leaves them attached, and they break template re-attach).
+func staleLoops(ctx context.Context, root string, out io.Writer) {
+	b, err := exec.CommandContext(ctx, "losetup", "-a").Output() // #nosec G204 -- fixed binary, fixed args
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "warning: losetup: %v\n", err)
+		return
+	}
+	for _, dev := range parseLoopLines(string(b), root) {
+		if err := exec.CommandContext(ctx, "losetup", "-d", dev).Run(); err != nil { // #nosec G204 -- dev is a parsed /dev/loopN name
+			_, _ = fmt.Fprintf(out, "warning: losetup -d %s: %v\n", dev, err)
+		} else {
+			_, _ = fmt.Fprintf(out, "detached stale loop %s\n", dev)
+		}
+	}
+}
+
+// leftoverBakeMounts unmounts and removes <tmp>/qlvm-ostree-* scratch dirs a
+// killed bake leaves mounted (ostree.mountTarget).
+func leftoverBakeMounts(out io.Writer) {
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), ostree.MountPrefix) {
+			continue
+		}
+		dir := filepath.Join(os.TempDir(), e.Name())
+		if err := unix.Unmount(dir, 0); err != nil && !errors.Is(err, syscall.ENOENT) {
+			_, _ = fmt.Fprintf(out, "warning: unmount %s: %v\n", dir, err)
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			_, _ = fmt.Fprintf(out, "warning: remove %s: %v\n", dir, err)
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "removed stale bake mount %s\n", dir)
+	}
+}
+
+// wheelGroupMembers returns the supplementary members of the wheel group by
+// parsing /etc/group. os/user.Group has no member list field, so we parse
+// the file directly (format: name:password:GID:member1,member2,...).
+func wheelGroupMembers() []string {
+	b, err := os.ReadFile("/etc/group") // #nosec G304 -- fixed system file
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.SplitN(line, ":", 4)
+		if len(fields) != 4 {
+			continue
+		}
+		if fields[0] != "wheel" {
+			continue
+		}
+		if fields[3] == "" {
+			return nil
+		}
+		return strings.Split(fields[3], ",")
+	}
+	return nil
+}
+
+// sshAuthKeys collects the id_*.pub identities of root, SUDO_USER (if set),
+// and all users in the wheel group (desktop users). The daemon runs as root
+// under systemd where SUDO_USER is unset, so wheel membership is the
+// heuristic for finding desktop users whose keys are needed for qlvm vm run
+// SSH connections. Baked into every VM's authorized_keys; empty result is a
+// hard error.
 func sshAuthKeys() (string, error) {
 	var homes []string
 	if h, err := os.UserHomeDir(); err == nil {
@@ -1036,9 +1144,24 @@ func sshAuthKeys() (string, error) {
 			homes = append(homes, u.HomeDir)
 		}
 	}
+	// Collect homes of all users in the wheel group (desktop users).
+	for _, mem := range wheelGroupMembers() {
+		if u, err := user.Lookup(mem); err == nil && u.HomeDir != "" {
+			homes = append(homes, u.HomeDir)
+		}
+	}
+	// Deduplicate homes.
+	seenHomes := map[string]bool{}
+	var uniqueHomes []string
+	for _, h := range homes {
+		if !seenHomes[h] {
+			seenHomes[h] = true
+			uniqueHomes = append(uniqueHomes, h)
+		}
+	}
 	seen := map[string]bool{}
 	var keys []string
-	for _, h := range homes {
+	for _, h := range uniqueHomes {
 		for _, n := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"} {
 			b, err := os.ReadFile(filepath.Join(h, ".ssh", n)) // #nosec G304 G703 -- homes from $HOME/passwd, fixed file names
 			if err != nil {
