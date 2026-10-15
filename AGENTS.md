@@ -10,6 +10,14 @@ Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
   only `/usr/local/bin/qlvm` (the cgo build) can. If you changed code and
   ran a live command without rebuilding, the results are from the OLD binary
   and you are debugging ghost behavior.
+- **Container build is the completion gate**: Never mark work complete, claim
+  tests pass, or commit code changes without first running
+  `sudo make container-build` and verifying it succeeds. The local `go build`
+  without the `libxl` tag is NOT sufficient — it skips the cgo xenlight
+  binding and will miss build errors that only surface with `libxl`. The
+  container build (`make container-build`) compiles against the builder
+  image's Xen headers with `libxl` enabled; it is the only reliable
+  verification that the code actually compiles for the target environment.
 - **Xen version skew (container build)**: `make container-build` compiles
   the cgo xenlight binding against the *builder image's* Xen headers
   (`Dockerfile.builder`, currently `quay.io/fedora/fedora:44` = Xen 4.21),
