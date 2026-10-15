@@ -59,6 +59,16 @@ func (r *Reconciler) WithSB(sbClient client.Client) *Reconciler {
 	return r
 }
 
+// Close stops monitoring and closes the underlying OVN clients.
+func (r *Reconciler) Close() {
+	if r.client != nil {
+		r.client.Close()
+	}
+	if r.sb != nil {
+		r.sb.Close()
+	}
+}
+
 // desiredUUIDs returns the deterministic named UUID of a desired object.
 // Named UUIDs let a single transaction cross-reference rows that are
 // inserted in the same transaction (see ovsdb.ExpandNamedUUIDs).
