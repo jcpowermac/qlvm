@@ -2,8 +2,6 @@ package gui
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,11 +12,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/jcpowermac/qlvm/internal/config"
-	"github.com/jcpowermac/qlvm/internal/ovs"
-	"github.com/jcpowermac/qlvm/internal/template"
-	"github.com/jcpowermac/qlvm/internal/vm"
-	"github.com/jcpowermac/qlvm/internal/xenctl"
+	"github.com/jcpowermac/qlvm/internal/agent"
 )
 
 // App is the main GUI application.
@@ -26,6 +20,8 @@ type App struct {
 	fyneApp       fyne.App
 	window        fyne.Window
 	model         *AppModel
+	client        Client
+	cancelProgress func()
 	vmTable       *vmTable
 	templateTable *templateTable
 	actions       *Actions
@@ -34,7 +30,9 @@ type App struct {
 	statusLabel   *widget.Label
 }
 
-// New creates the GUI application with the given model.
+// New creates the GUI application with the given model. It connects to the
+// qlvm-agent D-Bus daemon; if the daemon is not running, the GUI shows an
+// error and the VM/template lists will be empty.
 func New(model *AppModel) *App {
 	a := app.NewWithID("io.qlvm.gui")
 	w := a.NewWindow("qlvm GUI")
@@ -50,21 +48,19 @@ func New(model *AppModel) *App {
 	g.logPane = NewLogPane()
 	model.SetLogCallback(g.logPane.Add)
 
-	// Create Xen connection and Actions.
-	x, err := xenctl.New()
+	// Connect to the D-Bus daemon.
+	c, err := agent.NewClient()
 	if err != nil {
-		model.Log(fmt.Sprintf("Warning: cannot connect to Xen: %v", err))
+		model.Log(fmt.Sprintf("Error: cannot connect to qlvm-agent daemon: %v", err))
+		model.Log("The daemon must be running (systemctl start qlvm-agent) for the GUI to work.")
 	} else {
-		cfg := model.GetConfig()
-		if cfg == nil {
-			cfg, err = config.Load(defaultConfigPath)
-			if err != nil {
-				model.Log(fmt.Sprintf("Warning: cannot load config: %v", err))
-			} else {
-				model.SetConfig(cfg)
+		g.client = c
+		g.cancelProgress = c.SubscribeProgress(func(id, message string) {
+			if message != "" {
+				model.Log(fmt.Sprintf("[%s] %s", id, message))
 			}
-		}
-		g.actions = NewActions(model, x, nil, nil, cfg, "", g.logPane.Add)
+		})
+		g.actions = NewActions(model, c, g.logPane.Add)
 	}
 
 	g.buildLayout()
@@ -72,9 +68,9 @@ func New(model *AppModel) *App {
 	return g
 }
 
-// NewWithDependencies creates the GUI application with explicit control
-// plane dependencies.
-func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath string) *App {
+// NewWithDependencies creates the GUI application with an explicit client
+// for dependency injection (used by tests).
+func NewWithDependencies(model *AppModel, c Client) *App {
 	a := app.NewWithID("io.qlvm.gui")
 	w := a.NewWindow("qlvm GUI")
 	w.Resize(fyne.NewSize(1000, 600))
@@ -84,11 +80,19 @@ func NewWithDependencies(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.Vi
 		fyneApp: a,
 		window:  w,
 		model:   model,
+		client:  c,
 	}
 
 	g.logPane = NewLogPane()
 	model.SetLogCallback(g.logPane.Add)
-	g.actions = NewActions(model, x, o, v, cfg, coremapPath, g.logPane.Add)
+	if c != nil {
+		g.cancelProgress = c.SubscribeProgress(func(id, message string) {
+			if message != "" {
+				model.Log(fmt.Sprintf("[%s] %s", id, message))
+			}
+		})
+		g.actions = NewActions(model, c, g.logPane.Add)
+	}
 
 	g.buildLayout()
 	g.window.ShowAndRun()
@@ -119,7 +123,7 @@ func (g *App) buildLayout() {
 			})
 
 			// Template table view.
-			g.templateTable = newTemplateTable(g.model, g.window, func(dir string) {
+			g.templateTable = newTemplateTable(g.model, g.window, g.client, func(dir string) {
 				// Single click just selects; right-click opens context menu.
 			})
 
@@ -186,16 +190,15 @@ func (g *App) startAutoRefresh() {
 // statusText returns the status bar text.
 func (g *App) statusText() string {
 	parts := []string{}
-	if g.actions != nil && g.actions.xen != nil {
-		parts = append(parts, "Xen: connected")
+	if g.client != nil {
+		parts = append(parts, "Agent: connected")
 	} else {
-		parts = append(parts, "Xen: not connected")
+		parts = append(parts, "Agent: not connected")
 	}
 	vms := g.model.GetVMs()
-	states := g.model.GetDomainStates()
 	running := 0
-	for name := range vms {
-		if s, ok := states[name]; ok && s == "running" {
+	for _, info := range vms {
+		if info.State == "running" {
 			running++
 		}
 	}
@@ -203,69 +206,37 @@ func (g *App) statusText() string {
 	return strings.Join(parts, "  |  ")
 }
 
-// defaultConfigPath is the qlvm configuration file.
-const defaultConfigPath = "/etc/qvm/qlvm.yaml"
-
-// loadData loads VMs, templates, and domain states from the control planes.
+// loadData loads VMs and templates from the D-Bus agent.
 func (g *App) loadData() {
-	// Load config if not already loaded.
-	if g.model.GetConfig() == nil {
-		cfg, err := config.Load(defaultConfigPath)
-		if err != nil {
-			g.model.Log(fmt.Sprintf("Failed to load config: %v", err))
-		} else {
-			g.model.SetConfig(cfg)
-		}
+	if g.client == nil {
+		return
 	}
 
-	// Load VM metadata.
-	vms := make(map[string]*vm.Meta)
-	entries, err := os.ReadDir(filepath.Join(installRoot, "vms"))
+	// Load VMs from the agent.
+	vmInfos, err := g.client.ListVMs()
 	if err != nil {
-		g.model.Log(fmt.Sprintf("Failed to read VMs: %v", err))
+		g.model.Log(fmt.Sprintf("Failed to list VMs: %v", err))
 	} else {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			meta, err := vm.LoadMeta(filepath.Join(installRoot, "vms", e.Name()))
-			if err == nil {
-				vms[meta.Name] = meta
-			}
+		vms := make(map[string]*agent.VMInfo, len(vmInfos))
+		for i := range vmInfos {
+			info := vmInfos[i]
+			vms[info.Name] = &info
 		}
+		g.model.SetVMs(vms)
 	}
-	g.model.SetVMs(vms)
 
-	// Load template metadata.
-	tpls := make(map[string]*template.Template)
-	entries, err = os.ReadDir(filepath.Join(installRoot, "templates"))
+	// Load templates from the agent.
+	tplInfos, err := g.client.ListTemplates()
 	if err != nil {
-		g.model.Log(fmt.Sprintf("Failed to read templates: %v", err))
+		g.model.Log(fmt.Sprintf("Failed to list templates: %v", err))
 	} else {
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			tpl, err := template.LoadMeta(filepath.Join(installRoot, "templates", e.Name()))
-			if err == nil {
-				tpls[e.Name()] = tpl
-			}
+		tpls := make(map[string]*agent.TemplateInfo, len(tplInfos))
+		for i := range tplInfos {
+			info := tplInfos[i]
+			tpls[info.Dir] = &info
 		}
+		g.model.SetTemplates(tpls)
 	}
-	g.model.SetTemplates(tpls)
-
-	// Load domain states from Xen.
-	states := make(map[string]string)
-	if g.actions != nil && g.actions.xen != nil {
-		domains, err := g.actions.xen.List()
-		if err != nil {
-			g.model.Log(fmt.Sprintf("Failed to list Xen domains: %v", err))
-		}
-		for _, d := range domains {
-			states[d.Name] = d.State
-		}
-	}
-	g.model.SetDomainStates(states)
 
 	// Refresh the UI on the main thread.
 	fyne.Do(func() {
@@ -285,10 +256,10 @@ func (g *App) loadData() {
 func (g *App) buildMenu() *fyne.MainMenu {
 	fileMenu := fyne.NewMenu("File",
 		fyne.NewMenuItem("Create VM", func() {
-			ShowCreateVMDialog(g.window, g.model, g.logPane.Add, g.vmTable.Refresh)
+			ShowCreateVMDialog(g.window, g.model, g.client, g.logPane.Add, g.vmTable.Refresh)
 		}),
 		fyne.NewMenuItem("Create Template", func() {
-			ShowCreateTemplateDialog(g.window, g.model, g.logPane.Add, g.templateTable.Refresh)
+			ShowCreateTemplateDialog(g.window, g.model, g.client, g.logPane.Add, g.templateTable.Refresh)
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Quit", func() {
@@ -321,7 +292,7 @@ func (g *App) buildMenu() *fyne.MainMenu {
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Delete", func() {
-			ShowDeleteTemplateDialog(g.window, g.model, g.logPane.Add, g.templateTable.Refresh)
+			ShowDeleteTemplateDialog(g.window, g.model, g.client, g.logPane.Add, g.templateTable.Refresh)
 		}),
 	)
 

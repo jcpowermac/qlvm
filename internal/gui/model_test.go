@@ -3,6 +3,8 @@ package gui
 import (
 	"testing"
 	"time"
+
+	"github.com/jcpowermac/qlvm/internal/agent"
 )
 
 func TestNewAppModelDefaults(t *testing.T) {
@@ -10,9 +12,6 @@ func TestNewAppModelDefaults(t *testing.T) {
 
 	if m.VMs == nil {
 		t.Fatal("VMs map is nil")
-	}
-	if m.DomainStates == nil {
-		t.Fatal("DomainStates map is nil")
 	}
 	if m.Templates == nil {
 		t.Fatal("Templates map is nil")
@@ -67,7 +66,33 @@ func TestModelSetFilter(t *testing.T) {
 func TestModelSetVMs(t *testing.T) {
 	m := NewAppModel(time.Second, time.Second)
 
-	vms := map[string]*struct{}{} // placeholder, actual test uses vm.Meta
-	// Just verify the setter works without panicking
-	m.SetVMs(nil)
+	vms := map[string]*agent.VMInfo{
+		"test": {Name: "test", Type: "app", State: "running", MemoryMB: 1024, VCPUs: 1},
+	}
+	m.SetVMs(vms)
+
+	got := m.GetVMs()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 VM, got %d", len(got))
+	}
+	if got["test"].Name != "test" {
+		t.Errorf("expected VM name 'test', got %q", got["test"].Name)
+	}
+}
+
+func TestModelSetTemplates(t *testing.T) {
+	m := NewAppModel(time.Second, time.Second)
+
+	tpls := map[string]*agent.TemplateInfo{
+		"test": {Dir: "test", Image: "quay.io/fedora/fedora:44", Digest: "sha256:abc123"},
+	}
+	m.SetTemplates(tpls)
+
+	got := m.GetTemplates()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 template, got %d", len(got))
+	}
+	if got["test"].Image != "quay.io/fedora/fedora:44" {
+		t.Errorf("expected template image, got %q", got["test"].Image)
+	}
 }

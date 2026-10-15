@@ -20,26 +20,22 @@ func ShowTemplateDetailDialog(parent fyne.Window, model *AppModel, dir string) {
 		return
 	}
 
-	// Count VMs using this template.
-	vms := model.GetVMs()
-	var vmNames []string
-	for name, meta := range vms {
-		if meta.Image == tpl.Image && meta.Digest == tpl.Digest {
-			vmNames = append(vmNames, name)
-		}
+	vmListText := "none"
+	if tpl.VMCount > 0 {
+		vmListText = fmt.Sprintf("%d VM(s) using this template", tpl.VMCount)
 	}
 
-	vmListText := "none"
-	if len(vmNames) > 0 {
-		vmListText = ""
-		for _, n := range vmNames {
-			vmListText += n + "\n"
-		}
+	statusText := "complete"
+	if !tpl.Complete {
+		statusText = "incomplete"
 	}
 
 	form := widget.NewForm(
 		widget.NewFormItem("Image", widget.NewLabel(tpl.Image)),
-		widget.NewFormItem("Digest", widget.NewLabel(tpl.Digest)),
+		widget.NewFormItem("Digest", widget.NewLabel(truncateDigest(tpl.Digest))),
+		widget.NewFormItem("Kernel", widget.NewLabel(tpl.Kernel)),
+		widget.NewFormItem("Size", widget.NewLabel(formatSize(tpl.SizeBytes))),
+		widget.NewFormItem("Status", widget.NewLabel(statusText)),
 		widget.NewFormItem("VMs", widget.NewLabel(vmListText)),
 	)
 

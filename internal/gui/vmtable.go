@@ -18,10 +18,10 @@ type vmTable struct {
 }
 
 // vmTableColumns defines the column headers.
-var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domain", "IP"}
+var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domain"}
 
 // vmTableDefaultWidths are the default column widths.
-var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100, 120} // Name, Type, State, Memory, vCPUs, Domain, IP
+var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100} // Name, Type, State, Memory, vCPUs, Domain
 
 // newVMTable creates a VM table view.
 func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect func(name string)) *vmTable {
@@ -61,7 +61,6 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 	// Single click selects the row (no dialog).
 	table.OnSelected = func(id widget.TableCellID) {
 		vms := model.GetVMs()
-		states := model.GetDomainStates()
 		filter := strings.ToLower(model.FilterText())
 
 		entries := make([]VMEntry, 0, len(vms))
@@ -69,9 +68,9 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 			if filter != "" && !strings.Contains(strings.ToLower(name), filter) {
 				continue
 			}
-			state := "stopped"
-			if s, ok := states[name]; ok {
-				state = s
+			state := meta.State
+			if state == "" {
+				state = "stopped"
 			}
 			entries = append(entries, VMEntry{
 				Name:   name,
@@ -80,7 +79,6 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 				Memory: meta.MemoryMB,
 				VCpus:  meta.VCPUs,
 				Domain: meta.Domain,
-				IP:     meta.IP,
 			})
 		}
 		// Sort by name.
@@ -161,7 +159,6 @@ func (t *vmTable) showContextMenu(pos fyne.Position) {
 // filteredVMs returns VMs matching the current filter, sorted by name.
 func (t *vmTable) filteredVMs() []VMEntry {
 	vms := t.model.GetVMs()
-	states := t.model.GetDomainStates()
 	filter := strings.ToLower(t.model.FilterText())
 
 	entries := make([]VMEntry, 0, len(vms))
@@ -169,9 +166,9 @@ func (t *vmTable) filteredVMs() []VMEntry {
 		if filter != "" && !strings.Contains(strings.ToLower(name), filter) {
 			continue
 		}
-		state := "stopped"
-		if s, ok := states[name]; ok {
-			state = s
+		state := meta.State
+		if state == "" {
+			state = "stopped"
 		}
 		entries = append(entries, VMEntry{
 			Name:   name,
@@ -180,7 +177,6 @@ func (t *vmTable) filteredVMs() []VMEntry {
 			Memory: meta.MemoryMB,
 			VCpus:  meta.VCPUs,
 			Domain: meta.Domain,
-			IP:     meta.IP,
 		})
 	}
 
@@ -201,10 +197,9 @@ type VMEntry struct {
 	Name   string
 	Type   string
 	State  string
-	Memory int
-	VCpus  int
+	Memory uint64
+	VCpus  uint8
 	Domain string
-	IP     string
 }
 
 // updateCell updates a table cell.
@@ -240,8 +235,6 @@ func (t *vmTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject) {
 		text = fmt.Sprintf("%d", entry.VCpus)
 	case 5:
 		text = entry.Domain
-	case 6:
-		text = entry.IP
 	}
 
 	label.SetText(text)

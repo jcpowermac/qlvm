@@ -13,17 +13,18 @@ type templateTable struct {
 	*rightClickTable
 	model    *AppModel
 	window   fyne.Window
+	client   Client
 	onSelect func(dir string)
 }
 
 // templateTableColumns defines the column headers.
-var templateTableColumns = []string{"Image", "Digest", "VMs"}
+var templateTableColumns = []string{"Image", "Digest", "Size", "VMs"}
 
 // templateTableDefaultWidths are the default column widths.
-var templateTableDefaultWidths = []float32{300, 250, 80} // Image, Digest, VMs
+var templateTableDefaultWidths = []float32{300, 250, 100, 80} // Image, Digest, Size, VMs
 
 // newTemplateTable creates a template table view.
-func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir string)) *templateTable {
+func newTemplateTable(model *AppModel, window fyne.Window, client Client, onSelect func(dir string)) *templateTable {
 	table := widget.NewTableWithHeaders(
 		func() (rows, cols int) {
 			return len(model.GetTemplates()), len(templateTableColumns)
@@ -60,7 +61,6 @@ func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir str
 	// Single click selects the row (no dialog).
 	table.OnSelected = func(id widget.TableCellID) {
 		tpls := model.GetTemplates()
-		vms := model.GetVMs()
 		filter := strings.ToLower(model.FilterText())
 
 		entries := make([]TemplateEntry, 0, len(tpls))
@@ -68,17 +68,12 @@ func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir str
 			if filter != "" && !strings.Contains(strings.ToLower(tpl.Image), filter) {
 				continue
 			}
-			vmCount := 0
-			for _, meta := range vms {
-				if meta.Image == tpl.Image {
-					vmCount++
-				}
-			}
 			entries = append(entries, TemplateEntry{
-				Dir:     dir,
-				Image:   tpl.Image,
-				Digest:  tpl.Digest,
-				VMCount: vmCount,
+				Dir:       dir,
+				Image:     tpl.Image,
+				Digest:    tpl.Digest,
+				SizeBytes: tpl.SizeBytes,
+				VMCount:   tpl.VMCount,
 			})
 		}
 		// Sort by image ref.
@@ -97,6 +92,7 @@ func newTemplateTable(model *AppModel, window fyne.Window, onSelect func(dir str
 	t := &templateTable{
 		model:    model,
 		window:   window,
+		client:   client,
 		onSelect: onSelect,
 	}
 	t.rightClickTable = newRightClickTable(table, func(pos fyne.Position) {
@@ -134,7 +130,7 @@ func (t *templateTable) showContextMenu(pos fyne.Position) {
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Delete", func() {
-			ShowDeleteTemplateDialog(t.window, t.model, t.model.Log, t.Refresh)
+			ShowDeleteTemplateDialog(t.window, t.model, t.client, t.model.Log, t.Refresh)
 		}),
 	)
 
@@ -144,7 +140,6 @@ func (t *templateTable) showContextMenu(pos fyne.Position) {
 // filteredTemplates returns templates matching the current filter.
 func (t *templateTable) filteredTemplates() []TemplateEntry {
 	tpls := t.model.GetTemplates()
-	vms := t.model.GetVMs()
 	filter := strings.ToLower(t.model.FilterText())
 
 	entries := make([]TemplateEntry, 0, len(tpls))
@@ -152,17 +147,12 @@ func (t *templateTable) filteredTemplates() []TemplateEntry {
 		if filter != "" && !strings.Contains(strings.ToLower(tpl.Image), filter) {
 			continue
 		}
-		vmCount := 0
-		for _, meta := range vms {
-			if meta.Image == tpl.Image && meta.Digest == tpl.Digest {
-				vmCount++
-			}
-		}
 		entries = append(entries, TemplateEntry{
-			Dir:     dir,
-			Image:   tpl.Image,
-			Digest:  tpl.Digest,
-			VMCount: vmCount,
+			Dir:       dir,
+			Image:     tpl.Image,
+			Digest:    tpl.Digest,
+			SizeBytes: tpl.SizeBytes,
+			VMCount:   tpl.VMCount,
 		})
 	}
 
@@ -181,10 +171,11 @@ func (t *templateTable) filteredTemplates() []TemplateEntry {
 
 // TemplateEntry is a single template row.
 type TemplateEntry struct {
-	Dir     string
-	Image   string
-	Digest  string
-	VMCount int
+	Dir       string
+	Image     string
+	Digest    string
+	SizeBytes uint64
+	VMCount   int
 }
 
 // updateCell updates a table cell.
@@ -205,6 +196,8 @@ func (t *templateTable) updateCell(id widget.TableCellID, cell fyne.CanvasObject
 	case 1:
 		text = truncateDigest(entry.Digest)
 	case 2:
+		text = formatSize(entry.SizeBytes)
+	case 3:
 		text = fmt.Sprintf("%d", entry.VMCount)
 	}
 

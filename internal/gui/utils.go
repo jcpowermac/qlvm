@@ -2,6 +2,27 @@ package gui
 
 import "fmt"
 
+// formatSize formats a byte count as a human-readable string.
+func formatSize(bytes uint64) string {
+	if bytes == 0 {
+		return "0 B"
+	}
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	bytes /= unit
+	if bytes < unit {
+		return fmt.Sprintf("%d KB", bytes)
+	}
+	bytes /= unit
+	if bytes < unit {
+		return fmt.Sprintf("%d MB", bytes)
+	}
+	bytes /= unit
+	return fmt.Sprintf("%d GB", bytes)
+}
+
 // formatCores formats a list of core IDs as a string.
 func formatCores(cores []int) string {
 	if len(cores) == 0 {

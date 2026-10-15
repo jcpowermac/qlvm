@@ -1,77 +1,36 @@
 package gui
 
-import (
-	"context"
-	"fmt"
-	"os"
-	"path/filepath"
+import "fmt"
 
-	"github.com/jcpowermac/qlvm/internal/config"
-	"github.com/jcpowermac/qlvm/internal/coremap"
-	"github.com/jcpowermac/qlvm/internal/ovs"
-	"github.com/jcpowermac/qlvm/internal/template"
-	"github.com/jcpowermac/qlvm/internal/vm"
-	"github.com/jcpowermac/qlvm/internal/xenctl"
-)
-
-// Actions provides VM lifecycle operations bound to the app model and
-// underlying control planes.
+// Actions provides VM lifecycle operations bound to the app model and the
+// D-Bus agent client.
 type Actions struct {
-	model    *AppModel
-	xen      xenctl.Xen
-	ovn      vm.OVNPorter
-	ovs      ovs.VifPorter
-	cfg      *config.Config
-	coremap  string
-	log      func(string) // log callback for operation output
+	model  *AppModel
+	client Client
+	log    func(string) // log callback for operation output
 }
 
-// NewActions creates an Actions bound to the app model and control planes.
-func NewActions(model *AppModel, x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath string, log func(string)) *Actions {
+// NewActions creates an Actions bound to the app model and agent client.
+func NewActions(model *AppModel, c Client, log func(string)) *Actions {
 	return &Actions{
-		model:   model,
-		xen:     x,
-		ovn:     o,
-		ovs:     v,
-		cfg:     cfg,
-		coremap: coremapPath,
-		log:     log,
+		model:  model,
+		client: c,
+		log:    log,
 	}
 }
 
-// Start starts the selected VM.
+// Start starts the selected VM via the agent.
 func (a *Actions) Start() error {
 	name := a.model.SelectedVMName()
 	if name == "" {
 		return fmt.Errorf("no VM selected")
 	}
-
-	vms := a.model.GetVMs()
-	meta, ok := vms[name]
-	if !ok {
-		return fmt.Errorf("VM %q not found", name)
-	}
-
-	vmDir := a.vmDir(name)
-
-	// Load template.
-	templates := a.model.GetTemplates()
-	var tpl *template.Template
-	for _, t := range templates {
-		if t.Image == meta.Image {
-			tpl = t
-			break
-		}
-	}
-	if tpl == nil {
-		// Try to load from the template directory.
-		tplDir := a.templateDir(meta.Image)
-		tpl, _ = template.LoadMeta(tplDir)
+	if a.client == nil {
+		return fmt.Errorf("agent not connected")
 	}
 
 	a.log(fmt.Sprintf("Starting VM %s...", name))
-	ctx := context.Background()
-	if err := xenctl.Start(ctx, a.xen, a.ovs, meta, vmDir, tpl); err != nil {
+	if err := a.client.StartVM(name); err != nil {
 		a.log(fmt.Sprintf("Failed to start %s: %v", name, err))
 		return err
 	}
@@ -79,15 +38,18 @@ func (a *Actions) Start() error {
 	return nil
 }
 
-// Stop stops the selected VM gracefully.
+// Stop stops the selected VM gracefully via the agent.
 func (a *Actions) Stop() error {
 	name := a.model.SelectedVMName()
 	if name == "" {
 		return fmt.Errorf("no VM selected")
 	}
+	if a.client == nil {
+		return fmt.Errorf("agent not connected")
+	}
 
 	a.log(fmt.Sprintf("Stopping VM %s...", name))
-	if err := a.xen.Shutdown(name); err != nil {
+	if err := a.client.StopVM(name); err != nil {
 		a.log(fmt.Sprintf("Failed to stop %s: %v", name, err))
 		return err
 	}
@@ -95,15 +57,18 @@ func (a *Actions) Stop() error {
 	return nil
 }
 
-// Kill force-destroys the selected VM.
+// Kill force-destroys the selected VM via the agent.
 func (a *Actions) Kill() error {
 	name := a.model.SelectedVMName()
 	if name == "" {
 		return fmt.Errorf("no VM selected")
 	}
+	if a.client == nil {
+		return fmt.Errorf("agent not connected")
+	}
 
 	a.log(fmt.Sprintf("Killing VM %s...", name))
-	if err := a.xen.Destroy(name); err != nil {
+	if err := a.client.KillVM(name); err != nil {
 		a.log(fmt.Sprintf("Failed to kill %s: %v", name, err))
 		return err
 	}
@@ -111,40 +76,37 @@ func (a *Actions) Kill() error {
 	return nil
 }
 
-// Restart stops and starts the selected VM.
+// Restart stops and starts the selected VM via the agent.
 func (a *Actions) Restart() error {
 	name := a.model.SelectedVMName()
 	if name == "" {
 		return fmt.Errorf("no VM selected")
 	}
+	if a.client == nil {
+		return fmt.Errorf("agent not connected")
+	}
 
 	a.log(fmt.Sprintf("Restarting VM %s...", name))
-	if err := a.xen.Destroy(name); err != nil {
-		return fmt.Errorf("failed to destroy: %w", err)
-	}
-	if err := a.Start(); err != nil {
-		return fmt.Errorf("failed to start: %w", err)
+	if err := a.client.RestartVM(name); err != nil {
+		a.log(fmt.Sprintf("Failed to restart %s: %v", name, err))
+		return err
 	}
 	a.log(fmt.Sprintf("VM %s restarted.", name))
 	return nil
 }
 
-// Delete removes the selected VM.
+// Delete removes the selected VM via the agent.
 func (a *Actions) Delete() error {
 	name := a.model.SelectedVMName()
 	if name == "" {
 		return fmt.Errorf("no VM selected")
 	}
-
-	a.log(fmt.Sprintf("Deleting VM %s...", name))
-	ctx := context.Background()
-	vmDir := a.vmDir(name)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("home dir: %w", err)
+	if a.client == nil {
+		return fmt.Errorf("agent not connected")
 	}
 
-	if err := xenctl.Delete(ctx, a.xen, a.ovn, a.ovs, home, vmDir, name, a.coremap); err != nil {
+	a.log(fmt.Sprintf("Deleting VM %s...", name))
+	if err := a.client.DeleteVM(name); err != nil {
 		a.log(fmt.Sprintf("Failed to delete %s: %v", name, err))
 		return err
 	}
@@ -156,26 +118,4 @@ func (a *Actions) Delete() error {
 	a.model.SetVMs(vms)
 	a.model.SelectVM("")
 	return nil
-}
-
-// installRoot is the per-VM/template state tree (spec §5.2).
-const installRoot = "/var/lib/qvm"
-
-// vmDir returns the VM directory path.
-func (a *Actions) vmDir(name string) string {
-	return filepath.Join(installRoot, "vms", name)
-}
-
-// templateDir returns the template directory path for an image.
-func (a *Actions) templateDir(image string) string {
-	// Template directories are named after the image ref.
-	return filepath.Join(installRoot, "templates", image)
-}
-
-// CoresView returns the current coremap data.
-func (a *Actions) CoresView() (*coremap.Coremap, error) {
-	if a.coremap == "" {
-		return nil, fmt.Errorf("no coremap path configured")
-	}
-	return coremap.Load(a.coremap)
 }
