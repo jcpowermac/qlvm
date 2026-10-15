@@ -39,8 +39,8 @@ func child(cmd *cobra.Command, name string) *cobra.Command {
 
 func TestCommandTree(t *testing.T) {
 	root := NewRootCmd()
-	require.Equal(t, []string{"apps", "cores", "install", "template", "vm"}, childNames(root),
-		"top level keeps apps/install/cores; VM commands move under vm")
+	require.Equal(t, []string{"apps", "cores", "template", "vm"}, childNames(root),
+		"top level keeps apps/cores/template; VM commands move under vm; install is removed")
 	vm := child(root, "vm")
 	require.NotNil(t, vm, "vm parent must exist")
 	require.Equal(t, []string{"console", "create", "delete", "kill", "list", "provision", "restart", "run", "start", "stop", "sync-kernel"},

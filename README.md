@@ -14,31 +14,44 @@ management CLI. The only local process it launches is `waypipe` (for
 
 ## Quick start
 
+The dom0 is provisioned externally (ostree recipe, bootc image, or a
+provisioning script). External provisioning must:
+
+1. Install `qlvm` and `qlvm-agent` to `/usr/local/bin/`.
+2. Run `qlvm-agent install-system-files` (writes the systemd service,
+   D-Bus policy, and polkit action files).
+3. Enable and start `qlvm-agent.service`.
+4. Set up the network stack: OVS bridges (`br-ex`, `br-int`), OVN
+   switches/routers, firewalld egress policy, systemd-networkd config,
+   and the `/var/lib/qvm` storage tree.
+5. Install the `qlvm-vif` hotplug script at `/etc/xen/scripts/vif-ovn`.
+6. Write the initial `/etc/qvm/qlvm.yaml`.
+
+See the ostree recipe (`../os/recipes/recipe.yml` in the sibling repo)
+or the `provision/` directory for a reference implementation.
+
 ```sh
 # 1. Build (dom0: containerized cgo build, no dev packages on the host;
-#    writes qlvm + qlvm-vif + bundled libyajl.so.2 to /usr/local/bin)
+#    writes qlvm + qlvm-vif + qlvm-agent + bundled libyajl.so.2 to /usr/local/bin)
 sudo make container-build
 
-# 2. First install: writes /etc/qvm/qlvm.yaml and drives the dom0
-#    (OVS bridges, OVN router/switches, firewall, networkd config,
-#    services, storage tree, vif-ovn script) toward the declared state
-sudo qlvm install
+# 2. External provisioning (one-time, see above)
+#    — install binaries, run qlvm-agent install-system-files,
+#    — set up OVS/OVN/firewalld/networkd/storage/vif-ovn,
+#    — write /etc/qvm/qlvm.yaml,
+#    — start qlvm-agent.service
 
-# 3. Edit the config (NIC, gateway, domains, VM defaults, egress policy)
-$EDITOR /etc/qvm/qlvm.yaml
-sudo qlvm install                   # reconciliation: edit + re-run is the change path
-
-# 4. Bake a template once: pull the image + ostree bake (~5 min).
+# 3. Bake a template once: pull the image + ostree bake (~5 min).
 #    A bake is deliberate and user-triggered; VMs never trigger one.
-sudo qlvm template create quay.io/fedora/fedora:44
+qlvm template create quay.io/fedora/fedora:44
 
-# 5. Create a VM by REFERENCE (dir name or unique prefix — no pull, no
+# 4. Create a VM by REFERENCE (dir name or unique prefix — no pull, no
 #    bake), and boot it
-sudo qlvm vm create work-1 --domain work --template fedora
-sudo qlvm vm start work-1
+qlvm vm create work-1 --domain work --template fedora
+qlvm vm start work-1
 qlvm vm run work-1 xterm            # GUI via waypipe (dom0 Wayland session required)
 
-# 6. Provision it (dotfiles from the layered provision dir)
+# 5. Provision it (dotfiles from the layered provision dir)
 qlvm vm provision work-1
 ```
 
@@ -48,11 +61,14 @@ a VM is a reference to a bake you already made; re-bake deliberately with
 state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 (Xen domain, OVN/OVS ports, state dir, ssh config block).
 
+Configuration changes are applied by editing `/etc/qvm/qlvm.yaml` and
+reloading the daemon: `sudo systemctl reload qlvm-agent` (sends SIGHUP,
+which triggers a config reload).
+
 ## Subcommands
 
 | Command | What it does |
 |---|---|
-| `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, systemd-networkd (and masks NetworkManager), systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
 | `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB` (minimum 64), `--vcpus N`, `--config PATH` |
 | `qlvm vm start <name>` | Boot a prepared VM (seeds the per-VM kernel files from the template dir if missing, cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
@@ -97,8 +113,9 @@ is no kernel-cmdline mechanism involved.
 
 ## Configuration
 
-Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). `install` writes it;
-editing it + re-running `install` is the change path (reconciliation).
+Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). External provisioning
+writes the initial file; editing it + reloading the daemon (`sudo systemctl
+reload qlvm-agent`) applies changes.
 
 ```yaml
 network:
@@ -187,7 +204,6 @@ qlvm/
 ├── internal/
 │   ├── cli/                    # cobra commands, one file per subcommand
 │   ├── config/                 # qlvm.yaml load/validate/save
-│   ├── setup/                  # install: idempotent orchestration of the planes
 │   ├── xenctl/                 # xenlight wrapper (libxl cgo; stub without it)
 │   ├── xenstore/               # xenstore text-protocol client (for vif-ovn)
 │   ├── ovn/                    # libovsdb OVN_Northbound models + reconciler
@@ -240,9 +256,8 @@ make test-integration  # real-plane tests; touch the live dom0 (see internal/ite
   builds take seconds.
 - TDD: every internal package has table-driven unit tests alongside the
   implementation; control planes are injected as interfaces.
-- Integration tests (`internal/itest`, build tag `integration`) run
-  `install` against the live planes twice to prove idempotency by
-  OVN/OVS row counts, and a full create/start/ssh/delete cycle guarded by
-  `QVM_ITEST=1` + `QVM_ITEST_IMAGE`.
+- Integration tests (`internal/itest`, build tag `integration`) run a full
+  create/start/ssh/delete cycle guarded by `QVM_ITEST=1` + `QVM_ITEST_IMAGE`
+  against the live planes.
 - Linting: `make lint` runs
   `golangci-lint@v2.14.0` pinned in the Makefile; config in `.golangci.yml`.

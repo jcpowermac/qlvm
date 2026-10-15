@@ -1223,7 +1223,7 @@ func sshAuthKeys() (string, error) {
 const provisionDefaultDir = "/etc/qvm/provision"
 
 // ProvisionVM syncs layered dotfiles into a running VM's home over sftp.
-// Dom0 provisioning (qlvm install) is external; this provisions the guest.
+// Dom0 provisioning is external; this provisions the guest.
 func (a *Agent) ProvisionVM(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()

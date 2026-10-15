@@ -6,6 +6,12 @@ package cli
 
 import "github.com/spf13/cobra"
 
+// defaultConfigPath is the default location of the qlvm config file.
+const defaultConfigPath = "/etc/qvm/qlvm.yaml"
+
+// installRoot is the per-VM/template state tree (spec §5.2).
+const installRoot = "/var/lib/qvm"
+
 var rootCmd *cobra.Command
 
 // NewRootCmd returns the shared qlvm root command.
@@ -24,7 +30,7 @@ var vmRoot *cobra.Command
 
 // vmCmd returns the shared `vm` parent: every VM-facing command (create,
 // start, stop, kill, delete, list, run, provision, sync-kernel) registers
-// under it from its own init(); apps and install stay on the root.
+// under it from its own init(); apps stays on the root.
 func vmCmd() *cobra.Command {
 	if vmRoot == nil {
 		vmRoot = &cobra.Command{
