@@ -70,35 +70,11 @@ func TestDBusConstants(t *testing.T) {
 }
 
 func TestMethodStubs(t *testing.T) {
-	// Only the Task 5-8 methods should still be stubs; the Task 4 read
-	// methods are implemented.
+	// Only the Task 6-8 methods should still be stubs; the Task 4 read
+	// methods and Task 5 lifecycle methods are implemented.
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
 
-	_, err := a.CreateVM(&CreateVMOptions{Name: "test"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.DeleteVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.StartVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.StopVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.KillVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.RestartVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.CreateTemplate("quay.io/fedora/fedora:42", false)
+	_, err := a.CreateTemplate("quay.io/fedora/fedora:42", false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not implemented")
 

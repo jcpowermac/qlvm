@@ -6,16 +6,22 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/coremap"
+	"github.com/jcpowermac/qlvm/internal/mounts"
+	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
@@ -548,36 +554,339 @@ func (a *Agent) GetCoremap() (*CoremapInfo, error) {
 	}, nil
 }
 
+// --- VM lifecycle helpers ---
+
+// stopPollInterval/stopMaxWait govern stopForced's post-shutdown poll loop.
+var (
+	stopPollInterval = 1500 * time.Millisecond
+	stopMaxWait      = 60 * time.Second
+)
+
+// validateVMName rejects names that would be unsafe for Xen domain names
+// or filesystem paths: empty, containing path separators or traversal
+// sequences, or containing characters outside the allowed set.
+func validateVMName(name string) error {
+	if name == "" {
+		return errors.New("VM name must not be empty")
+	}
+	if len(name) > 128 {
+		return errors.New("VM name must be at most 128 characters")
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return errors.New("VM name must not contain path separators")
+	}
+	if name == "." || name == ".." || strings.Contains(name, "/..") || strings.Contains(name, "../") {
+		return errors.New("VM name must not contain path traversal sequences")
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return fmt.Errorf("VM name must contain only alphanumeric characters, hyphens, underscores, or dots; got %q", name)
+		}
+	}
+	return nil
+}
+
+// vmDir returns the state directory for a VM under the qlvm root.
+func (a *Agent) vmDir(name string) string {
+	return filepath.Join(a.root, "vms", name)
+}
+
+// resolveTemplate maps a template reference — an exact template dir name,
+// or a unique prefix of one — to the dir under <root>/templates.
+func (a *Agent) resolveTemplate(name string) (string, error) {
+	tplRoot := filepath.Join(a.root, "templates")
+	entries, err := os.ReadDir(tplRoot)
+	var have []string
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("no templates under %s; bake one first", tplRoot)
+	}
+	if err != nil {
+		return "", err
+	}
+	var match []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		have = append(have, e.Name())
+		if name != "" && (e.Name() == name || strings.HasPrefix(e.Name(), name)) {
+			match = append(match, e.Name())
+		}
+	}
+	switch len(match) {
+	case 0:
+		return "", fmt.Errorf("no template dir matching %q; existing: %s", name, strings.Join(have, ", "))
+	case 1:
+		return filepath.Join(tplRoot, match[0]), nil
+	default:
+		return "", fmt.Errorf("template ref %q is ambiguous (matches: %s)", name, strings.Join(match, ", "))
+	}
+}
+
+// loadRefTemplate resolves a template reference to a complete template dir
+// and returns its META. Ostree templates require META + template.raw; agent
+// templates require META + vmlinuz + initramfs.
+func (a *Agent) loadRefTemplate(name string) (*template.Template, error) {
+	dir, err := a.resolveTemplate(name)
+	if err != nil {
+		return nil, err
+	}
+	tpl, err := template.LoadMeta(dir)
+	if err != nil {
+		return nil, fmt.Errorf("template %s has no loadable META: %w; bake a complete one first", filepath.Base(dir), err)
+	}
+	// Agent templates carry vmlinuz/initramfs, not template.raw.
+	if template.IsAgent(tpl) {
+		for _, f := range []string{"vmlinuz", "initramfs"} {
+			if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+				return nil, fmt.Errorf("template %s is incomplete (no %s); bake it first", filepath.Base(dir), f)
+			}
+		}
+		return tpl, nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, "template.raw")); err != nil {
+		return nil, fmt.Errorf("template %s is incomplete (no template.raw); bake it first", filepath.Base(dir))
+	}
+	return tpl, nil
+}
+
+// parseCoresFlag parses a cores string into a slice of core IDs.
+// Accepts comma-separated values and/or ranges (e.g. "6,7" or "6-8").
+func parseCoresFlag(s string) ([]int, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var cores []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "-") {
+			startStr, endStr, ok := strings.Cut(part, "-")
+			if !ok {
+				return nil, fmt.Errorf("invalid cores %q: bad range %q", s, part)
+			}
+			start, err := strconv.Atoi(strings.TrimSpace(startStr))
+			if err != nil {
+				return nil, fmt.Errorf("invalid cores %q: bad start %q", s, startStr)
+			}
+			end, err := strconv.Atoi(strings.TrimSpace(endStr))
+			if err != nil {
+				return nil, fmt.Errorf("invalid cores %q: bad end %q", s, endStr)
+			}
+			if start > end {
+				return nil, fmt.Errorf("invalid cores %q: range start %d > end %d", s, start, end)
+			}
+			for c := start; c <= end; c++ {
+				cores = append(cores, c)
+			}
+		} else {
+			c, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid cores %q: bad core ID %q", s, part)
+			}
+			cores = append(cores, c)
+		}
+	}
+	if len(cores) == 0 {
+		return nil, fmt.Errorf("invalid cores %q: no cores specified", s)
+	}
+	return cores, nil
+}
+
+// parseMounts parses a list of "host:guest" mount strings into vm.Mounts.
+func parseMounts(mounts []string) ([]vm.Mount, error) {
+	var ms []vm.Mount
+	for _, f := range mounts {
+		host, guest, ok := strings.Cut(f, ":")
+		if !ok || host == "" || guest == "" {
+			return nil, fmt.Errorf("--mount %q: want host:guest", f)
+		}
+		ms = append(ms, vm.Mount{Host: host, Guest: guest})
+	}
+	return ms, nil
+}
+
 // --- VM lifecycle methods ---
 
 // CreateVM prepares a new VM from a template. Returns the VM name.
 func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
-	return "", fmt.Errorf("CreateVM: not implemented (Task 5)")
+	if err := validateVMName(opts.Name); err != nil {
+		return "", fmt.Errorf("create %s: %w", opts.Name, err)
+	}
+	if opts.Template == "" {
+		return "", fmt.Errorf("create %s: template is required", opts.Name)
+	}
+
+	opID := "create-" + opts.Name
+	a.emitProgress(opID, "resolving template")
+	defer a.emitProgressDone(opID)
+
+	tpl, err := a.loadRefTemplate(opts.Template)
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", opts.Name, err)
+	}
+
+	// Auto-detect agent type from template.
+	typ := opts.Type
+	if template.IsAgent(tpl) {
+		if typ == "app" || typ == "disposable" {
+			return "", fmt.Errorf("create %s: --type %s is incompatible with agent template %q (agent templates require --type agent)", opts.Name, typ, opts.Template)
+		}
+		typ = "agent"
+	}
+
+	a.emitProgress(opID, "parsing options")
+	ms, err := parseMounts(opts.Mounts)
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", opts.Name, err)
+	}
+	cores, err := parseCoresFlag(opts.Cores)
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", opts.Name, err)
+	}
+
+	domain := opts.Domain
+	if domain == "" && len(a.cfg.Domains) > 0 {
+		domain = a.cfg.Domains[0].Name
+	}
+
+	memory := int(opts.MemoryMB)
+	vcpus := int(opts.VCPUs)
+
+	a.emitProgress(opID, "creating VM")
+	meta, err := vm.Create(context.Background(), vm.CreateDeps{
+		OVN:         a.ovn,
+		Tpl:         tpl,
+		FS:          ostree.NewFS(nil),
+		Reflink:     mounts.Reflink,
+		Root:        a.root,
+		FSType:      "xfs",
+		CoremapPath: a.coremapPath,
+		Dom0VCPUs:   a.cfg.Dom0.VCPUs,
+	}, a.cfg, vm.Spec{
+		Name:   opts.Name,
+		Domain: domain,
+		Type:   typ,
+		Image:  tpl.Image,
+		MemoryMB: memory,
+		VCPUs:  vcpus,
+		Mounts: ms,
+		Cores:  cores,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", opts.Name, err)
+	}
+
+	a.emitProgress(opID, "created")
+	return meta.Name, nil
 }
 
 // DeleteVM removes a VM (domain, OVN/OVS ports, state dir, ssh block).
 func (a *Agent) DeleteVM(name string) error {
-	return fmt.Errorf("DeleteVM: not implemented (Task 5)")
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("delete %s: %w", name, err)
+	}
+
+	ctx := context.Background()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("delete %s: home dir: %w", name, err)
+	}
+	if err := xenctl.Delete(ctx, a.xen, a.ovn, a.ovs, home, a.vmDir(name), name, a.coremapPath); err != nil {
+		return fmt.Errorf("delete %s: %w", name, err)
+	}
+	return nil
 }
 
 // StartVM boots a prepared VM.
 func (a *Agent) StartVM(name string) error {
-	return fmt.Errorf("StartVM: not implemented (Task 5)")
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+
+	dir := a.vmDir(name)
+	m, err := vm.LoadMeta(dir)
+	if err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+	tpl, err := template.LoadByRef(a.root, m.Image, m.Digest)
+	if err != nil {
+		return fmt.Errorf("start %s: template: %w", name, err)
+	}
+	if err := xenctl.Start(context.Background(), a.xen, a.ovs, m, dir, tpl); err != nil {
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+	return nil
 }
 
 // StopVM gracefully stops a running VM.
 func (a *Agent) StopVM(name string) error {
-	return fmt.Errorf("StopVM: not implemented (Task 5)")
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("stop %s: %w", name, err)
+	}
+	if err := a.stopForced(name); err != nil {
+		return fmt.Errorf("stop %s: %w", name, err)
+	}
+	return nil
 }
 
 // KillVM force-kills a running VM.
 func (a *Agent) KillVM(name string) error {
-	return fmt.Errorf("KillVM: not implemented (Task 5)")
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("kill %s: %w", name, err)
+	}
+	if err := a.xen.Destroy(name); err != nil {
+		return fmt.Errorf("kill %s: %w", name, err)
+	}
+	return nil
 }
 
 // RestartVM restarts a VM (graceful stop, force-kill if it lingers, then start).
 func (a *Agent) RestartVM(name string) error {
-	return fmt.Errorf("RestartVM: not implemented (Task 5)")
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("restart %s: %w", name, err)
+	}
+	if err := a.stopForced(name); err != nil {
+		return fmt.Errorf("restart %s: stop: %w", name, err)
+	}
+	if err := a.StartVM(name); err != nil {
+		return fmt.Errorf("restart %s: %w", name, err)
+	}
+	return nil
+}
+
+// stopForced stops a domain gracefully and force-kills if it refuses ACPI
+// or lingers after a successful shutdown (zombie domains never answer
+// ACPI, and Shutdown only queues the event — it never waits).
+func (a *Agent) stopForced(name string) error {
+	if err := a.xen.Shutdown(name); err != nil {
+		if derr := a.xen.Destroy(name); derr != nil {
+			return fmt.Errorf("stop %s: %w; destroy fallback: %w", name, err, derr)
+		}
+		return nil
+	}
+	// Shutdown is fire-and-forget: the ACPI event is queued and libxl
+	// returns immediately, so success proves nothing. Poll until the
+	// domain is actually gone; a domain that lingers (the in-guest-reboot
+	// zombie, ---sr-, never answers ACPI) gets force-killed — Destroy is
+	// the verified recovery.
+	deadline := time.Now().Add(stopMaxWait)
+	for {
+		running, err := a.xen.Running(name)
+		if err != nil {
+			return err
+		}
+		if !running {
+			return nil
+		}
+		if !time.Now().Add(stopPollInterval).Before(deadline) {
+			break
+		}
+		time.Sleep(stopPollInterval)
+	}
+	return a.xen.Destroy(name)
 }
 
 // --- Template methods ---
