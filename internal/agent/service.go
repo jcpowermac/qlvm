@@ -63,5 +63,5 @@ func writeEmbedded(path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec,G301
 		return err
 	}
-	return os.WriteFile(path, content, 0o644)
+	return os.WriteFile(path, content, 0o644) //nolint:gosec,G306
 }

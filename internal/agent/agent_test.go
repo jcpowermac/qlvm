@@ -195,7 +195,7 @@ func (f *fakePodman) RunImageBuilder(_ context.Context, workdir, _ string, _ io.
 		if err := os.MkdirAll(rawDir, 0o755); err != nil { //nolint:gosec,G301
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(rawDir, "fedora.raw"), []byte("fake"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(rawDir, "fedora.raw"), []byte("fake"), 0o644); err != nil { //nolint:gosec,G306
 			return err
 		}
 	}
@@ -264,7 +264,7 @@ func writeVMMeta(t *testing.T, root, vmName, image, digest string) {
 	}
 	// Write a minimal meta.yaml that vm.LoadMeta can parse.
 	meta := fmt.Sprintf("name: %s\nimage: %s\ndigest: %s\ntype: app\ndomain: default\nmemory_mb: 4096\nvcpus: 2\n", vmName, image, digest)
-	if err := os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(vmDir, "meta.yaml"), []byte(meta), 0o644); err != nil { //nolint:gosec,G306
 		t.Fatal(err)
 	}
 }
@@ -438,7 +438,7 @@ func TestDeleteTemplateInUse(t *testing.T) {
 
 	// Create a template dir using the canonical DirOfRef path.
 	fullDir := template.DirOfRef(root, image, template.NormalizeDigest(digest))
-	if err := os.MkdirAll(fullDir, 0o755); err != nil {
+	if err := os.MkdirAll(fullDir, 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 	writeVMMeta(t, root, "testvm", image, digest)
@@ -458,7 +458,7 @@ func TestDeleteTemplateSuccess(t *testing.T) {
 
 	// Create a template dir.
 	tplDir := "fedora-42-sha256-abc"
-	if err := os.MkdirAll(filepath.Join(root, "templates", tplDir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "templates", tplDir), 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 	// Put a marker file to verify removal.
@@ -500,11 +500,11 @@ type fakeKernelHost struct {
 	fetchErr  error
 }
 
-func (f *fakeKernelHost) Run(ctx context.Context, cmd string) (string, error) {
+func (f *fakeKernelHost) Run(_ context.Context, cmd string) (string, error) {
 	return f.runOutput, f.runErr
 }
 
-func (f *fakeKernelHost) FetchFile(ctx context.Context, path string) (io.ReadCloser, error) {
+func (f *fakeKernelHost) FetchFile(_ context.Context, path string) (io.ReadCloser, error) {
 	if f.fetchErr != nil {
 		return nil, f.fetchErr
 	}
@@ -521,7 +521,7 @@ func setupVMTest(t *testing.T, name string) (root, home string) {
 	root = t.TempDir()
 	home = t.TempDir()
 	vmDir := filepath.Join(root, "vms", name)
-	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	require.NoError(t, os.MkdirAll(vmDir, 0o755)) //nolint:gosec,G301
 	m := &vm.Meta{
 		Name:     name,
 		Type:     "app",
@@ -628,7 +628,7 @@ func TestSyncKernelSSHConnectError(t *testing.T) {
 	root, home := setupVMTest(t, "testvm")
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 	a.homeDir = home
-	a.sshConnectFunc = func(ctx context.Context, home, host, user string) (*ssh.Client, error) {
+	a.sshConnectFunc = func(_ context.Context, home, host, user string) (*ssh.Client, error) {
 		return nil, errors.New("connection refused")
 	}
 
