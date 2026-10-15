@@ -33,7 +33,7 @@ type DaemonClient interface {
 
 // client is the shared D-Bus client for commands that delegate to the
 // daemon. Lazy-initialized on first use; commands that stay CLI-side
-// (vm run, vm console, apps, install) never call getClient.
+// (vm run, vm console, apps) never call getClient.
 var client DaemonClient
 
 // clientFactory creates a new DaemonClient. Replaced in tests with a

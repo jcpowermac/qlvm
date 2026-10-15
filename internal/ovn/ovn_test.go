@@ -348,7 +348,7 @@ func TestApplyWritesRouterChassisOption(t *testing.T) {
 // option existed (or before OVN 26.03) must be updated in place. The
 // in-memory ovsdb server does not apply map-insert mutations (it reports
 // count=1 and changes nothing), so this asserts on the generated op; the
-// wire behavior itself is verified by a live install re-run on dom0.
+// wire behavior itself is verified by a live reconciliation run on dom0.
 func TestAttachExistingRefsWritesChassisOption(t *testing.T) {
 	nb, closeNB := newTestEnv(t)
 	defer closeNB()

@@ -1,8 +1,8 @@
 // Package netd manages dom0 IP configuration through systemd-networkd's
-// file-based config. NetworkManager is masked during install: its OVS
-// plugin fights ovs-vswitchd (it blocks system ports it did not create
-// and marks externally created bridges unmanaged), so OVS owns the
-// topology and networkd owns the addresses.
+// file-based config. NetworkManager is masked by external provisioning:
+// its OVS plugin fights ovs-vswitchd (it blocks system ports it did not
+// create and marks externally created bridges unmanaged), so OVS owns
+// the topology and networkd owns the addresses.
 //
 // Two .network files are written: one DHCPs the physical NIC (the
 // pre-migration and failback state) and one DHCPs the OVS bridge (the

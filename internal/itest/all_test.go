@@ -140,8 +140,8 @@ func countTables(ctx context.Context, endpoint, db string, entries ...tableModel
 	return counts, nil
 }
 
-// planeCounts returns row counts for the tables install reconciles, keyed
-// "<database>.<table>".
+// planeCounts returns row counts for the tables the network reconciler
+// manages, keyed "<database>.<table>".
 func planeCounts(ctx context.Context, t *testing.T) map[string]int {
 	t.Helper()
 	plan := []struct {
@@ -193,32 +193,6 @@ func lspNames(ctx context.Context, t *testing.T) []string {
 		names = append(names, r.Name)
 	}
 	return names
-}
-
-// TestInstallIdempotent runs the real install against the live planes
-// twice and asserts the second pass changes no OVN/OVS row counts.
-func TestInstallIdempotent(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-
-	root := cli.NewRootCmd()
-	root.SetArgs([]string{"install"})
-	if err := root.ExecuteContext(ctx); err != nil {
-		t.Fatalf("first install pass: %v", err)
-	}
-	before := planeCounts(ctx, t)
-
-	root.SetArgs([]string{"install"})
-	if err := root.ExecuteContext(ctx); err != nil {
-		t.Fatalf("second install pass: %v", err)
-	}
-	after := planeCounts(ctx, t)
-
-	for table, b := range before {
-		if a := after[table]; a != b {
-			t.Errorf("second install pass is not a no-op: %s rows %d -> %d", table, b, a)
-		}
-	}
 }
 
 // TestCreateStartSSHDelete guards a full live lifecycle cycle behind
