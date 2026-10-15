@@ -16,7 +16,6 @@ import (
 	"github.com/jcpowermac/qlvm/internal/projection"
 	"github.com/jcpowermac/qlvm/internal/sshx"
 	"github.com/jcpowermac/qlvm/internal/vm"
-	"github.com/jcpowermac/qlvm/internal/xenctl"
 )
 
 // appsCacheDir is the dom0 desktop cache: one subdir per VM with the
@@ -70,17 +69,24 @@ func appsCmd() *cobra.Command {
 // token-authenticated).
 func launchApp(cmd *cobra.Command, c projection.Connect) error {
 	ctx := cmd.Context()
-	x, err := xenctl.New()
+	cl, err := getClient()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = x.Close() }()
 	return apps.Launch(os.Getenv("ROFI_INFO"), appsCacheDir,
 		func(name string) bool {
-			running, _ := x.Running(name)
-			return running
+			vms, err := cl.ListVMs()
+			if err != nil {
+				return false
+			}
+			for _, v := range vms {
+				if v.Name == name {
+					return v.State == "running"
+				}
+			}
+			return false
 		},
-		func(name string) error { return startVM(ctx, name) },
+		func(name string) error { return cl.StartVM(name) },
 		func(name string) error {
 			m, err := vm.LoadMeta(vmDirOf(name))
 			if err != nil {
@@ -144,7 +150,8 @@ func appsSyncCmd() *cobra.Command {
 }
 
 // appsSyncTargets resolves the sync targets: the explicit vm argument, or
-// (no argument) all running Xen domains that have local qlvm meta, sorted.
+// (no argument) all running qlvm VMs, sorted. The daemon's ListVMs only
+// returns qlvm-managed VMs, so no local meta check is needed.
 func appsSyncTargets(args []string) ([]string, error) {
 	if len(args) > 0 {
 		if _, err := vm.LoadMeta(vmDirOf(args[0])); err != nil {
@@ -152,21 +159,19 @@ func appsSyncTargets(args []string) ([]string, error) {
 		}
 		return []string{args[0]}, nil
 	}
-	x, err := xenctl.New()
+	cl, err := getClient()
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = x.Close() }()
-	infos, err := x.List()
+	vms, err := cl.ListVMs()
 	if err != nil {
 		return nil, err
 	}
 	var targets []string
-	for _, d := range infos {
-		if _, err := vm.LoadMeta(vmDirOf(d.Name)); err != nil {
-			continue // running domain without qlvm meta: not a qlvm VM
+	for _, v := range vms {
+		if v.State == "running" {
+			targets = append(targets, v.Name)
 		}
-		targets = append(targets, d.Name)
 	}
 	if len(targets) == 0 {
 		return nil, errors.New("no running VMs to sync: start one or pass a VM name")
