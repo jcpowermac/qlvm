@@ -576,9 +576,13 @@ func TestProvisionVMSuccess(t *testing.T) {
 
 	// Verify progress was tracked.
 	a.mu.Lock()
-	tracker, ok := a.progress["provisiontestvm"]
+	// Find the provision operation tracker (ID is now a UUID).
+	var tracker *ProgressTracker
+	for _, tr := range a.progress {
+		tracker = tr
+	}
 	a.mu.Unlock()
-	require.True(t, ok, "progress tracker should exist")
+	require.NotNil(t, tracker, "progress tracker should exist")
 	assert.True(t, tracker.Done, "progress should be marked done")
 }
 
@@ -667,9 +671,13 @@ func TestSyncKernelSuccess(t *testing.T) {
 
 	// Verify progress was tracked.
 	a.mu.Lock()
-	tracker, ok := a.progress["synckerneltestvm"]
+	// Find the sync-kernel operation tracker (ID is now a UUID).
+	var tracker *ProgressTracker
+	for _, tr := range a.progress {
+		tracker = tr
+	}
 	a.mu.Unlock()
-	require.True(t, ok, "progress tracker should exist")
+	require.NotNil(t, tracker, "progress tracker should exist")
 	assert.True(t, tracker.Done, "progress should be marked done")
 }
 
@@ -732,4 +740,166 @@ func TestSyncKernelFilesNoPartialWrite(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "no files should be written on partial fetch failure")
+}
+
+// --- Progress signal ordering tests ---
+
+// progressCapture records progress emissions in order.
+type progressCapture struct {
+	events []progressEvent
+}
+
+type progressEvent struct {
+	id      string
+	message string
+	done    bool
+}
+
+func (p *progressCapture) hook(id, message string, done bool) {
+	p.events = append(p.events, progressEvent{id: id, message: message, done: done})
+}
+
+// assertProgressOrder verifies that the captured events match the expected
+// sequence of (message, done) pairs. The id is verified to be consistent
+// across all events.
+func assertProgressOrder(t *testing.T, p *progressCapture, expected []string) {
+	t.Helper()
+	require.NotEmpty(t, p.events, "no progress events captured")
+
+	// All events should have the same ID.
+	id := p.events[0].id
+	require.NotEmpty(t, id, "operation ID should not be empty")
+	for i, e := range p.events {
+		assert.Equal(t, id, e.id, "event %d should have the same ID", i)
+	}
+
+	// Verify the sequence of messages (non-done events) followed by a done event.
+	var messages []string
+	for _, e := range p.events {
+		if e.done {
+			continue
+		}
+		messages = append(messages, e.message)
+	}
+	assert.Equal(t, expected, messages, "progress messages should match expected order")
+
+	// The last event should be a ProgressDone.
+	last := p.events[len(p.events)-1]
+	assert.True(t, last.done, "last event should be ProgressDone")
+	assert.Equal(t, id, last.id, "ProgressDone should have the same ID")
+}
+
+func TestProvisionVMProgressOrder(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	provDir := setupProvisionTest(t, "testvm")
+	capture := &progressCapture{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.provisionRunner = &fakeProvisionRunner{}
+	a.provisionDir = provDir
+	a.homeDir = home
+	a.progressHook = capture.hook
+
+	err := a.ProvisionVM("testvm")
+	require.NoError(t, err)
+
+	assertProgressOrder(t, capture, []string{
+		"starting",
+		"Syncing dotfiles into testvm",
+	})
+}
+
+func TestSyncKernelProgressOrder(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	capture := &progressCapture{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runOutput: "kernel-core-6.11.9-300.fc44.x86_64",
+		files: map[string][]byte{
+			"/boot/vmlinuz-6.11.9-300.fc44":     []byte("vmlinuz data"),
+			"/boot/initramfs-6.11.9-300.fc44.img": []byte("initramfs data"),
+		},
+	}
+	a.progressHook = capture.hook
+
+	err := a.SyncKernel("testvm")
+	require.NoError(t, err)
+
+	// The last message includes the vmDir path, so we verify the first three
+	// messages and check that the fourth starts with "Synced kernel".
+	require.GreaterOrEqual(t, len(capture.events)-1, 4, "should have at least 4 progress events (excluding done)")
+	id := capture.events[0].id
+	require.NotEmpty(t, id, "operation ID should not be empty")
+	assert.Equal(t, "starting", capture.events[0].message)
+	assert.Equal(t, "Querying kernel version on testvm", capture.events[1].message)
+	assert.Equal(t, "Fetching kernel files from testvm", capture.events[2].message)
+	assert.Contains(t, capture.events[3].message, "Synced kernel 6.11.9-300.fc44")
+	last := capture.events[len(capture.events)-1]
+	assert.True(t, last.done, "last event should be ProgressDone")
+	assert.Equal(t, id, last.id, "ProgressDone should have the same ID")
+}
+
+func TestProvisionVMProgressOrderOnFailure(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	provDir := setupProvisionTest(t, "testvm")
+	capture := &progressCapture{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.provisionRunner = &fakeProvisionRunner{err: errors.New("sftp failed")}
+	a.provisionDir = provDir
+	a.homeDir = home
+	a.progressHook = capture.hook
+
+	err := a.ProvisionVM("testvm")
+	require.Error(t, err)
+
+	// On failure, progress should still be emitted in order and ProgressDone
+	// should be the last event.
+	assertProgressOrder(t, capture, []string{
+		"starting",
+		"Syncing dotfiles into testvm",
+	})
+}
+
+func TestSyncKernelProgressOrderOnFailure(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	capture := &progressCapture{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runErr: errors.New("ssh session failed"),
+	}
+	a.progressHook = capture.hook
+
+	err := a.SyncKernel("testvm")
+	require.Error(t, err)
+
+	// On failure, progress should still be emitted in order and ProgressDone
+	// should be the last event.
+	require.NotEmpty(t, capture.events, "should have captured progress events")
+	id := capture.events[0].id
+	require.NotEmpty(t, id, "operation ID should not be empty")
+	assert.Equal(t, "starting", capture.events[0].message)
+	last := capture.events[len(capture.events)-1]
+	assert.True(t, last.done, "last event should be ProgressDone")
+	assert.Equal(t, id, last.id, "ProgressDone should have the same ID")
+}
+
+func TestUniqueProgressIDs(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	provDir := setupProvisionTest(t, "testvm")
+	capture := &progressCapture{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.provisionRunner = &fakeProvisionRunner{}
+	a.provisionDir = provDir
+	a.homeDir = home
+	a.progressHook = capture.hook
+
+	// Run two provision operations; each should get a unique progress ID.
+	require.NoError(t, a.ProvisionVM("testvm"))
+	firstID := capture.events[0].id
+	require.NotEmpty(t, firstID, "first operation ID should not be empty")
+
+	capture.events = nil
+	require.NoError(t, a.ProvisionVM("testvm"))
+	secondID := capture.events[0].id
+	require.NotEmpty(t, secondID, "second operation ID should not be empty")
+	assert.NotEqual(t, firstID, secondID, "each operation should have a unique ID")
 }

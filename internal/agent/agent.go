@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 
@@ -206,6 +207,11 @@ type Agent struct {
 
 	// conn is the D-Bus connection (set by Run).
 	conn *dbus.Conn
+
+	// progressHook is a test hook called on every progress emission.
+	// It is called with (id, message, done) where done indicates whether
+	// this is a ProgressDone emission. Nil in production.
+	progressHook func(id, message string, done bool)
 }
 
 // ProgressTracker tracks a long-running operation for signal emission.
@@ -213,6 +219,13 @@ type ProgressTracker struct {
 	ID      string
 	Message string
 	Done    bool
+}
+
+// newOpID generates a unique operation ID for progress tracking.
+// The prefix identifies the operation type; the UUID ensures uniqueness
+// across concurrent operations of the same type.
+func newOpID(prefix string) string {
+	return prefix + "-" + uuid.NewString()
 }
 
 // New creates an Agent with the given control planes. root is the qlvm
@@ -766,9 +779,9 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 		return "", fmt.Errorf("create %s: template is required", opts.Name)
 	}
 
-	opID := "create-" + opts.Name
-	a.emitProgress(opID, "resolving template")
+	opID := newOpID("create")
 	defer a.emitProgressDone(opID)
+	a.emitProgress(opID, "starting")
 
 	tpl, err := a.loadRefTemplate(opts.Template)
 	if err != nil {
@@ -955,9 +968,9 @@ func (a *Agent) CreateTemplate(image string, force bool) (string, error) {
 	}
 
 	ctx := context.Background()
-	opID := "template-create-" + template.SlugFromRef(image)
-	a.emitProgress(opID, "pulling image")
+	opID := newOpID("template-create")
 	defer a.emitProgressDone(opID)
+	a.emitProgress(opID, "starting")
 
 	pod, err := a.podmanFactory(ctx, podmanSocket)
 	if err != nil {
@@ -1232,8 +1245,10 @@ func (a *Agent) ProvisionVM(name string) error {
 		}
 	}
 
-	a.emitProgress("provision"+name, "Syncing dotfiles into "+name)
-	defer a.emitProgressDone("provision" + name)
+	opID := newOpID("provision")
+	defer a.emitProgressDone(opID)
+	a.emitProgress(opID, "starting")
+	a.emitProgress(opID, "Syncing dotfiles into "+name)
 
 	var r provisioner.Runner
 	if a.provisionRunner != nil {
@@ -1293,9 +1308,9 @@ func (a *Agent) SyncKernel(name string) error {
 		}
 	}
 
-	id := "synckernel" + name
-	a.emitProgress(id, "Querying kernel version on "+name)
-	defer a.emitProgressDone(id)
+	opID := newOpID("sync-kernel")
+	defer a.emitProgressDone(opID)
+	a.emitProgress(opID, "starting")
 
 	var host kernelSyncer
 	if a.kernelHost != nil {
@@ -1317,13 +1332,14 @@ func (a *Agent) SyncKernel(name string) error {
 		host = sshKernelSyncer{c: c}
 	}
 
-	a.emitProgress(id, "Fetching kernel files from "+name)
+	a.emitProgress(opID, "Querying kernel version on "+name)
+	a.emitProgress(opID, "Fetching kernel files from "+name)
 	ver, err := syncKernelFiles(ctx, host, vmDir)
 	if err != nil {
 		return fmt.Errorf("sync-kernel %s: %w", name, err)
 	}
 
-	a.emitProgress(id, "Synced kernel "+ver+" to "+vmDir)
+	a.emitProgress(opID, "Synced kernel "+ver+" to "+vmDir)
 	return nil
 }
 
@@ -1384,6 +1400,10 @@ func (a *Agent) emitProgress(id, message string) {
 	}
 	a.mu.Unlock()
 
+	if a.progressHook != nil {
+		a.progressHook(id, message, false)
+	}
+
 	if a.conn != nil {
 		_ = a.conn.Emit(dbus.ObjectPath(ObjectPath), Iface+".Progress", id, message)
 	}
@@ -1397,6 +1417,10 @@ func (a *Agent) emitProgressDone(id string) {
 		t.Done = true
 	}
 	a.mu.Unlock()
+
+	if a.progressHook != nil {
+		a.progressHook(id, "", true)
+	}
 
 	if a.conn != nil {
 		_ = a.conn.Emit(dbus.ObjectPath(ObjectPath), Iface+".ProgressDone", id)
