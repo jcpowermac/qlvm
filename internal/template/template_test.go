@@ -136,7 +136,7 @@ func TestEnsureAgentTemplatePersistsMeta(t *testing.T) {
 				"io.qlvm.initramfs": "/usr/lib/modules/7.2.8-xen1/initramfs.img",
 			}, nil
 		},
-		createFunc: func(_ context.Context, _ string, cmd []string) (string, error) {
+		createFunc: func(_ context.Context, _ string, _ []string) (string, error) {
 			return "container123", nil
 		},
 		copyFunc: func(_ context.Context, _ string, path string, writer io.Writer) error {

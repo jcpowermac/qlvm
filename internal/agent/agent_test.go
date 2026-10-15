@@ -259,7 +259,7 @@ func setupTemplateTest(t *testing.T) (root string) {
 func writeVMMeta(t *testing.T, root, vmName, image, digest string) {
 	t.Helper()
 	vmDir := filepath.Join(root, "vms", vmName)
-	if err := os.MkdirAll(vmDir, 0o755); err != nil {
+	if err := os.MkdirAll(vmDir, 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 	// Write a minimal meta.yaml that vm.LoadMeta can parse.
@@ -314,7 +314,7 @@ func TestCreateTemplateExistsNotForce(t *testing.T) {
 
 	// Create an existing template dir using the canonical DirOfRef path.
 	existingDir := template.DirOfRef(root, image, template.NormalizeDigest(digest))
-	if err := os.MkdirAll(existingDir, 0o755); err != nil {
+	if err := os.MkdirAll(existingDir, 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 
@@ -337,7 +337,7 @@ func TestCreateTemplateExistsForceVMReferences(t *testing.T) {
 
 	// Create an existing template dir using the canonical DirOfRef path.
 	tplDir := template.DirOfRef(root, image, template.NormalizeDigest(digest))
-	if err := os.MkdirAll(tplDir, 0o755); err != nil {
+	if err := os.MkdirAll(tplDir, 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 	writeVMMeta(t, root, "testvm", image, digest)
@@ -657,7 +657,7 @@ func TestSyncKernelSuccess(t *testing.T) {
 	vmDir := filepath.Join(root, "vms", "testvm")
 	// Verify versioned files were written.
 	for _, name := range []string{"vmlinuz-6.11.9-300.fc44", "initramfs-6.11.9-300.fc44.img"} {
-		data, err := os.ReadFile(filepath.Join(vmDir, name))
+		data, err := os.ReadFile(filepath.Join(vmDir, name)) //nolint:gosec,G304
 		require.NoError(t, err, "file %s should exist", name)
 		assert.NotEmpty(t, data)
 	}

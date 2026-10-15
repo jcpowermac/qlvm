@@ -75,12 +75,12 @@ func TestInstallSystemFilesWritesFiles(t *testing.T) {
 	assert.Equal(t, agent.ServiceFile(), data)
 
 	// Verify D-Bus policy
-	data, err = os.ReadFile(dbusPath)
+	data, err = os.ReadFile(dbusPath) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, agent.DBusPolicy(), data)
 
 	// Verify polkit action
-	data, err = os.ReadFile(polkitPath)
+	data, err = os.ReadFile(polkitPath) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, agent.PolkitAction(), data)
 }
@@ -105,7 +105,7 @@ func TestInstallSystemFilesRunsSystemctl(t *testing.T) {
 func TestInstallSystemFilesServiceWriteFailure(t *testing.T) {
 	// Use a path that cannot be created (file exists where dir is needed).
 	file := filepath.Join(t.TempDir(), "blocked")
-	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644)) //nolint:gosec,G306
 	servicePath := filepath.Join(file, "subdir", "qlvm-agent.service")
 	dbusPath := filepath.Join(t.TempDir(), "io.qlvm.agent.conf")
 	polkitPath := filepath.Join(t.TempDir(), "io.qlvm.agent.policy")
@@ -122,7 +122,7 @@ func TestInstallSystemFilesDBusWriteFailure(t *testing.T) {
 	dir := t.TempDir()
 	servicePath := filepath.Join(dir, "qlvm-agent.service")
 	file := filepath.Join(dir, "blocked")
-	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644)) //nolint:gosec,G306
 	dbusPath := filepath.Join(file, "subdir", "io.qlvm.agent.conf")
 	polkitPath := filepath.Join(dir, "io.qlvm.agent.policy")
 
@@ -139,7 +139,7 @@ func TestInstallSystemFilesPolkitWriteFailure(t *testing.T) {
 	servicePath := filepath.Join(dir, "qlvm-agent.service")
 	dbusPath := filepath.Join(dir, "io.qlvm.agent.conf")
 	file := filepath.Join(dir, "blocked")
-	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644)) //nolint:gosec,G306
 	polkitPath := filepath.Join(file, "subdir", "io.qlvm.agent.policy")
 
 	runner := newMockRunner()

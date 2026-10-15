@@ -7,7 +7,7 @@ import (
 
 func TestDetectTemplateType_Agent(t *testing.T) {
 	pc := &fakePodman{
-		inspectFunc: func(ctx context.Context, ref string) (map[string]string, error) {
+		inspectFunc: func(_ context.Context, _ string) (map[string]string, error) {
 			return map[string]string{"io.qlvm.type": "pvh-initramfs"}, nil
 		},
 	}
@@ -25,7 +25,7 @@ func TestDetectTemplateType_Agent(t *testing.T) {
 
 func TestDetectTemplateType_Ostree(t *testing.T) {
 	pc := &fakePodman{
-		inspectFunc: func(ctx context.Context, ref string) (map[string]string, error) {
+		inspectFunc: func(_ context.Context, _ string) (map[string]string, error) {
 			return map[string]string{}, nil
 		},
 	}
