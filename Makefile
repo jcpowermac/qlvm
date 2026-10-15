@@ -26,6 +26,7 @@ build:
 	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm ./cmd/qlvm
 	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm-vif ./cmd/qlvm-vif
 	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm-gui ./cmd/qlvm-gui
+	go build -tags '$(GO_TAGS)' -o $(BIN)/qlvm-agent ./cmd/qlvm-agent
 
 test:
 	go test -tags '$(GO_TAGS)' ./...
@@ -80,7 +81,7 @@ container-build: container-builder
 		fi
 	podman cp qlvm-bld:/out/. $(OUT)/
 	podman rm -f qlvm-bld
-	@chcon -t bin_t $(OUT)/qlvm $(OUT)/qlvm-vif $(OUT)/qlvm-gui 2>/dev/null || true
+	@chcon -t bin_t $(OUT)/qlvm $(OUT)/qlvm-vif $(OUT)/qlvm-gui $(OUT)/qlvm-agent 2>/dev/null || true
 
 lint:
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --build-tags '$(GO_TAGS)'
