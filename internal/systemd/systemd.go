@@ -57,8 +57,8 @@ func NewSession() (*Manager, error) {
 
 // NewSystem wires Manager to the live systemd system bus — the plane for
 // system units such as openvswitch.service, ovn-northd.service and
-// ovn-controller.service (install drives these). The user manager from
-// NewSession cannot see system units.
+// ovn-controller.service (external provisioning drives these). The user
+// manager from NewSession cannot see system units.
 func NewSystem() (*Manager, error) {
 	bus, err := dbus.SystemBus()
 	if err != nil {

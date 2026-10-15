@@ -369,7 +369,7 @@ and `io.qlvm.Agent.ProgressDone(id)` signals. The client subscribes via
 **File:** `internal/agent/agent.go` (implement the read methods)
 
 Implementation details:
-- `ListVMs`: read `/var/lib/qvm/vms/*/meta.toml`, merge with Xen domain
+- `ListVMs`: read `/var/lib/qvm/vms/*/meta.yaml`, merge with Xen domain
   states from `ListDomains`.
 - `ListTemplates`: read `/var/lib/qvm/templates/*/META`, count referencing
   VMs.

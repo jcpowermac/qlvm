@@ -5,25 +5,28 @@
 A native desktop application providing full visual parity with the `qlvm` CLI:
 every VM and template operation available through a graphical interface, with
 a layout inspired by Qube Manager (VM list + context-sensitive configuration
-panel). The UI runs as root (matching Qube Manager's privilege model) and
-directly calls qlvm's existing Go internal packages — no D-Bus, no subprocess
-shelling, no external language runtime.
+panel). The UI runs as the user and communicates with a root daemon (`qlvm-agent`)
+over D-Bus for privileged operations — no direct internal package imports for
+privileged work, no subprocess shelling, no external language runtime.
 
 ## 2. Goals
 
 - **Full CLI parity:** every `qlvm vm` and `qlvm template` operation accessible
-  from the UI, including `install`, `cores`, and `apps sync`.
+  from the UI, including `cores` and `apps sync`. Dom0 provisioning (`install`)
+  is external and not part of the UI.
 - **Visual layout:** left pane VM/template list, right pane context-sensitive
   configuration, action buttons, optional log pane.
 - **Native on Sway/Wayland:** well-behaved Wayland client, no GNOME dependencies.
 - **Ostree-compatible:** zero new system dependencies; builds in the existing
-  `make container-build` pipeline; installs as a single binary.
-- **Single binary:** one Go executable, no sidecar processes, no Python.
+  `make container-build` pipeline; installs as two Go binaries (GUI and daemon).
+- **Two binaries:** `qlvm-gui` (user, D-Bus client) and `qlvm-agent` (root,
+  D-Bus server); no sidecar processes, no Python.
 
 ## 3. Non-goals
 
 - No web interface.
-- No separate privileged daemon — the UI runs as root directly.
+- No dom0 provisioning — `qlvm install` is removed; provisioning is external
+  (ostree recipe or dedicated script).
 - No replacement for the CLI — the CLI remains the primary interface; the UI
   is an alternative.
 - No in-guest desktop mirroring beyond what `vm run` (waypipe) already does.
@@ -42,42 +45,52 @@ shelling, no external language runtime.
 - **Language:** Go (same codebase, same modules)
 - **GUI toolkit:** Fyne (pure Go, bundles its own rendering, Wayland support)
 - **Build:** existing `make container-build` pipeline (cgo + containerized)
-- **Installation:** single binary to `/usr/local/bin/qlvm-gui`
-- **Privilege:** runs as root (launched via `sudo qlvm-gui` or from root context)
+- **Installation:** GUI binary to `/usr/local/bin/qlvm-gui`, daemon binary to
+  `/usr/local/bin/qlvm-agent`
+- **Privilege:** GUI and CLI run as the user; privileged operations go through
+  the root daemon via D-Bus
+- **D-Bus daemon:** `qlvm-agent`, runs as root under systemd. Both CLI and GUI
+  are D-Bus clients.
 
 ## 6. Architecture
 
 ### 6.1 Process Model
 
-Single-process Fyne application. The UI imports qlvm's existing internal
-packages directly:
+Two processes:
 
-- `internal/vm` — VM metadata, create
-- `internal/template` — template listing, create, delete
-- `internal/xenctl` — Xen domain operations (start, stop, kill, list)
-- `internal/ovn` — OVN network operations
-- `internal/ovs` — OVS operations
-- `internal/config` — config loading and validation
-- `internal/coremap` — CPU core topology
-- `internal/setup` — dom0 install orchestration
-- `internal/provisioner` — dotfiles provisioning
-- `internal/projection` — waypipe app launching
-- `internal/apps` — desktop cache
+- **`qlvm-agent`** — root daemon, D-Bus server. Exposes `io.qlvm.Agent` on the
+  system bus. Imports qlvm's internal packages for privileged operations:
+  - `internal/vm` — VM metadata, create
+  - `internal/template` — template listing, create, delete
+  - `internal/xenctl` — Xen domain operations (start, stop, kill, list)
+  - `internal/ovn` — OVN network operations
+  - `internal/ovs` — OVS operations
+  - `internal/config` — config loading and validation
+  - `internal/coremap` — CPU core topology
+  - `internal/provisioner` — dotfiles provisioning
+  - `internal/projection` — waypipe server-side support
+  - `internal/apps` — desktop cache
+- **`qlvm-gui` / `qlvm` CLI** — user processes, D-Bus clients. Neither imports
+  internal packages directly for privileged operations; both use
+  `internal/agent.Client` to call the daemon.
 
-No new backend service, no D-Bus, no subprocess calls to `qlvm` CLI.
+The daemon is started by external provisioning (see §6.7). No subprocess
+calls to the `qlvm` CLI.
 
 ### 6.2 Privilege Model
 
-The UI runs as root (EUID 0), matching Qube Manager's model:
+CLI and GUI run as the user. The daemon runs as root via systemd (started by
+external provisioning).
 
-- Xen, OVN, OVS, firewall operations require root — satisfied.
-- `vm run` (waypipe) requires the user's Wayland session. The UI reads the
-  invoking user's `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` from the environment
-  (passed through at launch) and spawns waypipe with those variables.
-  Alternatively, the user launches `qlvm-gui` from their Sway session and the
-  env vars are inherited (the app drops privileges only for the waypipe spawn).
-- Config file reads (`/etc/qvm/qlvm.yaml`, `/var/lib/qvm/vms/*/meta.yaml`)
-  work as root.
+- Read operations (list VMs, templates, domains; get config, coremap) open on
+  the system bus and require no authentication.
+- Mutation operations (create, delete, start, stop, kill, restart VM/template)
+  require polkit authentication (`auth_admin`). The daemon checks polkit for
+  each mutation and returns an error if denied; the polkit agent shows the
+  auth prompt.
+- `vm run` (waypipe) is spawned by the GUI as the user with the user's
+  Wayland environment (`WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` inherited from the
+  session). The daemon is not involved in waypipe.
 
 ### 6.3 Layout
 
@@ -110,7 +123,7 @@ The UI runs as root (EUID 0), matching Qube Manager's model:
 - Context-sensitive buttons based on selection:
   - VM: Start, Stop, Kill, Restart, Delete, Run App, Provision, Sync Kernel
   - Template: Delete, Re-bake
-  - Global: Create VM, Create Template, Install Dom0, Refresh
+  - Global: Create VM, Create Template, Refresh
 
 **Create VM Dialog:**
 - Name (text input)
@@ -129,7 +142,7 @@ The UI runs as root (EUID 0), matching Qube Manager's model:
 - Progress bar and log output during bake (~5 min)
 
 **Log/Output Pane (optional, collapsible bottom):**
-- Shows output from long-running operations (template bake, install, provision)
+- Shows output from long-running operations (template bake, provision)
 - Scrollable, monospace font
 - Clear button
 
@@ -138,6 +151,15 @@ The UI runs as root (EUID 0), matching Qube Manager's model:
 - dom0 assignment
 - VM assignments
 - Free cores
+
+### 6.7 Provisioning
+
+dom0 setup (OVS, OVN, firewalld, systemd services, storage tree, vif script,
+daemon service) is external to qlvm. The ostree recipe or a provisioning
+script handles it. `qlvm` assumes the dom0 is provisioned and the daemon is
+running. The `qlvm-agent` binary embeds its systemd unit, D-Bus policy,
+and polkit action files so the provisioning step can extract them (e.g.,
+`qlvm-agent install-system` or similar).
 
 ## 7. Operations Mapping
 
@@ -156,7 +178,6 @@ The UI runs as root (EUID 0), matching Qube Manager's model:
 | `template list` | Templates pane |
 | `template create` | Create Template dialog |
 | `template delete` | Delete button (template selected, confirmation) |
-| `install` | Install Dom0 button (with progress) |
 | `cores` | Cores view |
 | `apps sync` | Sync Apps button (per VM or all running) |
 
@@ -169,19 +190,17 @@ The UI runs as root (EUID 0), matching Qube Manager's model:
   so it should link cleanly.
 - **Xen version skew:** same constraint as the CLI binary — builder headers
   must match dom0 runtime.
-- **No shelling out:** UI calls internal Go packages directly; the only local
-  process spawned is `waypipe` (same exception as the CLI).
+- **No shelling out:** UI and CLI call the daemon via D-Bus; the daemon calls
+  internal Go packages. The only local process spawned outside the daemon is
+  `waypipe` (same exception as the CLI).
 - **Wayland:** must work as a Sway client; Fyne's Wayland backend must be
   functional (verify during development).
+- **Daemon service file must be installable by external provisioning:** the
+  systemd unit, D-Bus policy, and polkit action are embedded in the
+  `qlvm-agent` binary for the provisioning step to extract.
 
 ## 9. Open Questions
 
-- **Wayland env for waypipe:** when the UI runs as root, how does it get the
-  user's `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR`? Options: (a) pass at launch
-  (`sudo WAYLAND_DISPLAY=$WAYLAND_DISPLAY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR
-  qlvm-gui`), (b) read from the user's session via loginctl, (c) require the
-  user to launch from their session and use `pkexec` only for the privileged
-  parts. Resolution needed during implementation.
 - **Fyne Wayland maturity:** verify Fyne works correctly on Sway before
   committing to it. If Wayland support is broken, fallback is XWayland or
   a different toolkit.

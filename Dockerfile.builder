@@ -8,6 +8,10 @@ FROM quay.io/fedora/fedora:44
 
 # golang: the module cache (GOPATH, mounted at runtime) provides the exact
 # toolchain via GOTOOLCHAIN=auto; this only seeds the first download.
-RUN dnf install -y golang gcc pkg-config xen-devel yajl-devel && dnf clean all
+RUN dnf install -y golang gcc pkg-config xen-devel yajl-devel \
+    mesa-libGL-devel wayland-devel libxkbcommon-devel \
+    libXcursor-devel libXi-devel libXrandr-devel libXinerama-devel \
+    libXxf86vm-devel libX11-devel \
+    btrfs-progs-devel gpgme-devel && dnf clean all
 
 WORKDIR /src

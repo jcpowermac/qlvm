@@ -1,0 +1,94 @@
+<policyconfig>
+  <vendor>qlvm</vendor>
+  <vendor_url>https://github.com/jcpowermac/qlvm</vendor_url>
+  <action id="io.qlvm.CreateVM">
+    <description>Create a VM</description>
+    <message>Authentication is required to create a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.DeleteVM">
+    <description>Delete a VM</description>
+    <message>Authentication is required to delete a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.StartVM">
+    <description>Start a VM</description>
+    <message>Authentication is required to start a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.StopVM">
+    <description>Stop a VM</description>
+    <message>Authentication is required to stop a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.KillVM">
+    <description>Kill a VM</description>
+    <message>Authentication is required to kill a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.RestartVM">
+    <description>Restart a VM</description>
+    <message>Authentication is required to restart a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.CreateTemplate">
+    <description>Create a template</description>
+    <message>Authentication is required to create a template</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.DeleteTemplate">
+    <description>Delete a template</description>
+    <message>Authentication is required to delete a template</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.ProvisionVM">
+    <description>Provision a VM</description>
+    <message>Authentication is required to provision a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.qlvm.SyncKernel">
+    <description>Sync kernel to a VM</description>
+    <message>Authentication is required to sync the kernel to a VM</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

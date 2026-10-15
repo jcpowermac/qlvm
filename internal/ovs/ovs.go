@@ -108,6 +108,13 @@ func New(c client.Client) *Reconciler {
 	return &Reconciler{client: c, NetdevExists: sysNetdevExists}
 }
 
+// Close stops monitoring and closes the underlying Open_vSwitch client.
+func (r *Reconciler) Close() {
+	if r.client != nil {
+		r.client.Close()
+	}
+}
+
 // sysNetdevExists reports whether dev exists under /sys/class/net.
 func sysNetdevExists(dev string) bool {
 	_, err := os.Stat("/sys/class/net/" + dev)

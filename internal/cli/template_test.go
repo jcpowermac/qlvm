@@ -1,237 +1,168 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
+	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jcpowermac/qlvm/internal/template"
-	"github.com/jcpowermac/qlvm/internal/vm"
+	"github.com/jcpowermac/qlvm/internal/agent"
 )
 
-const (
-	cliTestRef    = "registry.example.com/ns/os-bolt:latest"
-	cliTestDigest = "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456"
-)
-
-func writeTemplate(t *testing.T, root, ref, digest string, raw bool) string {
-	t.Helper()
-	dir := template.DirOfRef(root, ref, digest)
-	require.NoError(t, os.MkdirAll(dir, 0o750))
-	require.NoError(t, (&template.Template{Dir: dir, Image: ref, Digest: digest, KernelVer: "6.12.0"}).SaveMeta(dir))
-	if raw {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "template.raw"), []byte("raw"), 0o600))
+func TestTemplateListCmd(t *testing.T) {
+	fc := &fakeClient{
+		listTemplatesResult: []agent.TemplateInfo{
+			{Dir: "ns-os-bolt-sha256:a", Image: "registry.example.com/ns/os-bolt:latest", Kernel: "6.12.0", VMCount: 2, SizeBytes: 1 << 30, Complete: true},
+			{Dir: "ns-os-bolt-sha256:b", Image: "registry.example.com/ns/os-bolt:latest", Kernel: "", VMCount: 0, SizeBytes: 0, Complete: false},
+		},
 	}
-	return dir
+	useFakeClient(t, fc)
+
+	cmd := templateListCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), "ns-os-bolt-sha256:a")
+	assert.Contains(t, out.String(), "ns-os-bolt-sha256:b")
+	assert.Contains(t, out.String(), "TEMPLATE")
+	assert.Contains(t, out.String(), "IMAGE")
+	assert.Contains(t, out.String(), "KERNEL")
+	assert.Contains(t, out.String(), "VMs")
+	assert.Contains(t, out.String(), "SIZE")
+	assert.Contains(t, out.String(), "COMPLETE")
 }
 
-func writeVM(t *testing.T, root, name, ref, digest string) {
-	t.Helper()
-	dir := filepath.Join(root, "vms", name)
-	require.NoError(t, os.MkdirAll(dir, 0o750))
-	require.NoError(t, (&vm.Meta{Name: name, Image: ref, Digest: digest}).Save(dir))
-}
-
-func TestScanTemplatesEmpty(t *testing.T) {
-	root := t.TempDir()
-	rows, err := scanTemplates(root)
-	require.NoError(t, err)
-	assert.Empty(t, rows)
-	assert.Equal(t, "no templates\n", templateListOutput(rows))
-}
-
-func TestScanTemplates(t *testing.T) {
-	root := t.TempDir()
-	writeTemplate(t, root, cliTestRef, cliTestDigest, true)
-	writeVM(t, root, "t2", cliTestRef, cliTestDigest)
-	writeVM(t, root, "t1", cliTestRef, cliTestDigest)
-	// A second, incomplete dir (no META), sorted after the first.
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "templates", "ns-os-bolt-sha256:deadbeef"), 0o750))
-
-	rows, err := scanTemplates(root)
-	require.NoError(t, err)
-	require.Len(t, rows, 2)
-
-	assert.True(t, rows[0].Complete)
-	assert.Equal(t, cliTestRef, rows[0].Image)
-	assert.Equal(t, "6.12.0", rows[0].Kernel)
-	assert.True(t, rows[0].HasRaw)
-	assert.Equal(t, []string{"t1", "t2"}, rows[0].Refs, "refs must be sorted")
-
-	assert.False(t, rows[1].Complete)
-	assert.False(t, rows[1].HasRaw)
-	assert.Empty(t, rows[1].Refs)
-}
-
-func TestTemplateListOutput(t *testing.T) {
-	rows := []tplRow{
-		{Dir: "ns-os-bolt-sha256:a", Complete: true, Type: "ostree", Image: cliTestRef, Kernel: "6.12.0", HasRaw: true, Size: 1 << 30, Refs: []string{"t1", "t2"}},
-		{Dir: "ns-os-bolt-sha256:b"},
+func TestTemplateListCmdEmpty(t *testing.T) {
+	fc := &fakeClient{
+		listTemplatesResult: []agent.TemplateInfo{},
 	}
-	want := "TEMPLATE  TYPE  IMAGE  KERNEL  SIZE  REFERENCED-BY\n" +
-		"ns-os-bolt-sha256:a  ostree  registry.example.com/ns/os-bolt:latest  6.12.0  1.0G  t1, t2\n" +
-		"ns-os-bolt-sha256:b  -  -  -  -  -\n"
-	assert.Equal(t, want, templateListOutput(rows))
+	useFakeClient(t, fc)
 
-	w := templateWarnings(rows)
-	assert.Contains(t, w, "ns-os-bolt-sha256:b")
-	assert.Contains(t, w, "delete --force")
-	assert.NotContains(t, w, "ns-os-bolt-sha256:a")
+	cmd := templateListCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, "no templates\n", out.String())
 }
 
-func TestTemplateWarningsAgentNoRawWarning(t *testing.T) {
-	// Agent templates have vmlinuz/initramfs, not template.raw — they must
-	// not trigger the "incomplete bake" warning.
-	rows := []tplRow{
-		{Dir: "pi-in-xen-sha256:abc", Complete: true, Type: "agent", Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Kernel: "3.21-virt"},
+func TestTemplateListCmdDaemonNotRunning(t *testing.T) {
+	resetClient()
+	old := clientFactory
+	clientFactory = func() (DaemonClient, error) {
+		return nil, errors.New("daemon not running")
 	}
-	w := templateWarnings(rows)
-	assert.Empty(t, w, "agent template must not warn about missing template.raw")
+	t.Cleanup(func() {
+		clientFactory = old
+		resetClient()
+	})
 
-	// An incomplete ostree template (no raw) must still warn.
-	rows[0].Type = "ostree"
-	w = templateWarnings(rows)
-	assert.Contains(t, w, "pi-in-xen-sha256:abc")
-	assert.Contains(t, w, "no template.raw")
-}
-
-func TestScanTemplatesAgent(t *testing.T) {
-	root := t.TempDir()
-	// Agent template: META with Type="agent", vmlinuz + initramfs, no raw.
-	dir := template.DirOfRef(root, "ghcr.io/jcpowermac/pi-in-xen:latest", "sha256:def456")
-	require.NoError(t, os.MkdirAll(dir, 0o750))
-	require.NoError(t, (&template.Template{Dir: dir, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", KernelVer: "3.21-virt", Type: "agent"}).SaveMeta(dir))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("kernel"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "initramfs"), []byte("initramfs"), 0o644))
-
-	rows, err := scanTemplates(root)
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-
-	assert.True(t, rows[0].Complete)
-	assert.Equal(t, "agent", rows[0].Type)
-	assert.False(t, rows[0].HasRaw)
-	assert.Equal(t, "3.21-virt", rows[0].Kernel)
-
-	// No warning for the agent template.
-	w := templateWarnings(rows)
-	assert.Empty(t, w)
-}
-
-func TestTemplateDeletePlan(t *testing.T) {
-	root := t.TempDir()
-	referenced := writeTemplate(t, root, cliTestRef, cliTestDigest, true)
-	writeVM(t, root, "t1", cliTestRef, cliTestDigest)
-	unreferenced := writeTemplate(t, root, "registry.example.com/ns/other:latest", cliTestDigest, false)
-
-	rows, err := scanTemplates(root)
-	require.NoError(t, err)
-
-	// No args: GC — the referenced dir is kept; the unreferenced one goes.
-	got, err := templateDeletePlan(root, rows, nil, false)
-	require.NoError(t, err)
-	assert.Equal(t, []string{filepath.Base(unreferenced)}, got)
-
-	// Exact name: flat refusal while a VM references the dir.
-	_, err = templateDeletePlan(root, rows, []string{filepath.Base(referenced)}, false)
+	cmd := templateListCmd()
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "t1")
-	assert.Contains(t, err.Error(), "delete those VMs first")
+	assert.Contains(t, err.Error(), "daemon is not running")
+}
 
-	// Unique prefix: removed.
-	got, err = templateDeletePlan(root, rows, []string{"ns-other"}, false)
-	require.NoError(t, err)
-	assert.Equal(t, []string{filepath.Base(unreferenced)}, got)
+func TestTemplateCreateCmd(t *testing.T) {
+	fc := &fakeClient{
+		createTemplateResult: "ns-os-bolt-sha256:a",
+	}
+	useFakeClient(t, fc)
 
-	// Unknown ref: hard error.
-	_, err = templateDeletePlan(root, rows, []string{"nope"}, false)
+	cmd := templateCreateCmd()
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"registry.example.com/ns/os-bolt:latest"})
+	require.NoError(t, cmd.Execute())
+
+	require.Len(t, fc.createTemplateCalls, 1)
+	assert.Equal(t, "registry.example.com/ns/os-bolt:latest", fc.createTemplateCalls[0].image)
+	assert.False(t, fc.createTemplateCalls[0].force)
+	assert.Contains(t, out.String(), "baked template ns-os-bolt-sha256:a")
+}
+
+func TestTemplateCreateCmdForce(t *testing.T) {
+	fc := &fakeClient{
+		createTemplateResult: "ns-os-bolt-sha256:a",
+	}
+	useFakeClient(t, fc)
+
+	cmd := templateCreateCmd()
+	cmd.SetArgs([]string{"registry.example.com/ns/os-bolt:latest"})
+	require.NoError(t, cmd.Flags().Set("force", "true"))
+	require.NoError(t, cmd.Execute())
+
+	require.Len(t, fc.createTemplateCalls, 1)
+	assert.Equal(t, "registry.example.com/ns/os-bolt:latest", fc.createTemplateCalls[0].image)
+	assert.True(t, fc.createTemplateCalls[0].force)
+}
+
+func TestTemplateCreateCmdProgress(t *testing.T) {
+	fc := &fakeClient{
+		createTemplateResult: "ns-os-bolt-sha256:a",
+	}
+	useFakeClient(t, fc)
+
+	cmd := templateCreateCmd()
+	var errOut bytes.Buffer
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"registry.example.com/ns/os-bolt:latest"})
+	require.NoError(t, cmd.Execute())
+
+	// Verify that progress was subscribed.
+	require.NotNil(t, fc.progressCallback, "progress callback should be set")
+
+	// Simulate progress messages.
+	fc.progressCallback("bake-123", "pulling image")
+	fc.progressCallback("bake-123", "extracting rootfs")
+	fc.progressCallback("bake-123", "")
+	assert.Contains(t, errOut.String(), "bake bake-123: pulling image")
+	assert.Contains(t, errOut.String(), "bake bake-123: extracting rootfs")
+	assert.Contains(t, errOut.String(), "bake bake-123: done")
+}
+
+func TestTemplateDeleteCmd(t *testing.T) {
+	fc := &fakeClient{}
+	useFakeClient(t, fc)
+
+	cmd := templateDeleteCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"ns-os-bolt-sha256:a"})
+	require.NoError(t, cmd.Execute())
+
+	assert.Equal(t, []string{"ns-os-bolt-sha256:a"}, fc.deleteTemplateCalls)
+	assert.Contains(t, out.String(), "deleted template ns-os-bolt-sha256:a")
+}
+
+func TestTemplateDeleteCmdDaemonNotRunning(t *testing.T) {
+	resetClient()
+	old := clientFactory
+	clientFactory = func() (DaemonClient, error) {
+		return nil, errors.New("daemon not running")
+	}
+	t.Cleanup(func() {
+		clientFactory = old
+		resetClient()
+	})
+
+	cmd := templateDeleteCmd()
+	cmd.SetArgs([]string{"ns-os-bolt-sha256:a"})
+	err := cmd.Execute()
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daemon is not running")
 }
 
-func TestCleanPlan(t *testing.T) {
-	rows := []tplRow{
-		{Dir: "a", Complete: true},                       // unreferenced complete: removed
-		{Dir: "b", Complete: true, Refs: []string{"vm"}}, // referenced: kept
-		{Dir: "c"}, // incomplete: force only
-	}
-	assert.Equal(t, []string{"a"}, cleanPlan(rows, false))
-	assert.Equal(t, []string{"a", "c"}, cleanPlan(rows, true))
-}
-
-func TestTemplateCreatePlan(t *testing.T) {
-	tests := []struct {
-		name       string
-		exists     bool
-		referenced bool
-		force      bool
-		wantCalls  []string // order of action invocations
-		wantErr    []string // substrings the refusal must contain
-	}{
-		{name: "fresh: reap then bake", exists: false, wantCalls: []string{"reap", "bake"}},
-		{name: "exists without force: refuse", exists: true, wantErr: []string{"ns-os-bolt", "--force"}},
-		{name: "exists referenced with force: refuse", exists: true, referenced: true, force: true, wantErr: []string{"t1", "delete those VMs first"}},
-		{name: "exists unreferenced with force: reap remove bake", exists: true, force: true, wantCalls: []string{"reap", "remove", "bake"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			dir := template.DirOfRef(root, cliTestRef, cliTestDigest)
-			if tc.exists {
-				require.NoError(t, os.MkdirAll(dir, 0o750))
-			}
-			if tc.referenced {
-				writeVM(t, root, "t1", cliTestRef, cliTestDigest)
-			}
-			var calls []string
-			act := templateCreateActions{
-				Reap:   func() { calls = append(calls, "reap") },
-				Remove: func() error { calls = append(calls, "remove"); return os.RemoveAll(dir) },
-				Bake:   func() error { calls = append(calls, "bake"); return nil },
-			}
-			err := templateCreatePlan(root, dir, tc.force, act)
-			if tc.wantErr != nil {
-				require.Error(t, err)
-				for _, sub := range tc.wantErr {
-					assert.Contains(t, err.Error(), sub)
-				}
-				assert.Empty(t, calls, "a refusal must run no actions")
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tc.wantCalls, calls)
-			if tc.exists {
-				_, statErr := os.Stat(dir)
-				assert.True(t, os.IsNotExist(statErr), "force path removes the dir before baking")
-			}
-		})
-	}
-}
-
-func TestParseLoopLines(t *testing.T) {
-	root := t.TempDir()
-	alive := filepath.Join(root, "alive.img")
-	require.NoError(t, os.WriteFile(alive, []byte("x"), 0o600))
-	output := strings.Join([]string{
-		"  (path in parens)",                                            // not a loop line
-		"/dev/loop0: [0807]:106 (" + alive + ")",                        // under root, file exists: keep
-		"/dev/loop1: [0807]:107 (/etc/other.img)",                       // outside root: ignore
-		"/dev/loop2 (NAME OF LOOP): [0807]:108 (" + root + "/gone.img)", // under root, deleted: stale
-		"/dev/loop3: [0807]:109 ( /etc/vms/x/disk.img )",                // outside root (spaces): ignore
-		"/dev/loop4: [0036]:1 (" + root + "/gone2.img (deleted))",       // (deleted) suffix: stale
-	}, "\n")
-	stale := parseLoopLines(output, root)
-	assert.Equal(t, []string{"/dev/loop2", "/dev/loop4"}, stale)
-}
-
-func TestParseLoopLinesNoLoops(t *testing.T) {
-	assert.Empty(t, parseLoopLines("", t.TempDir()))
-}
-
-func TestHumanSize(t *testing.T) {
-	assert.Equal(t, "2.0G", humanSize(2<<30))
-	assert.Equal(t, "512M", humanSize(512<<20))
+func TestFormatSize(t *testing.T) {
+	assert.Equal(t, "1.0G", formatSize(1<<30))
+	assert.Equal(t, "512.0M", formatSize(512<<20))
+	assert.Equal(t, "1.0K", formatSize(1024))
+	assert.Equal(t, "0B", formatSize(0))
+	assert.Equal(t, "1.0M", formatSize(1<<20))
 }

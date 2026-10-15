@@ -273,7 +273,7 @@ func TestApplyConvergesPreexistingOVS(t *testing.T) {
 // TestApplyChangesNIC covers a NIC change after Apply: the new port is
 // created and must be attached to the existing br-ex (CRITICAL 1 mutate
 // path). Apply is additive by design; migrating away from the old NIC port
-// is the install CLI's job, not the reconciler's.
+// is the external provisioning step's job, not the reconciler's.
 func TestApplyChangesNIC(t *testing.T) {
 	c, teardown := newTestEnv(t)
 	defer teardown()

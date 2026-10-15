@@ -1,112 +1,91 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
+	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/jcpowermac/qlvm/internal/template"
 )
 
-func TestResolveTemplate(t *testing.T) {
-	root := t.TempDir()
-	templates := filepath.Join(root, "templates")
-	for _, d := range []string{"os-bolt-sha256:aaa", "os-bolt-sha256:bbb", "os-rock-sha256:ccc"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(templates, d), 0o750))
+func TestCreateCmd(t *testing.T) {
+	fc := &fakeClient{
+		createVMResult: "vm1",
 	}
+	useFakeClient(t, fc)
 
-	tests := []struct {
-		name    string
-		ref     string
-		wantDir string
-		wantErr []string // substrings the error must contain
-	}{
-		{name: "exact", ref: "os-rock-sha256:ccc", wantDir: "os-rock-sha256:ccc"},
-		{name: "unique prefix", ref: "os-bolt-sha256:b", wantDir: "os-bolt-sha256:bbb"},
-		{name: "ambiguous", ref: "os-bolt", wantErr: []string{"os-bolt-sha256:aaa", "os-bolt-sha256:bbb"}},
-		{name: "missing", ref: "nope", wantErr: []string{"os-bolt-sha256:aaa", "os-rock-sha256:ccc"}},
-		{name: "empty (flag.Changed still passes required)", ref: "", wantErr: []string{"no template dir matching", "os-bolt-sha256:aaa"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir, err := resolveTemplate(root, tc.ref)
-			if tc.wantErr != nil {
-				require.Error(t, err)
-				for _, sub := range tc.wantErr {
-					assert.Contains(t, err.Error(), sub)
-				}
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, filepath.Join(templates, tc.wantDir), dir)
-		})
-	}
+	cmd := createCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"vm1"})
+	require.NoError(t, cmd.Flags().Set("template", "os-bolt-sha256:aaa"))
+	require.NoError(t, cmd.Flags().Set("type", "app"))
+	require.NoError(t, cmd.Flags().Set("memory", "512"))
+	require.NoError(t, cmd.Flags().Set("vcpus", "2"))
+	require.NoError(t, cmd.Flags().Set("mount", "/host/path:/guest/path"))
+	require.NoError(t, cmd.Flags().Set("cores", "6-7"))
+	require.NoError(t, cmd.Execute())
+
+	require.Len(t, fc.createVMCalls, 1)
+	opts := fc.createVMCalls[0]
+	assert.Equal(t, "vm1", opts.Name)
+	assert.Equal(t, "app", opts.Type)
+	assert.Equal(t, "os-bolt-sha256:aaa", opts.Template)
+	assert.Equal(t, uint64(512), opts.MemoryMB)
+	assert.Equal(t, uint8(2), opts.VCPUs)
+	assert.Equal(t, []string{"/host/path:/guest/path"}, opts.Mounts)
+	assert.Equal(t, "6-7", opts.Cores)
+	assert.Contains(t, out.String(), "created vm1")
 }
 
-func TestResolveTemplateNoTemplatesDir(t *testing.T) {
-	_, err := resolveTemplate(t.TempDir(), "anything")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "qlvm template create")
-}
-
-func TestLoadRefTemplate(t *testing.T) {
-	root := t.TempDir()
-	complete := writeTemplate(t, root, cliTestRef, cliTestDigest, true)
-	// META but no template.raw
-	noRaw := filepath.Join(root, "templates", "t-noraw")
-	require.NoError(t, os.MkdirAll(noRaw, 0o750))
-	require.NoError(t, (&template.Template{Dir: noRaw, Image: cliTestRef, Digest: cliTestDigest}).SaveMeta(noRaw))
-	// template.raw but no META
-	noMeta := filepath.Join(root, "templates", "t-nometa")
-	require.NoError(t, os.MkdirAll(noMeta, 0o750))
-	require.NoError(t, os.WriteFile(filepath.Join(noMeta, "template.raw"), []byte("raw"), 0o600))
-
-	tpl, err := loadRefTemplate(root, filepath.Base(complete))
-	require.NoError(t, err)
-	assert.Equal(t, cliTestRef, tpl.Image)
-	assert.Equal(t, cliTestDigest, tpl.Digest)
-	assert.Equal(t, complete, tpl.Dir)
-
-	for _, dir := range []string{noRaw, noMeta} {
-		_, err := loadRefTemplate(root, filepath.Base(dir))
-		require.Error(t, err, "%s must be incomplete", dir)
-		assert.Contains(t, err.Error(), filepath.Base(dir), "error must name the dir")
-		assert.Contains(t, err.Error(), "qlvm template create", "error must point at the bake command")
+func TestCreateCmdDaemonNotRunning(t *testing.T) {
+	resetClient()
+	old := clientFactory
+	clientFactory = func() (DaemonClient, error) {
+		return nil, errors.New("daemon not running")
 	}
+	t.Cleanup(func() {
+		clientFactory = old
+		resetClient()
+	})
+
+	cmd := createCmd()
+	cmd.SetArgs([]string{"vm1"})
+	require.NoError(t, cmd.Flags().Set("template", "os-bolt-sha256:aaa"))
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daemon is not running")
 }
 
-func TestLoadRefTemplateAgent(t *testing.T) {
-	root := t.TempDir()
-	// Agent template: META with Type="agent", vmlinuz + initramfs, no raw.
-	agentDir := template.DirOfRef(root, "ghcr.io/jcpowermac/pi-in-xen:latest", "sha256:def456")
-	require.NoError(t, os.MkdirAll(agentDir, 0o750))
-	require.NoError(t, (&template.Template{Dir: agentDir, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", KernelVer: "3.21-virt", Type: "agent"}).SaveMeta(agentDir))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "vmlinuz"), []byte("kernel"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(agentDir, "initramfs"), []byte("initramfs"), 0o644))
+func TestCreateCmdError(t *testing.T) {
+	fc := &fakeClient{
+		createVMErr: errors.New("create failed"),
+	}
+	useFakeClient(t, fc)
 
-	// Complete agent template loads without requiring template.raw.
-	tpl, err := loadRefTemplate(root, filepath.Base(agentDir))
-	require.NoError(t, err)
-	assert.Equal(t, "agent", tpl.Type)
-
-	// Agent template missing vmlinuz is incomplete.
-	noKernel := filepath.Join(root, "templates", "agent-no-kernel")
-	require.NoError(t, os.MkdirAll(noKernel, 0o750))
-	require.NoError(t, (&template.Template{Dir: noKernel, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", Type: "agent"}).SaveMeta(noKernel))
-	require.NoError(t, os.WriteFile(filepath.Join(noKernel, "initramfs"), []byte("initramfs"), 0o644))
-	_, err = loadRefTemplate(root, filepath.Base(noKernel))
+	cmd := createCmd()
+	cmd.SetArgs([]string{"vm1"})
+	require.NoError(t, cmd.Flags().Set("template", "os-bolt-sha256:aaa"))
+	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vmlinuz")
+	assert.Contains(t, err.Error(), "create failed")
+}
 
-	// Agent template missing initramfs is incomplete.
-	noInitramfs := filepath.Join(root, "templates", "agent-no-initramfs")
-	require.NoError(t, os.MkdirAll(noInitramfs, 0o750))
-	require.NoError(t, (&template.Template{Dir: noInitramfs, Image: "ghcr.io/jcpowermac/pi-in-xen:latest", Digest: "sha256:def456", Type: "agent"}).SaveMeta(noInitramfs))
-	require.NoError(t, os.WriteFile(filepath.Join(noInitramfs, "vmlinuz"), []byte("kernel"), 0o644))
-	_, err = loadRefTemplate(root, filepath.Base(noInitramfs))
+func TestCreateCmdRequiresTemplate(t *testing.T) {
+	fc := &fakeClient{}
+	useFakeClient(t, fc)
+
+	cmd := createCmd()
+	cmd.SetArgs([]string{"vm1"})
+	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "initramfs")
+	assert.Contains(t, err.Error(), "template")
+}
+
+func TestParseCoresFlagPassthrough(t *testing.T) {
+	// parseCoresFlag is now a passthrough to the daemon.
+	assert.Equal(t, "", parseCoresFlag(""))
+	assert.Equal(t, "6-7", parseCoresFlag("6-7"))
+	assert.Equal(t, "6,7,8", parseCoresFlag("6,7,8"))
 }

@@ -9,14 +9,20 @@ import (
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
+// consoleCmd attaches to a VM's Xen console. EXCEPTION: this command
+// requires root (it opens a libxl context and the Xen console TTY
+// directly). All other CLI commands work without root via the daemon.
 func consoleCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "console <name>",
-		Short: "Attach to a VM's console (agent VMs)",
+		Short: "Attach to a VM's console (agent VMs; requires root)",
 		Long: `Attach to a VM's primary console (hvc0). The console is available for
 any existing domain, running or blocked. The local terminal is put in raw
 mode: Ctrl+C and other control characters go to the VM, not the local
-shell. Press Ctrl+] to detach and return to the shell.`,
+shell. Press Ctrl+] to detach and return to the shell.
+
+This command requires root: it opens a libxl context and the Xen console
+TTY directly. Run it with sudo.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]

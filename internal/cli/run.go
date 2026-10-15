@@ -15,50 +15,12 @@ import (
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
-// privileged reports whether this process can open a libxl context.
-// Live-verified on the dom0 (Xen 4.21.2): an unprivileged
-// libxl_ctx_alloc fails ("cannot open libxc handle: Permission denied")
-// because the context needs the privileged xcl/libxc handle. Overridable
-// in tests (CI runs non-root).
-var privileged = func() bool { return os.Geteuid() == 0 }
-
-// assertVMRunning refuses to launch a waypipe session for a VM whose
-// domain is absent or not serving (dying zombie, paused, …) — otherwise
-// waypipe sits on a dead connection until its own timeout. running and
-// blocked are alive states (an idle HVM guest normally shows blocked).
-// Two skip paths, both leaving plain-ssh projection working: stub builds
-// have no libxl (Xen open failure is tolerated), and unprivileged
-// callers (run is a user-session command — sudo is forbidden) have no
-// Xen state source at all: libxl needs root and /run/xenstored/socket
-// is 0600 root on the dom0, so the pre-check is skipped and a down VM
-// surfaces as waypipe/ssh's own failure instead.
+// assertVMRunning is no longer needed: the CLI runs as the user and has no
+// Xen state source at all (libxl needs root and /run/xenstored/socket is
+// 0600 root on the dom0). A down VM surfaces as waypipe/ssh's own failure
+// instead. Kept as a no-op for backward compatibility with tests.
 func assertVMRunning(name string) error {
-	if !privileged() {
-		return nil
-	}
-	x, err := xenctlNew()
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = x.Close() }()
-	infos, err := x.List()
-	if err != nil {
-		return fmt.Errorf("run %s: cannot check VM state: %w", name, err)
-	}
-	for _, d := range infos {
-		if d.Name != name {
-			continue
-		}
-		switch d.State {
-		case "running", "blocked":
-			return nil
-		case "dying":
-			return fmt.Errorf("run %s: VM is a zombie (dying, never answers ACPI) — recover it with: qlvm vm restart %s", name, name)
-		default:
-			return fmt.Errorf("run %s: VM is %s — start it first: qlvm vm start %s", name, d.State, name)
-		}
-	}
-	return fmt.Errorf("run %s: VM is not running — start it first: qlvm vm start %s", name, name)
+	return nil
 }
 
 // runWaypipe execs waypipe — the only local process qlvm is allowed to

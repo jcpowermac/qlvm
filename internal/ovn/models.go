@@ -103,7 +103,8 @@ type SBChassis struct {
 }
 
 // SBTables is the OVN_Southbound table set qlvm reads; used to build the
-// read-side SB client model (Chassis is the only table install needs).
+// read-side SB client model (Chassis is the only table the reconciler
+// needs).
 func SBTables() map[string]model.Model {
 	return map[string]model.Model{
 		"Chassis": &SBChassis{},

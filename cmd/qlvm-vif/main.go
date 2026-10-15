@@ -1,5 +1,6 @@
-// Command qlvm-vif is the Xen vif hotplug script, installed by
-// `qlvm install` at /etc/xen/scripts/vif-ovn (spec §10). libxl (Xen 4.21)
+// Command qlvm-vif is the Xen vif hotplug script, installed at
+// /etc/xen/scripts/vif-ovn by external provisioning (spec §10). libxl
+// (Xen 4.21)
 // execs it as
 //
 //	qlvm-vif <online|offline> type_if=vif
