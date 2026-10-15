@@ -49,7 +49,7 @@ func TestNew(t *testing.T) {
 		VM:      config.VMDefaults{MemoryMB: 4096, VCPUs: 2},
 	}
 
-	a := New(x, o, v, cfg, "/var/lib/qvm/coremap.yaml")
+	a := New(x, o, v, cfg, "/var/lib/qvm/coremap.yaml", "/var/lib/qvm")
 
 	require.NotNil(t, a)
 	assert.Equal(t, x, a.xen)
@@ -57,6 +57,7 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, v, a.ovs)
 	assert.Equal(t, cfg, a.cfg)
 	assert.Equal(t, "/var/lib/qvm/coremap.yaml", a.coremapPath)
+	assert.Equal(t, "/var/lib/qvm", a.root)
 	assert.NotNil(t, a.progress)
 	assert.Empty(t, a.progress)
 	assert.Nil(t, a.conn)
@@ -69,37 +70,11 @@ func TestDBusConstants(t *testing.T) {
 }
 
 func TestMethodStubs(t *testing.T) {
-	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "")
+	// Only the Task 5-8 methods should still be stubs; the Task 4 read
+	// methods are implemented.
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
 
-	_, err := a.ListVMs()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.ListTemplates()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.ListDomains()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.GetVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.GetTemplate("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.GetConfig()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.GetCoremap()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	_, err = a.CreateVM(&CreateVMOptions{Name: "test"})
+	_, err := a.CreateVM(&CreateVMOptions{Name: "test"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not implemented")
 
@@ -141,7 +116,7 @@ func TestMethodStubs(t *testing.T) {
 }
 
 func TestProgressEmitWithoutBus(t *testing.T) {
-	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
 
 	// emitProgress should not panic without a bus connection.
 	a.emitProgress("op1", "starting")
@@ -176,7 +151,7 @@ func TestProgressEmitWithoutBus(t *testing.T) {
 // verify the error path when the bus is unavailable and that the constants
 // are used correctly. Integration tests (Task 9) cover the live bus case.
 func TestRunRegistersBus(t *testing.T) {
-	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
 	// Timeout prevents an indefinite hang if the system bus is available
 	// and the name is acquired (Run would otherwise block until the bus
 	// closes).

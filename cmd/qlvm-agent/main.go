@@ -21,6 +21,9 @@ import (
 // configPath is where the daemon reads its configuration.
 const configPath = "/etc/qvm/qlvm.yaml"
 
+// stateRoot is the qlvm state root where VM and template state lives.
+const stateRoot = "/var/lib/qvm"
+
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -56,7 +59,7 @@ func main() {
 	}
 	defer br.Close()
 
-	a := agent.New(x, nb, br, cfg, coremap.DefaultPath)
+	a := agent.New(x, nb, br, cfg, coremap.DefaultPath, stateRoot)
 	name, err := a.Run(ctx)
 	if err != nil {
 		log.Fatalf("agent: %v", err)

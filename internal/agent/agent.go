@@ -7,12 +7,17 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
 
 	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/ovs"
+	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
 )
@@ -150,6 +155,7 @@ type Agent struct {
 	ovs         ovs.VifPorter
 	cfg         *config.Config
 	coremapPath string
+	root        string // qlvm state root (/var/lib/qvm)
 
 	// Progress signal state (mutex-protected).
 	mu       sync.Mutex
@@ -166,14 +172,16 @@ type ProgressTracker struct {
 	Done    bool
 }
 
-// New creates an Agent with the given control planes.
-func New(x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath string) *Agent {
+// New creates an Agent with the given control planes. root is the qlvm
+// state root (e.g. /var/lib/qvm) where VM and template state is stored.
+func New(x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath, root string) *Agent {
 	return &Agent{
 		xen:         x,
 		ovn:         o,
 		ovs:         v,
 		cfg:         cfg,
 		coremapPath: coremapPath,
+		root:        root,
 		progress:    make(map[string]*ProgressTracker),
 	}
 }
@@ -216,39 +224,328 @@ func (a *Agent) Run(ctx context.Context) (string, error) {
 
 // --- Read methods ---
 
-// ListVMs returns all VMs (running from Xen, stopped from meta.yaml).
+// ListVMs returns all VMs: running domains from Xen plus stopped VMs from
+// meta.yaml. The result is sorted by name.
 func (a *Agent) ListVMs() ([]VMInfo, error) {
-	return nil, fmt.Errorf("ListVMs: not implemented (Task 4)")
+	domains, err := a.xen.List()
+	if err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+
+	// Build a map of running domains for fast lookup.
+	running := make(map[string]xenctl.DomainInfo, len(domains))
+	for _, d := range domains {
+		running[d.Name] = d
+	}
+
+	// Load all VM metas from the state root.
+	metas, err := a.loadAllMetas()
+	if err != nil {
+		return nil, fmt.Errorf("load VM metas: %w", err)
+	}
+
+	// Build the result: every domain (running) plus every meta not in domains (stopped).
+	result := make([]VMInfo, 0, len(metas)+len(domains))
+	seen := make(map[string]bool, len(metas)+len(domains))
+
+	// Add all metas (running or stopped).
+	for _, m := range metas {
+		info := a.metaToVMInfo(m, running)
+		result = append(result, info)
+		seen[m.Name] = true
+	}
+
+	// Add any running domains that don't have a meta (e.g. VMs created outside qlvm).
+	for _, d := range domains {
+		if !seen[d.Name] {
+			result = append(result, VMInfo{
+				Name:    d.Name,
+				State:   d.State,
+				MemoryMB: d.MemMB,
+				VCPUs:   d.VCPUs,
+			})
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
 }
 
-// ListTemplates returns all templates.
+// loadAllMetas reads every <root>/vms/*/meta.yaml, skipping unreadable
+// entries (a crashed create may leave a dir without meta).
+func (a *Agent) loadAllMetas() ([]*vm.Meta, error) {
+	vmsDir := filepath.Join(a.root, "vms")
+	entries, err := os.ReadDir(vmsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var metas []*vm.Meta
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m, err := vm.LoadMeta(filepath.Join(vmsDir, e.Name()))
+		if err != nil {
+			continue // skip dirs without a loadable meta
+		}
+		metas = append(metas, m)
+	}
+	return metas, nil
+}
+
+// metaToVMInfo converts a VM meta to VMInfo, using the running domain map
+// to fill in live state (memory, vcpus, state) when the domain is up.
+func (a *Agent) metaToVMInfo(m *vm.Meta, running map[string]xenctl.DomainInfo) VMInfo {
+	info := VMInfo{
+		Name:      m.Name,
+		Type:      m.Type,
+		State:     "stopped",
+		MemoryMB:  uint64(m.MemoryMB),
+		VCPUs:     uint8(m.VCPUs),
+		Domain:    m.Domain,
+		Image:     m.Image,
+		Digest:    m.Digest,
+		CreatedAt: m.Created.Unix(),
+	}
+
+	// Fill mounts as "host:guest" pairs.
+	for _, mount := range m.Mounts {
+		info.Mounts = append(info.Mounts, mount.Host+":"+mount.Guest)
+	}
+
+	// If the domain is running, override with live Xen state.
+	if d, ok := running[m.Name]; ok {
+		info.State = d.State
+		info.MemoryMB = d.MemMB
+		info.VCPUs = d.VCPUs
+	}
+
+	return info
+}
+
+// ListTemplates returns all templates in <root>/templates. A missing
+// templates dir returns an empty list.
 func (a *Agent) ListTemplates() ([]TemplateInfo, error) {
-	return nil, fmt.Errorf("ListTemplates: not implemented (Task 4)")
+	refs := a.vmTemplateRefs()
+	templatesDir := filepath.Join(a.root, "templates")
+
+	entries, err := os.ReadDir(templatesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read templates dir: %w", err)
+	}
+
+	var result []TemplateInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info := a.templateDirToInfo(e.Name(), refs)
+		result = append(result, info)
+	}
+
+	sort.Slice(result, func(i, j int) bool { return result[i].Dir < result[j].Dir })
+	return result, nil
 }
 
-// ListDomains returns all Xen domains.
+// vmTemplateRefs maps template dir path -> sorted VM names whose meta.yaml
+// references that template dir.
+func (a *Agent) vmTemplateRefs() map[string][]string {
+	refs := make(map[string][]string)
+	vmsDir := filepath.Join(a.root, "vms")
+	entries, err := os.ReadDir(vmsDir)
+	if err != nil {
+		return refs
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m, err := vm.LoadMeta(filepath.Join(vmsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		// Compute the template dir from the VM's image/digest.
+		dir := template.DirOfRef(a.root, m.Image, template.NormalizeDigest(m.Digest))
+		refs[dir] = append(refs[dir], m.Name)
+	}
+	for _, names := range refs {
+		sort.Strings(names)
+	}
+	return refs
+}
+
+// templateDirToInfo builds a TemplateInfo for a single template directory.
+func (a *Agent) templateDirToInfo(name string, refs map[string][]string) TemplateInfo {
+	dir := filepath.Join(a.root, "templates", name)
+	info := TemplateInfo{
+		Dir:     name,
+		VMCount: len(refs[dir]),
+	}
+
+	// Load META if present.
+	if t, err := template.LoadMeta(dir); err == nil {
+		info.Complete = true
+		info.Image = t.Image
+		info.Digest = t.Digest
+		info.Kernel = t.KernelVer
+	}
+
+	// Get raw image size if present.
+	if fi, err := os.Stat(filepath.Join(dir, "template.raw")); err == nil {
+		info.SizeBytes = uint64(fi.Size())
+	}
+
+	return info
+}
+
+// ListDomains returns all Xen domains from the Xen API.
 func (a *Agent) ListDomains() ([]DomainInfo, error) {
-	return nil, fmt.Errorf("ListDomains: not implemented (Task 4)")
+	domains, err := a.xen.List()
+	if err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+	result := make([]DomainInfo, len(domains))
+	for i, d := range domains {
+		result[i] = DomainInfo{
+			Name:  d.Name,
+			ID:    d.ID,
+			MemMB: d.MemMB,
+			VCPUs: d.VCPUs,
+			State: d.State,
+		}
+	}
+	return result, nil
 }
 
-// GetVM returns a single VM by name.
+// GetVM returns a single VM by name, merging meta.yaml with live Xen state.
 func (a *Agent) GetVM(name string) (*VMInfo, error) {
-	return nil, fmt.Errorf("GetVM: not implemented (Task 4)")
+	domainDir := filepath.Join(a.root, "vms", name)
+	m, err := vm.LoadMeta(domainDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("VM %q not found", name)
+		}
+		return nil, fmt.Errorf("load VM %q: %w", name, err)
+	}
+
+	// Check if the domain is running.
+	domains, err := a.xen.List()
+	if err != nil {
+		return nil, fmt.Errorf("list domains: %w", err)
+	}
+	running := make(map[string]xenctl.DomainInfo, len(domains))
+	for _, d := range domains {
+		running[d.Name] = d
+	}
+
+	info := a.metaToVMInfo(m, running)
+	return &info, nil
 }
 
-// GetTemplate returns a single template by directory.
+// GetTemplate returns a single template by directory name.
 func (a *Agent) GetTemplate(dir string) (*TemplateInfo, error) {
-	return nil, fmt.Errorf("GetTemplate: not implemented (Task 4)")
+	templatesDir := filepath.Join(a.root, "templates")
+	if _, err := os.Stat(filepath.Join(templatesDir, dir)); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("template %q not found", dir)
+		}
+		return nil, fmt.Errorf("stat template %q: %w", dir, err)
+	}
+
+	refs := a.vmTemplateRefs()
+	info := a.templateDirToInfo(dir, refs)
+	return &info, nil
 }
 
-// GetConfig returns the current configuration.
+// GetConfig returns the loaded qlvm configuration.
 func (a *Agent) GetConfig() (*ConfigInfo, error) {
-	return nil, fmt.Errorf("GetConfig: not implemented (Task 4)")
+	if a.cfg == nil {
+		return nil, fmt.Errorf("config not loaded")
+	}
+	return &ConfigInfo{
+		Network: NetworkInfo{
+			NIC:      a.cfg.Network.NIC,
+			Gateway:  a.cfg.Network.Gateway,
+			RouterIP: a.cfg.Network.RouterIP,
+			Dom0IP:   a.cfg.Network.Dom0IP,
+			DNS:      a.cfg.Network.DNS,
+		},
+		Domains:    a.domainConfigsToInfo(a.cfg.Domains),
+		VM:         a.vmDefaultsToInfo(a.cfg.VM),
+		Disposable: a.vmDefaultsToInfo(a.cfg.Disposable),
+		Agent:      a.vmDefaultsToInfo(a.cfg.Agent),
+		Firewall: FirewallInfo{
+			Egress: FirewallEgressInfo{
+				AllowDNS:      a.cfg.Firewall.Egress.AllowDNS,
+				AllowHTTPS:    a.cfg.Firewall.Egress.AllowHTTPS,
+				AllowSSHToVMs: a.cfg.Firewall.Egress.AllowSSHToVMs,
+				AllowICMP:     a.cfg.Firewall.Egress.AllowICMP,
+				ExtraRules:    a.cfg.Firewall.Egress.ExtraRules,
+			},
+		},
+		Dom0: Dom0ConfigInfo{
+			MemoryMB: a.cfg.Dom0.MemoryMB,
+			VCPUs:    a.cfg.Dom0.VCPUs,
+			Pin:      a.cfg.Dom0.Pin,
+		},
+	}, nil
 }
 
-// GetCoremap returns the current CPU core map.
+// domainConfigsToInfo converts config domains to D-Bus-friendly info.
+func (a *Agent) domainConfigsToInfo(domains []config.Domain) []DomainConfigInfo {
+	result := make([]DomainConfigInfo, len(domains))
+	for i, d := range domains {
+		result[i] = DomainConfigInfo{
+			Name:    d.Name,
+			Subnet:  d.Subnet,
+			Gateway: d.Gateway,
+		}
+	}
+	return result
+}
+
+// vmDefaultsToInfo converts VM defaults to D-Bus-friendly info.
+func (a *Agent) vmDefaultsToInfo(d config.VMDefaults) VMDefaultsInfo {
+	return VMDefaultsInfo{
+		User:     d.User,
+		MemoryMB: d.MemoryMB,
+		VCPUs:    d.VCPUs,
+	}
+}
+
+// GetCoremap returns the current CPU core map. Returns an error if the
+// coremap file doesn't exist or can't be parsed.
 func (a *Agent) GetCoremap() (*CoremapInfo, error) {
-	return nil, fmt.Errorf("GetCoremap: not implemented (Task 4)")
+	cm, err := coremap.Load(a.coremapPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("coremap not found at %s", a.coremapPath)
+		}
+		return nil, fmt.Errorf("load coremap: %w", err)
+	}
+
+	assignments := make([]CoremapAssignmentInfo, len(cm.Assignments))
+	for i, a := range cm.Assignments {
+		assignments[i] = CoremapAssignmentInfo{
+			VM:    a.VM,
+			Cores: a.Cores,
+		}
+	}
+
+	return &CoremapInfo{
+		TotalCores:  cm.Topology.TotalCores,
+		PCores:      cm.Topology.PCores,
+		ECores:      cm.Topology.ECores,
+		Dom0Cores:   cm.Dom0Cores,
+		Assignments: assignments,
+	}, nil
 }
 
 // --- VM lifecycle methods ---
