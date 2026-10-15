@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/ovs"
+	"github.com/jcpowermac/qlvm/internal/provisioner"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
@@ -72,21 +75,6 @@ func TestDBusConstants(t *testing.T) {
 	assert.Equal(t, "io.qlvm.Agent", ServiceName)
 	assert.Equal(t, "/io/qlvm/Agent", ObjectPath)
 	assert.Equal(t, "io.qlvm.Agent", Iface)
-}
-
-func TestMethodStubs(t *testing.T) {
-	// Only the Task 7-8 methods should still be stubs; the Task 4 read
-	// methods, Task 5 lifecycle methods, and Task 6 template methods are
-	// implemented.
-	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
-
-	err := a.ProvisionVM("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
-
-	err = a.SyncKernel("test")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
 }
 
 func TestProgressEmitWithoutBus(t *testing.T) {
@@ -487,4 +475,261 @@ func TestDeleteTemplateSuccess(t *testing.T) {
 	// Verify the dir was removed.
 	_, err = os.Stat(filepath.Join(root, "templates", tplDir))
 	assert.True(t, os.IsNotExist(err), "template dir should be removed")
+}
+
+// --- Auxiliary method tests ---
+
+// fakeProvisionRunner records Provision calls and optionally returns an error.
+type fakeProvisionRunner struct {
+	hosts []string
+	ops   []provisioner.Op
+	err   error
+}
+
+func (f *fakeProvisionRunner) Run(ctx context.Context, host string, ops []provisioner.Op) error {
+	f.hosts = append(f.hosts, host)
+	f.ops = append(f.ops, ops...)
+	return f.err
+}
+
+// fakeKernelHost fakes the kernelSyncer interface for SyncKernel tests.
+type fakeKernelHost struct {
+	runOutput string
+	runErr    error
+	files     map[string][]byte
+	fetchErr  error
+}
+
+func (f *fakeKernelHost) Run(ctx context.Context, cmd string) (string, error) {
+	return f.runOutput, f.runErr
+}
+
+func (f *fakeKernelHost) FetchFile(ctx context.Context, path string) (io.ReadCloser, error) {
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	if data, ok := f.files[path]; ok {
+		return io.NopCloser(strings.NewReader(string(data))), nil
+	}
+	return nil, fmt.Errorf("file not found: %s", path)
+}
+
+// setupVMTest creates a temp qlvm root with a VM meta file and a temp
+// home dir with an SSH config entry for the VM.
+func setupVMTest(t *testing.T, name string) (root, home string) {
+	t.Helper()
+	root = t.TempDir()
+	home = t.TempDir()
+	vmDir := filepath.Join(root, "vms", name)
+	require.NoError(t, os.MkdirAll(vmDir, 0o755))
+	m := &vm.Meta{
+		Name:     name,
+		Type:     "app",
+		Image:    "fedora",
+		IP:       "192.168.122.10",
+		MAC:      "aa:bb:cc:dd:ee:ff",
+		MemoryMB: 2048,
+		VCPUs:    2,
+	}
+	require.NoError(t, m.Save(vmDir))
+	// Create SSH config with an entry for the VM.
+	sshDir := filepath.Join(home, ".ssh")
+	require.NoError(t, os.MkdirAll(sshDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sshDir, "config"), []byte(
+		"Host "+name+"\n  HostName 192.168.122.10\n  User user\n",
+	), 0o600))
+	return root, home
+}
+
+func TestProvisionVMInvalidName(t *testing.T) {
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
+
+	err := a.ProvisionVM("../etc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provision")
+}
+
+func TestProvisionVMMissingVM(t *testing.T) {
+	root := t.TempDir()
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+
+	err := a.ProvisionVM("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provision nonexistent")
+}
+
+func TestProvisionVMSuccess(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	provDir := setupProvisionTest(t, "testvm")
+	runner := &fakeProvisionRunner{}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.provisionRunner = runner
+	a.provisionDir = provDir
+	a.homeDir = home
+
+	err := a.ProvisionVM("testvm")
+	require.NoError(t, err)
+
+	// Verify the runner was called.
+	assert.NotEmpty(t, runner.hosts, "runner should have been called")
+	assert.NotEmpty(t, runner.ops, "runner should have received ops")
+
+	// Verify progress was tracked.
+	a.mu.Lock()
+	tracker, ok := a.progress["provisiontestvm"]
+	a.mu.Unlock()
+	require.True(t, ok, "progress tracker should exist")
+	assert.True(t, tracker.Done, "progress should be marked done")
+}
+
+func TestProvisionVMRunnerError(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	provDir := setupProvisionTest(t, "testvm")
+	runner := &fakeProvisionRunner{err: errors.New("sftp failed")}
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.provisionRunner = runner
+	a.provisionDir = provDir
+	a.homeDir = home
+
+	err := a.ProvisionVM("testvm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provision testvm")
+	assert.Contains(t, err.Error(), "sftp failed")
+}
+
+// setupProvisionTest creates a temp provision dir with base/dotfiles content.
+func setupProvisionTest(t *testing.T, vmName string) string {
+	t.Helper()
+	provDir := t.TempDir()
+	dotDir := filepath.Join(provDir, "base", "dotfiles")
+	require.NoError(t, os.MkdirAll(dotDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dotDir, ".bashrc"), []byte("# test"), 0o644))
+	return provDir
+}
+
+func TestSyncKernelInvalidName(t *testing.T) {
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", "")
+
+	err := a.SyncKernel("../etc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel")
+}
+
+func TestSyncKernelMissingVM(t *testing.T) {
+	root := t.TempDir()
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+
+	err := a.SyncKernel("nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel nonexistent")
+}
+
+func TestSyncKernelSSHConnectError(t *testing.T) {
+	root, home := setupVMTest(t, "testvm")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.homeDir = home
+	a.sshConnectFunc = func(ctx context.Context, home, host, user string) (*ssh.Client, error) {
+		return nil, errors.New("connection refused")
+	}
+
+	err := a.SyncKernel("testvm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel testvm")
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
+func TestSyncKernelSuccess(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runOutput: "kernel-core-6.11.9-300.fc44.x86_64",
+		files: map[string][]byte{
+			"/boot/vmlinuz-6.11.9-300.fc44":          []byte("vmlinuz data"),
+			"/boot/initramfs-6.11.9-300.fc44.img": []byte("initramfs data"),
+		},
+	}
+
+	err := a.SyncKernel("testvm")
+	require.NoError(t, err)
+
+	vmDir := filepath.Join(root, "vms", "testvm")
+	// Verify versioned files were written.
+	for _, name := range []string{"vmlinuz-6.11.9-300.fc44", "initramfs-6.11.9-300.fc44.img"} {
+		data, err := os.ReadFile(filepath.Join(vmDir, name))
+		require.NoError(t, err, "file %s should exist", name)
+		assert.NotEmpty(t, data)
+	}
+	// Verify unversioned aliases were written.
+	for _, name := range []string{"vmlinuz", "initramfs"} {
+		_, err := os.Stat(filepath.Join(vmDir, name))
+		require.NoError(t, err, "alias %s should exist", name)
+	}
+
+	// Verify progress was tracked.
+	a.mu.Lock()
+	tracker, ok := a.progress["synckerneltestvm"]
+	a.mu.Unlock()
+	require.True(t, ok, "progress tracker should exist")
+	assert.True(t, tracker.Done, "progress should be marked done")
+}
+
+func TestSyncKernelKernelQueryError(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runErr: errors.New("ssh session failed"),
+	}
+
+	err := a.SyncKernel("testvm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel testvm")
+	assert.Contains(t, err.Error(), "query vm kernel")
+}
+
+func TestSyncKernelBadKernelVersion(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runOutput: "no kernel found",
+	}
+
+	err := a.SyncKernel("testvm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel testvm")
+}
+
+func TestSyncKernelFetchError(t *testing.T) {
+	root, _ := setupVMTest(t, "testvm")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	a.kernelHost = &fakeKernelHost{
+		runOutput: "kernel-core-6.11.9-300.fc44.x86_64",
+		fetchErr:  errors.New("file not found on remote"),
+	}
+
+	err := a.SyncKernel("testvm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync-kernel testvm")
+	assert.Contains(t, err.Error(), "fetch")
+}
+
+func TestSyncKernelFilesNoPartialWrite(t *testing.T) {
+	// If fetch of the second file fails, no files should be written.
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	host := &fakeKernelHost{
+		runOutput: "kernel-core-6.11.9-300.fc44.x86_64",
+		files: map[string][]byte{
+			"/boot/vmlinuz-6.11.9-300.fc44": []byte("vmlinuz data"),
+			// initramfs missing — will fail fetch
+		},
+	}
+
+	_, err := syncKernelFiles(ctx, host, dir)
+	require.Error(t, err)
+
+	// No files should have been written.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "no files should be written on partial fetch failure")
 }

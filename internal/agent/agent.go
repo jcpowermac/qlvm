@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 
 	"github.com/jcpowermac/qlvm/internal/config"
@@ -29,6 +30,8 @@ import (
 	"github.com/jcpowermac/qlvm/internal/mounts"
 	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/ovs"
+	"github.com/jcpowermac/qlvm/internal/provisioner"
+	"github.com/jcpowermac/qlvm/internal/sshx"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
@@ -176,6 +179,26 @@ type Agent struct {
 	// bakeFn bakes a template directory. Defaults to ostree.BakeTemplate;
 	// tests inject a recording fake.
 	bakeFn func(ctx context.Context, dir, fstype, sshAuthKeys string) error
+
+	// provisionRunner executes ProvisionVM ops. Nil = use the default
+	// SSH runner; tests inject a fake.
+	provisionRunner provisioner.Runner
+
+	// provisionDir is the layered provision content dir (base/ + per-vm/).
+	// Empty = use provisionDefaultDir; tests inject a temp dir.
+	provisionDir string
+
+	// homeDir is the SSH home for provisioner resolution and SyncKernel
+	// auth. Empty = use os.UserHomeDir; tests inject a temp dir.
+	homeDir string
+
+	// kernelHost is the remote end for SyncKernel. Nil = connect to the
+	// VM's IP via sshConnectFunc (or sshx.Connect); tests inject a fake.
+	kernelHost kernelSyncer
+
+	// sshConnectFunc dials a VM for SyncKernel when kernelHost is nil.
+	// Nil = use sshx.Connect; tests inject a fake.
+	sshConnectFunc func(ctx context.Context, home, host, user string) (*ssh.Client, error)
 
 	// Progress signal state (mutex-protected).
 	mu       sync.Mutex
@@ -1182,14 +1205,170 @@ func sshAuthKeys() (string, error) {
 
 // --- Auxiliary methods ---
 
-// ProvisionVM provisions a running VM (installs waypipe, configures ssh).
+// provisionDefaultDir is where dom0 looks for the layered provision
+// content (base/ + per-vm/), next to the qlvm config tree.
+const provisionDefaultDir = "/etc/qvm/provision"
+
+// ProvisionVM syncs layered dotfiles into a running VM's home over sftp.
+// Dom0 provisioning (qlvm install) is external; this provisions the guest.
 func (a *Agent) ProvisionVM(name string) error {
-	return fmt.Errorf("ProvisionVM: not implemented (Task 7)")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("provision: %w", err)
+	}
+	vmDir := a.vmDir(name)
+	if _, err := vm.LoadMeta(vmDir); err != nil {
+		return fmt.Errorf("provision %s: %w", name, err)
+	}
+
+	home := a.homeDir
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("home dir: %w", err)
+		}
+	}
+
+	a.emitProgress("provision"+name, "Syncing dotfiles into "+name)
+	defer a.emitProgressDone("provision" + name)
+
+	var r provisioner.Runner
+	if a.provisionRunner != nil {
+		r = a.provisionRunner
+	} else {
+		r = provisioner.NewSSHRunner(home)
+	}
+	dir := provisionDefaultDir
+	if a.provisionDir != "" {
+		dir = a.provisionDir
+	}
+	if err := provisioner.Provision(ctx, r, home, name, dir); err != nil {
+		return fmt.Errorf("provision %s: %w", name, err)
+	}
+	return nil
 }
 
-// SyncKernel updates a VM's kernel from the template.
+// kernelSyncer is the ssh seam tests fake: a remote command plus file
+// fetches against the running VM.
+type kernelSyncer interface {
+	Run(ctx context.Context, cmd string) (string, error)
+	FetchFile(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// sshKernelSyncer adapts a live *ssh.Client to kernelSyncer.
+type sshKernelSyncer struct{ c *ssh.Client }
+
+func (s sshKernelSyncer) Run(ctx context.Context, cmd string) (string, error) {
+	return sshx.Run(ctx, s.c, cmd)
+}
+
+func (s sshKernelSyncer) FetchFile(ctx context.Context, path string) (io.ReadCloser, error) {
+	return sshx.FetchFile(ctx, s.c, path)
+}
+
+// SyncKernel copies the VM's current kernel + initramfs from its /boot
+// into the VM's state dir so a restart picks up the new kernel.
 func (a *Agent) SyncKernel(name string) error {
-	return fmt.Errorf("SyncKernel: not implemented (Task 8)")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if err := validateVMName(name); err != nil {
+		return fmt.Errorf("sync-kernel: %w", err)
+	}
+	vmDir := a.vmDir(name)
+	m, err := vm.LoadMeta(vmDir)
+	if err != nil {
+		return fmt.Errorf("sync-kernel %s: %w", name, err)
+	}
+
+	home := a.homeDir
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+	}
+
+	id := "synckernel" + name
+	a.emitProgress(id, "Querying kernel version on "+name)
+	defer a.emitProgressDone(id)
+
+	var host kernelSyncer
+	if a.kernelHost != nil {
+		host = a.kernelHost
+	} else {
+		// Connect directly to the VM's IP: disposable VMs have no ssh-config
+		// alias, and a running VM may have a fresh host key.
+		var connectFunc func(ctx context.Context, home, host, user string) (*ssh.Client, error)
+		if a.sshConnectFunc != nil {
+			connectFunc = a.sshConnectFunc
+		} else {
+			connectFunc = sshx.Connect
+		}
+		c, err := connectFunc(ctx, home, m.IP, vm.SSHUser)
+		if err != nil {
+			return fmt.Errorf("sync-kernel %s: %w", name, err)
+		}
+		defer func() { _ = c.Close() }()
+		host = sshKernelSyncer{c: c}
+	}
+
+	a.emitProgress(id, "Fetching kernel files from "+name)
+	ver, err := syncKernelFiles(ctx, host, vmDir)
+	if err != nil {
+		return fmt.Errorf("sync-kernel %s: %w", name, err)
+	}
+
+	a.emitProgress(id, "Synced kernel "+ver+" to "+vmDir)
+	return nil
+}
+
+// syncKernelFiles copies the VM's current kernel and initramfs from its
+// /boot into dir under both their exact fetched names and the unversioned
+// aliases (vmlinuz/initramfs) that the VM's domain config boots.
+// Everything is fetched before anything is written: a partial copy (new
+// vmlinuz beside the old initramfs) would leave the VM unbootable.
+func syncKernelFiles(ctx context.Context, host kernelSyncer, dir string) (string, error) {
+	raw, err := host.Run(ctx, "rpm -q kernel-core --last | head -1")
+	if err != nil {
+		return "", fmt.Errorf("query vm kernel: %w", err)
+	}
+	ver, err := sshx.KernelVersion(raw)
+	if err != nil {
+		return "", err
+	}
+	files := []struct{ remote, local, alias string }{
+		{"/boot/vmlinuz-" + ver, "vmlinuz-" + ver, "vmlinuz"},
+		{"/boot/initramfs-" + ver + ".img", "initramfs-" + ver + ".img", "initramfs"},
+	}
+	var bodies [][]byte
+	for _, f := range files {
+		rc, err := host.FetchFile(ctx, f.remote)
+		if err != nil {
+			return "", fmt.Errorf("fetch %s: %w", f.remote, err)
+		}
+		body, rerr := io.ReadAll(rc)
+		cerr := rc.Close()
+		if rerr != nil {
+			return "", fmt.Errorf("fetch %s: %w", f.remote, rerr)
+		}
+		if cerr != nil {
+			return "", fmt.Errorf("fetch %s: %w", f.remote, cerr)
+		}
+		bodies = append(bodies, body)
+	}
+	for i, f := range files {
+		for _, name := range []string{f.local, f.alias} {
+			if err := os.WriteFile(filepath.Join(dir, name), bodies[i], 0o600); err != nil {
+				return "", err
+			}
+		}
+	}
+	return ver, nil
 }
 
 // --- Progress ---
