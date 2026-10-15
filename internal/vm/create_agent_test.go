@@ -15,7 +15,7 @@ type fakeOVN struct {
 	deleted    map[string]bool
 }
 
-func (f *fakeOVN) AddLSPort(_ context.Context, _ string, name, _ string, ip string) error {
+func (f *fakeOVN) AddLSPort(_ context.Context, _ string, name, _ string, _ string) error {
 	if f.addedPorts == nil {
 		f.addedPorts = make(map[string]bool)
 	}

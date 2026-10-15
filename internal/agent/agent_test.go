@@ -463,7 +463,7 @@ func TestDeleteTemplateSuccess(t *testing.T) {
 	}
 	// Put a marker file to verify removal.
 	marker := filepath.Join(root, "templates", tplDir, "marker")
-	if err := os.WriteFile(marker, []byte("test"), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte("test"), 0o644); err != nil { //nolint:gosec,G306
 		t.Fatal(err)
 	}
 
@@ -500,7 +500,7 @@ type fakeKernelHost struct {
 	fetchErr  error
 }
 
-func (f *fakeKernelHost) Run(_ context.Context, cmd string) (string, error) {
+func (f *fakeKernelHost) Run(_ context.Context, _ string) (string, error) {
 	return f.runOutput, f.runErr
 }
 
@@ -602,8 +602,8 @@ func setupProvisionTest(t *testing.T, _ string) string {
 	t.Helper()
 	provDir := t.TempDir()
 	dotDir := filepath.Join(provDir, "base", "dotfiles")
-	require.NoError(t, os.MkdirAll(dotDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dotDir, ".bashrc"), []byte("# test"), 0o644))
+	require.NoError(t, os.MkdirAll(dotDir, 0o755)) //nolint:gosec,G301
+	require.NoError(t, os.WriteFile(filepath.Join(dotDir, ".bashrc"), []byte("# test"), 0o644)) //nolint:gosec,G306
 	return provDir
 }
 
@@ -628,7 +628,7 @@ func TestSyncKernelSSHConnectError(t *testing.T) {
 	root, home := setupVMTest(t, "testvm")
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 	a.homeDir = home
-	a.sshConnectFunc = func(_ context.Context, home, host, user string) (*ssh.Client, error) {
+	a.sshConnectFunc = func(_ context.Context, _, _, _ string) (*ssh.Client, error) {
 		return nil, errors.New("connection refused")
 	}
 

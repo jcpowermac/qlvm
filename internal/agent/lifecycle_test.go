@@ -264,8 +264,8 @@ func TestCreateVMTemplateNotComplete(t *testing.T) {
 	root := testRoot(t)
 	// Create a template directory with only META (missing template.raw).
 	tplDir := filepath.Join(root, "templates", "fedora-test-template")
-	require.NoError(t, os.MkdirAll(tplDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: quay.io/fedora/fedora:42\ndigest: sha256:abc123\ntype: ostree\n"), 0o644))
+	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: quay.io/fedora/fedora:42\ndigest: sha256:abc123\ntype: ostree\n"), 0o644)) //nolint:gosec,G306
 
 	a := New(&trackingXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
 
@@ -278,8 +278,8 @@ func TestCreateVMAgentTemplateTypeConflict(t *testing.T) {
 	root := testRoot(t)
 	// Create a complete agent template directory.
 	tplDir := filepath.Join(root, "templates", "agent-test-template")
-	require.NoError(t, os.MkdirAll(tplDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: agent-ref\ndigest: sha256:def456\ntype: agent\n"), 0o644))
+	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: agent-ref\ndigest: sha256:def456\ntype: agent\n"), 0o644)) //nolint:gosec,G306
 	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "vmlinuz"), []byte("kernel"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "initramfs"), []byte("initramfs"), 0o755))
 
