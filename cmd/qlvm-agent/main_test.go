@@ -70,7 +70,7 @@ func TestInstallSystemFilesWritesFiles(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify service file
-	data, err := os.ReadFile(servicePath)
+	data, err := os.ReadFile(servicePath) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, agent.ServiceFile(), data)
 

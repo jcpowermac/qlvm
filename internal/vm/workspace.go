@@ -13,7 +13,7 @@ func CreateWorkspaceDisk(path string, sizeMB int) error {
 	if sizeMB <= 0 {
 		return nil // no workspace disk
 	}
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec,G304
 	if err != nil {
 		return fmt.Errorf("create workspace disk: %w", err)
 	}

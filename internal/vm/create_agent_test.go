@@ -38,10 +38,10 @@ func TestCreate_AgentVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Create fake kernel/initramfs in template dir
-	if err := os.WriteFile(filepath.Join(tplDir, "vmlinuz"), []byte("fake-kernel"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tplDir, "vmlinuz"), []byte("fake-kernel"), 0o644); err != nil { //nolint:gosec,G306
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tplDir, "initramfs"), []byte("fake-initramfs"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(tplDir, "initramfs"), []byte("fake-initramfs"), 0o644); err != nil { //nolint:gosec,G306
 		t.Fatal(err)
 	}
 

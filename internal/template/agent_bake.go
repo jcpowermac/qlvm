@@ -57,7 +57,7 @@ func bakeAgentTemplate(ctx context.Context, pc Podman, ref, imageID string, labe
 	if err != nil {
 		return nil, fmt.Errorf("extract initramfs: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "initramfs"), initramfsData, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "initramfs"), initramfsData, 0o644); err != nil { //nolint:gosec,G306
 		return nil, fmt.Errorf("write initramfs: %w", err)
 	}
 

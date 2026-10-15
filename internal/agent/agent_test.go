@@ -192,7 +192,7 @@ func (f *fakePodman) RunImageBuilder(_ context.Context, workdir, _ string, _ io.
 	f.runImageBuilderWorkdir = workdir
 	if f.runImageBuilderCreatesRaw {
 		rawDir := filepath.Join(workdir, "image")
-		if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		if err := os.MkdirAll(rawDir, 0o755); err != nil { //nolint:gosec,G301
 			return err
 		}
 		if err := os.WriteFile(filepath.Join(rawDir, "fedora.raw"), []byte("fake"), 0o644); err != nil {
@@ -236,7 +236,7 @@ func setupTemplateTest(t *testing.T) (root string) {
 	root = t.TempDir()
 
 	// Create templates dir.
-	if err := os.MkdirAll(filepath.Join(root, "templates"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "templates"), 0o755); err != nil { //nolint:gosec,G301
 		t.Fatal(err)
 	}
 

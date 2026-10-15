@@ -129,17 +129,17 @@ func TestEnsureAgentTemplatePersistsMeta(t *testing.T) {
 	root := t.TempDir()
 	p := &fakePodman{
 		digest: testDigest,
-		inspectFunc: func(ctx context.Context, ref string) (map[string]string, error) {
+		inspectFunc: func(_ context.Context, _ string) (map[string]string, error) {
 			return map[string]string{
 				"io.qlvm.type":      "pvh-initramfs",
 				"io.qlvm.kernel":    "/usr/lib/modules/7.2.8-xen1/vmlinuz",
 				"io.qlvm.initramfs": "/usr/lib/modules/7.2.8-xen1/initramfs.img",
 			}, nil
 		},
-		createFunc: func(ctx context.Context, ref string, cmd []string) (string, error) {
+		createFunc: func(_ context.Context, _ string, cmd []string) (string, error) {
 			return "container123", nil
 		},
-		copyFunc: func(ctx context.Context, id, path string, writer io.Writer) error {
+		copyFunc: func(_ context.Context, _ string, path string, writer io.Writer) error {
 			var content []byte
 			if strings.Contains(path, "vmlinuz") {
 				content = []byte("fake-kernel")

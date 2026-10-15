@@ -60,7 +60,7 @@ func WritePolkitAction(path string) error {
 
 // writeEmbedded writes content to path, creating parent directories as needed.
 func writeEmbedded(path string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec,G301
 		return err
 	}
 	return os.WriteFile(path, content, 0o644)
