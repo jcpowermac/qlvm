@@ -1,6 +1,12 @@
 package gui
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"github.com/jcpowermac/qlvm/internal/projection"
+)
 
 // Actions provides VM lifecycle operations bound to the app model and the
 // D-Bus agent client.
@@ -92,6 +98,23 @@ func (a *Actions) Restart() error {
 		return err
 	}
 	a.log(fmt.Sprintf("VM %s restarted.", name))
+	return nil
+}
+
+// RunApp runs an app in the selected VM on the dom0 Wayland session.
+// It calls projection directly (not via the agent client) because waypipe
+// needs the user's Wayland environment.
+func (a *Actions) RunApp(ctx context.Context, exec string, connect projection.Connect, out, errW io.Writer) error {
+	name := a.model.SelectedVMName()
+	if name == "" {
+		return fmt.Errorf("no VM selected")
+	}
+
+	a.log(fmt.Sprintf("Running app in VM %s...", name))
+	if err := GuiRunApp(ctx, name, exec, connect, out, errW); err != nil {
+		a.log(fmt.Sprintf("Failed to run app in %s: %v", name, err))
+		return err
+	}
 	return nil
 }
 
