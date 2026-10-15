@@ -43,7 +43,7 @@ func testRoot(t *testing.T) string {
 func writeMeta(t *testing.T, root string, m *vm.Meta) {
 	t.Helper()
 	dir := filepath.Join(root, "vms", m.Name)
-	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.MkdirAll(dir, 0o755)) //nolint:gosec,G301
 	require.NoError(t, m.Save(dir))
 }
 
@@ -185,7 +185,7 @@ func TestListVMsSkipsBadMeta(t *testing.T) {
 
 	// Create a VM dir without meta.yaml (crashed create).
 	badDir := filepath.Join(root, "vms", "bad")
-	require.NoError(t, os.MkdirAll(badDir, 0o755))
+	require.NoError(t, os.MkdirAll(badDir, 0o755)) //nolint:gosec,G301
 
 	x := &fakeXenWithDomains{domains: []xenctl.DomainInfo{}}
 	a := New(x, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, filepath.Join(root, "coremap.yaml"), root)
@@ -224,7 +224,7 @@ func TestListTemplates(t *testing.T) {
 	require.NoError(t, tmpl.SaveMeta(tplDir))
 
 	// Write a template.raw file.
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.raw"), []byte("fake raw"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.raw"), []byte("fake raw"), 0o644)) //nolint:gosec,G306
 
 	// Create a VM that references this template.
 	created := time.Unix(1700000000, 0)
@@ -258,10 +258,10 @@ func TestListTemplatesIncomplete(t *testing.T) {
 	// Use a valid dir name format.
 	dirName := template.SlugFromRef("quay.io/fedora/fedora:42") + "-" + template.NormalizeDigest("sha256:abc123")
 	tplDir := filepath.Join(root, "templates", dirName)
-	require.NoError(t, os.MkdirAll(tplDir, 0o755))
+	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
 
 	// No META file — incomplete.
-	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.raw"), []byte("fake raw"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.raw"), []byte("fake raw"), 0o644)) //nolint:gosec,G306
 
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, filepath.Join(root, "coremap.yaml"), root)
 
@@ -529,7 +529,7 @@ func TestGetCoremapNotFound(t *testing.T) {
 func TestGetCoremapInvalid(t *testing.T) {
 	root := testRoot(t)
 	coremapPath := filepath.Join(root, "coremap.yaml")
-	require.NoError(t, os.WriteFile(coremapPath, []byte("not: valid: yaml: ["), 0o644))
+	require.NoError(t, os.WriteFile(coremapPath, []byte("not: valid: yaml: ["), 0o644)) //nolint:gosec,G306
 
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, coremapPath, root)
 
