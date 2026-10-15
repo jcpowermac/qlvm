@@ -74,7 +74,12 @@ func TestDBusPolicyContainsMethods(t *testing.T) {
 	content := string(data)
 	// Read methods
 	assert.Contains(t, content, "send_member=\"ListVMs\"")
+	assert.Contains(t, content, "send_member=\"ListTemplates\"")
+	assert.Contains(t, content, "send_member=\"ListDomains\"")
 	assert.Contains(t, content, "send_member=\"GetVM\"")
+	assert.Contains(t, content, "send_member=\"GetTemplate\"")
+	assert.Contains(t, content, "send_member=\"GetConfig\"")
+	assert.Contains(t, content, "send_member=\"GetCoremap\"")
 	// Mutation methods
 	assert.Contains(t, content, "send_member=\"CreateVM\"")
 	assert.Contains(t, content, "send_member=\"DeleteVM\"")
