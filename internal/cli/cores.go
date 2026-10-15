@@ -2,12 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
 
-	"github.com/jcpowermac/qlvm/internal/coremap"
+	"github.com/jcpowermac/qlvm/internal/agent"
 )
 
 func coresCmd() *cobra.Command {
@@ -15,18 +14,19 @@ func coresCmd() *cobra.Command {
 		Use:   "cores",
 		Short: "Show CPU core topology and VM assignments",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cm, err := coremap.Load(coremap.DefaultPath)
+			c, err := getClient()
 			if err != nil {
-				if os.IsNotExist(err) {
-					return fmt.Errorf("no coremap at %s (run qlvm vm create first, or qlvm install)", coremap.DefaultPath)
-				}
+				return err
+			}
+			cm, err := c.GetCoremap()
+			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
 			_, _ = fmt.Fprintf(out, "Topology: %d cores (%d P, %d E)\n",
-				cm.Topology.TotalCores, len(cm.Topology.PCores), len(cm.Topology.ECores))
-			_, _ = fmt.Fprintf(out, "  P cores: %s\n", coresList(cm.Topology.PCores))
-			_, _ = fmt.Fprintf(out, "  E cores: %s\n", coresList(cm.Topology.ECores))
+				cm.TotalCores, len(cm.PCores), len(cm.ECores))
+			_, _ = fmt.Fprintf(out, "  P cores: %s\n", coresList(cm.PCores))
+			_, _ = fmt.Fprintf(out, "  E cores: %s\n", coresList(cm.ECores))
 			_, _ = fmt.Fprintf(out, "dom0: cores %s\n", coresList(cm.Dom0Cores))
 			if len(cm.Assignments) == 0 {
 				_, _ = fmt.Fprintf(out, "No VMs assigned.\n")
@@ -34,17 +34,27 @@ func coresCmd() *cobra.Command {
 			}
 			_, _ = fmt.Fprintf(out, "VMs:\n")
 			// Sort assignments by VM name for stable output.
-			sorted := make([]coremap.Assignment, len(cm.Assignments))
+			sorted := make([]agent.CoremapAssignmentInfo, len(cm.Assignments))
 			copy(sorted, cm.Assignments)
 			sort.Slice(sorted, func(i, j int) bool { return sorted[i].VM < sorted[j].VM })
 			for _, a := range sorted {
 				_, _ = fmt.Fprintf(out, "  %-20s cores %s\n", a.VM, coresList(a.Cores))
 			}
-			// Show free cores.
-			free := cm.FreeCores()
+			// Show free cores: all cores not assigned to dom0 or any VM.
+			assigned := make(map[int]bool)
+			for _, c := range cm.Dom0Cores {
+				assigned[c] = true
+			}
+			for _, a := range cm.Assignments {
+				for _, c := range a.Cores {
+					assigned[c] = true
+				}
+			}
 			var freeList []int
-			for c := range free {
-				freeList = append(freeList, c)
+			for i := 0; i < cm.TotalCores; i++ {
+				if !assigned[i] {
+					freeList = append(freeList, i)
+				}
 			}
 			sort.Ints(freeList)
 			_, _ = fmt.Fprintf(out, "Free: %s\n", coresList(freeList))

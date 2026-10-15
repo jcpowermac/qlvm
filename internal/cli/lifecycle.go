@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,8 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jcpowermac/qlvm/internal/coremap"
-	"github.com/jcpowermac/qlvm/internal/ovn"
+	"github.com/jcpowermac/qlvm/internal/agent"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/jcpowermac/qlvm/internal/vm"
@@ -33,7 +31,11 @@ func startCmd() *cobra.Command {
 		Short: "Boot a prepared VM (cleans stale OVS vif ports first)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := startVM(cmd.Context(), args[0]); err != nil {
+			c, err := getClient()
+			if err != nil {
+				return err
+			}
+			if err := c.StartVM(args[0]); err != nil {
 				return fmt.Errorf("start %s: %w", args[0], err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "started %s\n", args[0])
@@ -72,12 +74,11 @@ func stopCmd() *cobra.Command {
 		Short: "Gracefully stop a running VM",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			x, err := xenctlNew()
+			c, err := getClient()
 			if err != nil {
 				return err
 			}
-			defer func() { _ = x.Close() }()
-			if err := stopForced(x, args[0]); err != nil {
+			if err := c.StopVM(args[0]); err != nil {
 				return fmt.Errorf("stop %s: %w", args[0], err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "stopped %s\n", args[0])
@@ -92,12 +93,11 @@ func killCmd() *cobra.Command {
 		Short: "Force-kill a running VM (no clean shutdown)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			x, err := xenctl.New()
+			c, err := getClient()
 			if err != nil {
 				return err
 			}
-			defer func() { _ = x.Close() }()
-			if err := x.Destroy(args[0]); err != nil {
+			if err := c.KillVM(args[0]); err != nil {
 				return fmt.Errorf("kill %s: %w", args[0], err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "killed %s\n", args[0])
@@ -153,19 +153,14 @@ func restartCmd() *cobra.Command {
 		Short: "Restart a VM (graceful stop, force-kill if it lingers, then start)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			x, err := xenctl.New()
+			c, err := getClient()
 			if err != nil {
 				return err
 			}
-			defer func() { _ = x.Close() }()
-			if err := stopForced(x, name); err != nil {
-				return fmt.Errorf("restart %s: stop: %w", name, err)
+			if err := c.RestartVM(args[0]); err != nil {
+				return fmt.Errorf("restart %s: %w", args[0], err)
 			}
-			if err := startVM(cmd.Context(), name); err != nil {
-				return fmt.Errorf("restart %s: %w", name, err)
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restarted %s\n", name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "restarted %s\n", args[0])
 			return nil
 		},
 	}
@@ -177,29 +172,14 @@ func deleteCmd() *cobra.Command {
 		Short: "Delete a VM (domain, OVN/OVS ports, state dir, ssh block)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			name := args[0]
-			x, err := xenctl.New()
+			c, err := getClient()
 			if err != nil {
 				return err
 			}
-			defer func() { _ = x.Close() }()
-			nb, err := ovn.NewLive(ctx)
-			if err != nil {
-				return err
+			if err := c.DeleteVM(args[0]); err != nil {
+				return fmt.Errorf("delete %s: %w", args[0], err)
 			}
-			br, err := ovs.NewLive(ctx)
-			if err != nil {
-				return err
-			}
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("home dir: %w", err)
-			}
-			if err := xenctl.Delete(ctx, x, nb, br, home, vmDirOf(name), name, coremap.DefaultPath); err != nil {
-				return err
-			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", name)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
 			return nil
 		},
 	}
@@ -211,45 +191,15 @@ func listCmd() *cobra.Command {
 		Short: "List VMs: running from Xen, stopped from meta.yaml",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			x, err := xenctl.New()
+			c, err := getClient()
 			if err != nil {
 				return err
 			}
-			defer func() { _ = x.Close() }()
-			infos, err := x.List()
+			vms, err := c.ListVMs()
 			if err != nil {
 				return err
 			}
-			metas := map[string]*vm.Meta{}
-			entries, err := os.ReadDir(filepath.Join(installRoot, "vms"))
-			if err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			for _, e := range entries {
-				if !e.IsDir() {
-					continue
-				}
-				m, err := vm.LoadMeta(filepath.Join(installRoot, "vms", e.Name()))
-				if err != nil {
-					continue // a crashed create may leave a dir without meta
-				}
-				metas[m.Name] = m
-			}
-			var stopped []*vm.Meta
-			for _, m := range metas {
-				running := false
-				for _, d := range infos {
-					if d.Name == m.Name {
-						running = true
-						break
-					}
-				}
-				if !running {
-					stopped = append(stopped, m)
-				}
-			}
-			sort.Slice(stopped, func(i, j int) bool { return stopped[i].Name < stopped[j].Name })
-			cmd.Print(listRows(infos, stopped, metas))
+			cmd.Print(listRowsFromAgent(vms))
 			return nil
 		},
 	}
@@ -257,6 +207,7 @@ func listCmd() *cobra.Command {
 
 // listRows renders `qlvm vm list` output: a header, one row per Xen domain
 // (type from meta when known), then an "available" section with stopped VMs.
+// Kept for backward compatibility with tests that use fake xenctl data.
 func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*vm.Meta) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-16s %-12s %-10s %6s %6s\n", "NAME", "TYPE", "STATE", "MEM", "VCPUS")
@@ -271,6 +222,29 @@ func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*v
 		b.WriteString("available:\n")
 		for _, m := range stopped {
 			fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", m.Name, m.Type, "stopped", m.MemoryMB, m.VCPUs)
+		}
+	}
+	return b.String()
+}
+
+// listRowsFromAgent renders `qlvm vm list` output from agent.VMInfo rows.
+// Running VMs are listed first (by state), then stopped VMs under "available".
+func listRowsFromAgent(vms []agent.VMInfo) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-16s %-12s %-10s %6s %6s\n", "NAME", "TYPE", "STATE", "MEM", "VCPUS")
+	var stopped []agent.VMInfo
+	for _, v := range vms {
+		if v.State == "stopped" {
+			stopped = append(stopped, v)
+			continue
+		}
+		fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", v.Name, v.Type, v.State, v.MemoryMB, v.VCPUs)
+	}
+	if len(stopped) > 0 {
+		b.WriteString("available:\n")
+		sort.Slice(stopped, func(i, j int) bool { return stopped[i].Name < stopped[j].Name })
+		for _, v := range stopped {
+			fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", v.Name, v.Type, "stopped", v.MemoryMB, v.VCPUs)
 		}
 	}
 	return b.String()
