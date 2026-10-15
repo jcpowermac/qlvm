@@ -44,8 +44,9 @@ func startCmd() *cobra.Command {
 	}
 }
 
-// startVM boots a prepared VM (the qlvm vm start body); shared with apps'
-// auto-start of a stopped VM.
+// startVM boots a prepared VM directly via Xen/OVS. Used only by `vm console`
+// (the root exception) for auto-start of a stopped VM before attaching to the
+// console.
 func startVM(ctx context.Context, name string) error {
 	dir := vmDirOf(name)
 	m, err := vm.LoadMeta(dir)
