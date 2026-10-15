@@ -111,7 +111,7 @@ func (a *Actions) RunApp(ctx context.Context, exec string, connect projection.Co
 	}
 
 	a.log(fmt.Sprintf("Running app in VM %s...", name))
-	if err := GuiRunApp(ctx, name, exec, connect, out, errW); err != nil {
+	if err := RunApp(ctx, name, exec, connect, out, errW); err != nil {
 		a.log(fmt.Sprintf("Failed to run app in %s: %v", name, err))
 		return err
 	}

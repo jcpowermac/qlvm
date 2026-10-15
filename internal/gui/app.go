@@ -1,3 +1,6 @@
+// Package gui implements the qlvm Wayland GUI using Fyne. It connects to the
+// qlvm-agent D-Bus daemon for VM management and runs waypipe locally for app
+// projection.
 package gui
 
 import (
@@ -117,12 +120,12 @@ func (g *App) buildLayout() {
 			}
 
 			// VM table view.
-			g.vmTable = newVMTable(g.model, g.window, g.actions, func(name string) {
+			g.vmTable = newVMTable(g.model, g.window, g.actions, func(string) {
 				// Single click just selects; right-click opens context menu.
 			})
 
 			// Template table view.
-			g.templateTable = newTemplateTable(g.model, g.window, g.client, func(dir string) {
+			g.templateTable = newTemplateTable(g.model, g.window, g.client, func(string) {
 				// Single click just selects; right-click opens context menu.
 			})
 

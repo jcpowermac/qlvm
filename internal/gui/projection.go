@@ -35,13 +35,13 @@ var guiRunWaypipe = func(args []string, stdin io.Reader, stdout, stderr io.Write
 	return cmd.Run()
 }
 
-// GuiRunApp projects a guest-side exec onto the dom0 Wayland session from
+// RunApp projects a guest-side exec onto the dom0 Wayland session from
 // the GUI (running as the user). It reads the VM's meta.yaml directly
 // (user-readable) and calls projection.Run with the user's Wayland
 // environment. The VM running check is skipped (the GUI has no Xen access);
 // a down VM surfaces as waypipe/ssh's own failure, matching the CLI's
 // unprivileged path.
-func GuiRunApp(ctx context.Context, vmName, exec string, connect projection.Connect, out, errW io.Writer) error {
+func RunApp(ctx context.Context, vmName, exec string, connect projection.Connect, out, errW io.Writer) error {
 	m, err := vm.LoadMeta(filepath.Join(guiQlvmRoot, "vms", vmName))
 	if err != nil {
 		return fmt.Errorf("run %s: %w", vmName, err)

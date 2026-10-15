@@ -10,7 +10,7 @@ import (
 
 // ShowCreateTemplateDialog shows the create template dialog and creates the
 // template via the D-Bus agent.
-func ShowCreateTemplateDialog(parent fyne.Window, model *AppModel, client Client, log func(string), onCreated func()) {
+func ShowCreateTemplateDialog(parent fyne.Window, _ *AppModel, client Client, log func(string), onCreated func()) {
 	// Form fields.
 	imageEntry := widget.NewEntry()
 	imageEntry.PlaceHolder = "quay.io/fedora/fedora:44"

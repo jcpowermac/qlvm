@@ -22,7 +22,7 @@ func ShowCreateVMDialog(parent fyne.Window, model *AppModel, client Client, log 
 		templateOptions = append(templateOptions, tpl.Image)
 	}
 	if len(templateOptions) == 0 {
-		dialog.ShowError(fmt.Errorf("no templates available. Create a template first."), parent)
+		dialog.ShowError(fmt.Errorf("no templates available; create a template first"), parent)
 		return
 	}
 
@@ -33,10 +33,10 @@ func ShowCreateVMDialog(parent fyne.Window, model *AppModel, client Client, log 
 	nameEntry := widget.NewEntry()
 	nameEntry.PlaceHolder = "vm-name"
 
-	templateSelect := widget.NewSelect(templateOptions, func(s string) {})
+	templateSelect := widget.NewSelect(templateOptions, func(string) {})
 	templateSelect.SetSelected(templateOptions[0])
 
-	typeSelect := widget.NewSelect(typeOptions, func(s string) {})
+	typeSelect := widget.NewSelect(typeOptions, func(string) {})
 	typeSelect.SetSelected("app")
 
 	memoryEntry := widget.NewEntry()
