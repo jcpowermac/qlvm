@@ -59,7 +59,7 @@ Make `qlvm template` and `qlvm vm` work identically for agent-based VMs as they 
 
 **Agent template META:**
 ```yaml
-dir: /var/lib/qvm/templates/<digest>
+dir: /var/lib/qlvm/templates/<digest>
 image: ghcr.io/jcpowermac/pi-in-xen:latest
 digest: sha256:...
 kernel_ver: 7.2.8-xen1
@@ -166,7 +166,7 @@ ostree_path: ""    # empty for agent
 
 ### Configuration
 
-Add to `/etc/qvm/qlvm.yaml`:
+Add to `/etc/qlvm/qlvm.yaml`:
 ```yaml
 agent:
   memory_mb: 2048

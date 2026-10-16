@@ -456,8 +456,8 @@ type SharedMount struct {
 }
 
 // MountUnitName derives the .mount unit basename (no suffix) for the i-th
-// SharedMount from its guest path, systemd-style: /var/lib/qvm/data ->
-// var-lib-qvm-data-0.
+// SharedMount from its guest path, systemd-style: /var/lib/qlvm/data ->
+// var-lib-qlvm-data-0.
 func MountUnitName(m SharedMount, i int) string {
 	name := strings.TrimPrefix(m.Where, "/")
 	return strings.ReplaceAll(name, "/", "-") + "-" + strconv.Itoa(i)
@@ -763,8 +763,8 @@ func BakeNetworkd(ctx context.Context, fs FS, diskPath, fstype, ip, gw, mac, dns
 }
 
 // ControlScript is the guest-side waypipe control relay, baked to
-// /etc/qvm/qvm-ctl. One instance per dom0 connection (forked by the
-// ncat listener in qvm-ctl.service): verify the per-VM token, start the
+// /etc/qlvm/qlvm-ctl. One instance per dom0 connection (forked by the
+// ncat listener in qlvm-ctl.service): verify the per-VM token, start the
 // ncat unix->TCP bridge back to the dom0 data port, then run the app
 // under a one-shot waypipe server.
 const ControlScript = `#!/bin/sh
@@ -775,7 +775,7 @@ const ControlScript = `#!/bin/sh
 # or vsock (waypipe carries the data over AF_VSOCK itself; dom0-ip
 # unused). Requires the xen-vsock transport in both kernels.
 IFS= read -r tok || exit 1
-want=$(cat "$HOME/.qvm/waypipe-token" 2>/dev/null) || exit 1
+want=$(cat "$HOME/.qlvm/waypipe-token" 2>/dev/null) || exit 1
 [ -n "$want" ] || exit 1
 [ "$tok" = "$want" ] || exit 1
 IFS= read -r mode || exit 1
@@ -784,7 +784,7 @@ IFS= read -r dom0 || exit 1
 IFS= read -r exec || exit 1
 [ -n "$exec" ] || exec="bash -l"
 if [ "$mode" = vsock ]; then
-  /usr/bin/waypipe -n --display qvm --vsock -s "$port" --xwls server -- $exec
+  /usr/bin/waypipe -n --display qlvm --vsock -s "$port" --xwls server -- $exec
   exit $?
 fi
 sock=/run/user/1000/qlvm-waypipe-$$.sock
@@ -798,7 +798,7 @@ while [ ! -S "$sock" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done
 # DISPLAY for X clients like firefox. No -o: --oneshot hands the app
 # WAYLAND_SOCKET + an inherited fd instead of WAYLAND_DISPLAY, which breaks
 # programs that open and close the Wayland connection during init (firefox).
-/usr/bin/waypipe -n --display qvm --xwls -s "$sock" server -- $exec
+/usr/bin/waypipe -n --display qlvm --xwls -s "$sock" server -- $exec
 rc=$?
 kill $bridge 2>/dev/null
 wait $bridge 2>/dev/null
@@ -819,7 +819,7 @@ exit $rc
 // there is no systemd start-limit wedge to reset.
 //
 // --sh-exec takes exactly ONE argument, so it points at the executable
-// script path (no spaces to split) rather than "sh /etc/qvm/qvm-ctl".
+// script path (no spaces to split) rather than "sh /etc/qlvm/qlvm-ctl".
 func ControlServiceUnit(user string) string {
 	return fmt.Sprintf(`[Unit]
 Description=qlvm waypipe control listener (one relay per connection)
@@ -831,7 +831,7 @@ Type=simple
 User=%s
 Environment=HOME=/var/home/%s
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl
+ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qlvm/qlvm-ctl
 Restart=on-failure
 RestartSec=1
 
@@ -840,7 +840,7 @@ WantedBy=multi-user.target
 `, user, user)
 }
 
-// BakeControl bakes the per-VM waypipe control channel: the qvm-ctl relay
+// BakeControl bakes the per-VM waypipe control channel: the qlvm-ctl relay
 // script + token (0600), the systemd socket/service pair, and the socket
 // enablement symlink. Runs at vm create (same rw mount path as
 // BakeNetworkd).
@@ -861,24 +861,24 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err != nil {
 		return err
 	}
-	// /etc/qvm must be traversable by the unprivileged service user:
+	// /etc/qlvm must be traversable by the unprivileged service user:
 	// 0750 root:root makes /bin/sh hit EACCES (status=126) before the
 	// script ever runs. The token is NOT here — see below.
-	qvm := filepath.Join(etc, "qvm")
-	if err := os.MkdirAll(qvm, 0o755); err != nil {
+	qlvm := filepath.Join(etc, "qlvm")
+	if err := os.MkdirAll(qlvm, 0o755); err != nil {
 		return err
 	}
-	if err := fs.WriteFile(filepath.Join(qvm, "qvm-ctl"), []byte(ControlScript), 0o755); err != nil {
+	if err := fs.WriteFile(filepath.Join(qlvm, "qlvm-ctl"), []byte(ControlScript), 0o755); err != nil {
 		return err
 	}
 	// The token lives in the VM user's home on the shared var: the service
-	// runs as the user, so a root-owned 0600 file in /etc/qvm is unreadable
+	// runs as the user, so a root-owned 0600 file in /etc/qlvm is unreadable
 	// (the relay exits before it can ever run the app).
 	varHome, err := sharedVarHome(ctx, fs, root, user)
 	if err != nil {
 		return err
 	}
-	tokDir := filepath.Join(varHome, ".qvm")
+	tokDir := filepath.Join(varHome, ".qlvm")
 	if err := fs.MkdirAll(tokDir, 0o700); err != nil {
 		return err
 	}
@@ -886,7 +886,7 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err := fs.WriteFile(tok, []byte(token+"\n"), 0o600); err != nil {
 		return err
 	}
-	// The relay runs unprivileged: a root-owned 0700 .qvm makes the token
+	// The relay runs unprivileged: a root-owned 0700 .qlvm makes the token
 	// unreadable and the relay exits before waypipe ever runs.
 	if err := chownForUser(tokDir, defaultVMUID); err != nil {
 		return err
@@ -900,29 +900,29 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	if err := os.MkdirAll(sysd, 0o750); err != nil {
 		return err
 	}
-	if err := fs.WriteFile(filepath.Join(sysd, "qvm-ctl.service"), []byte(ControlServiceUnit(user)), 0o644); err != nil {
+	if err := fs.WriteFile(filepath.Join(sysd, "qlvm-ctl.service"), []byte(ControlServiceUnit(user)), 0o644); err != nil {
 		return err
 	}
 	// Remove pre-ncat socket-activation leftovers so a template re-baked in
 	// place does not keep triggering the broken socket path (the relay
 	// read stdin, which socket activation leaves as /dev/null).
 	for _, stale := range []string{
-		"qvm-ctl.socket",
-		"qvm-ctl.socket.d/10-no-trigger-limit.conf",
-		"qvm-ctl.service.d/10-no-start-limit.conf",
-		"qvm-ctl.service.d/20-debug.conf",
-		"sockets.target.wants/qvm-ctl.socket",
+		"qlvm-ctl.socket",
+		"qlvm-ctl.socket.d/10-no-trigger-limit.conf",
+		"qlvm-ctl.service.d/10-no-start-limit.conf",
+		"qlvm-ctl.service.d/20-debug.conf",
+		"sockets.target.wants/qlvm-ctl.socket",
 	} {
 		_ = os.Remove(filepath.Join(sysd, stale))
 	}
-	_ = os.RemoveAll(filepath.Join(sysd, "qvm-ctl.socket.d"))
-	_ = os.RemoveAll(filepath.Join(sysd, "qvm-ctl.service.d"))
+	_ = os.RemoveAll(filepath.Join(sysd, "qlvm-ctl.socket.d"))
+	_ = os.RemoveAll(filepath.Join(sysd, "qlvm-ctl.service.d"))
 	wants := filepath.Join(sysd, "multi-user.target.wants")
 	if err := os.MkdirAll(wants, 0o750); err != nil {
 		return err
 	}
-	_ = os.Remove(filepath.Join(wants, "qvm-ctl.service"))
-	return os.Symlink("../qvm-ctl.service", filepath.Join(wants, "qvm-ctl.service"))
+	_ = os.Remove(filepath.Join(wants, "qlvm-ctl.service"))
+	return os.Symlink("../qlvm-ctl.service", filepath.Join(wants, "qlvm-ctl.service"))
 }
 
 // BakeMounts bakes one per-share systemd .mount unit (plus its enablement

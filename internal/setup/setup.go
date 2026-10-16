@@ -37,8 +37,8 @@ type Plan struct {
 	FW      *fw.Manager
 	Netd    *netd.Manager
 	SD      *systemd.Manager
-	Storage    func() error // /var/lib/qvm + tree
-	Dom0Params func() error // write /etc/qvm/xen-boot-params.conf
+	Storage    func() error // /var/lib/qlvm + tree
+	Dom0Params func() error // write /etc/qlvm/xen-boot-params.conf
 	VifScript  func() error // qlvm-vif at /etc/xen/scripts/vif-ovn
 	SaveCfg    func() error // write the config file (final step)
 

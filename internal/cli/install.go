@@ -19,10 +19,10 @@ import (
 )
 
 // defaultConfigPath is where install reads and rewrites the config.
-const defaultConfigPath = "/etc/qvm/qlvm.yaml"
+const defaultConfigPath = "/etc/qlvm/qlvm.yaml"
 
 // installRoot is the per-VM/template state tree (spec §5.2).
-const installRoot = "/var/lib/qvm"
+const installRoot = "/var/lib/qlvm"
 
 func installCmd() *cobra.Command {
 	var configPath string
@@ -129,7 +129,7 @@ func dom0ParamsPath() string {
 	if p := os.Getenv("DOM0_PARAMS_PATH"); p != "" {
 		return p
 	}
-	return "/etc/qvm/xen-boot-params.conf"
+	return "/etc/qlvm/xen-boot-params.conf"
 }
 
 // writeDom0Params writes the dom0 boot parameters to dom0ParamsPath.

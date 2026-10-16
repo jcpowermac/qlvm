@@ -19,13 +19,13 @@ management CLI. The only local process it launches is `waypipe` (for
 #    writes qlvm + qlvm-vif + bundled libyajl.so.2 to /usr/local/bin)
 sudo make container-build
 
-# 2. First install: writes /etc/qvm/qlvm.yaml and drives the dom0
+# 2. First install: writes /etc/qlvm/qlvm.yaml and drives the dom0
 #    (OVS bridges, OVN router/switches, firewall, networkd config,
 #    services, storage tree, vif-ovn script) toward the declared state
 sudo qlvm install
 
 # 3. Edit the config (NIC, gateway, domains, VM defaults, egress policy)
-$EDITOR /etc/qvm/qlvm.yaml
+$EDITOR /etc/qlvm/qlvm.yaml
 sudo qlvm install                   # reconciliation: edit + re-run is the change path
 
 # 4. Bake a template once: pull the image + ostree bake (~5 min).
@@ -52,7 +52,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 
 | Command | What it does |
 |---|---|
-| `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, systemd-networkd (and masks NetworkManager), systemd services, the `/var/lib/qvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
+| `qlvm install` | Idempotent dom0 orchestration: drives OVS, OVN, firewalld, systemd-networkd (and masks NetworkManager), systemd services, the `/var/lib/qlvm` storage tree, and `/etc/xen/scripts/vif-ovn` toward the state declared in the config. `--config PATH`, `--skip-nic-migration` |
 | `qlvm vm create <name> --domain <d> --template <dir>` | Reference a baked template (exact dir name or unique prefix — pure filesystem lookup, never a pull or bake; `qlvm template create` first), then prepare the VM: OVN/OVS ports, reflinked disk, `meta.toml` (image+digest from the template META). `--type app\|disposable`, `--mount host:guest` (repeatable, p9), `--memory MB` (minimum 64), `--vcpus N`, `--config PATH` |
 | `qlvm vm start <name>` | Boot a prepared VM (seeds the per-VM kernel files from the template dir if missing, cleans stale OVS vif ports first) |
 | `qlvm vm stop <name>` | Graceful shutdown |
@@ -61,7 +61,7 @@ state, mem, vcpus); `qlvm vm delete work-1` tears the VM down completely
 | `qlvm vm delete <name>` | Delete everything: Xen domain, OVN/OVS ports, state dir, ssh config block |
 | `qlvm vm list` | name, type, state, mem, vcpus (running from Xen, stopped from `meta.yaml`) |
 | `qlvm vm run <vm> [app...]` | Run an app in the VM's GUI via waypipe (needs a dom0 Wayland session). `--connect ssh` (default) \| `tcp` \| `vsock` picks the channel |
-| `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
+| `qlvm vm provision <vm>` | Sync the layered `dotfiles/` into the VM's home over sftp. `--dir PATH` (default `/etc/qlvm/provision`, with `base/` + per-vm layers). System packages are not provisioned — the VM root is an ostree deployment from the bootc container image (dnf disabled); extend the image for extra packages |
 | `qlvm vm sync-kernel <vm>` | Fetch the VM's current kernel/initramfs from the VM's `/boot` into the VM's own state dir (`vms/<name>/`) so a restart picks up a kernel the VM upgraded in place. Per-VM: a sibling VM of the same template keeps its own kernel; the template dir is never touched |
 | `qlvm template [list]` | List baked templates (dir, image, kernel, size, which VMs reference each); warns on incomplete dirs |
 | `qlvm template create <ref> [--force]` | Pull + bake an image's template (~5 min) into `templates/<slug>-<digest>/`. Refuses if the dir already exists; `--force` is the re-bake: flat refusal while any VM references the dir, otherwise remove + bake. Reaps a killed bake's residue before baking on both paths: stale loop devices, leftover `/tmp/qlvm-ostree-*` mounts, exited image-builder containers |
@@ -89,7 +89,7 @@ in the guest was shown to hang deterministically (live evidence in
 `<vm>-<i>` (0-based in `--mount` order). At create time qlvm bakes one
 systemd unit per share into the VM disk's deployment `/etc` overlay — named
 after the guest path with `/` runs collapsed and a `-<i>` suffix, e.g.
-`etc/systemd/system/var-lib-qvm-data-0.mount` — with `Type=9p`,
+`etc/systemd/system/var-lib-qlvm-data-0.mount` — with `Type=9p`,
 `Options=trans=virtio`, `What=<tag>`, `Where=<guest path>` (a relative
 guest path is mounted at `/<guest>`), `_netdev`, and an enabling symlink in
 `multi-user.target.wants`, so the share is mounted at boot by systemd. There
@@ -97,7 +97,7 @@ is no kernel-cmdline mechanism involved.
 
 ## Configuration
 
-Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). `install` writes it;
+Single source of truth: `/etc/qlvm/qlvm.yaml` (YAML). `install` writes it;
 editing it + re-running `install` is the change path (reconciliation).
 
 ```yaml
@@ -138,7 +138,7 @@ firewall:
 classic gigabyte-vs-megabyte typo, and below the floor Xen cannot even build
 the guest's memory map.
 
-Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
+Per-VM state lives under `/var/lib/qlvm/vms/<name>/`:
 
 - `disk.img` — reflink copy of the template
 - `meta.yaml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
@@ -146,7 +146,7 @@ Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
 Storage layout:
 
 ```
-/var/lib/qvm/
+/var/lib/qlvm/
 ├── templates/<slug>-<digest>/
 │   ├── template.raw
 │   ├── vmlinuz  initramfs

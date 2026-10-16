@@ -22,7 +22,7 @@ import (
 // appsCacheDir is the dom0 desktop cache: one subdir per VM with the
 // cached .desktop files (design §9). A var (not const) so tests can
 // redirect it.
-var appsCacheDir = "/var/lib/qvm/desktop-cache"
+var appsCacheDir = "/var/lib/qlvm/desktop-cache"
 
 // desktopGlob is the remote stream apps sync fetches: the VM shell
 // expands the glob and cat concatenates the files (sshx.FetchFile).

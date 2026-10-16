@@ -39,8 +39,8 @@ const (
 	sbEndpoint  = "unix:/var/run/ovn/ovnsb_db.sock"       // OVN Southbound
 	ovsEndpoint = "unix:/var/run/openvswitch/db.sock" // Open_vSwitch
 
-	configPath = "/etc/qvm/qlvm.yaml"
-	stateRoot  = "/var/lib/qvm"
+	configPath = "/etc/qlvm/qlvm.yaml"
+	stateRoot  = "/var/lib/qlvm"
 )
 
 // One minimal row model per table; libovsdb resolves the table from the

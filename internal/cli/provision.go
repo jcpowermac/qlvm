@@ -12,7 +12,7 @@ import (
 
 // provisionDefaultDir is where dom0 looks for the layered provision
 // content (base/ + per-vm/), next to the qlvm.yaml config tree.
-const provisionDefaultDir = "/etc/qvm/provision"
+const provisionDefaultDir = "/etc/qlvm/provision"
 
 func provisionCmd() *cobra.Command {
 	var dir string

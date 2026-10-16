@@ -46,7 +46,7 @@ This design addresses two problems:
 
 ### 1. Dom0 resource limits
 
-**Config file**: `/etc/qvm/qlvm.yaml` (existing) gets a new `dom0` section:
+**Config file**: `/etc/qlvm/qlvm.yaml` (existing) gets a new `dom0` section:
 
 ```yaml
 dom0:
@@ -55,16 +55,16 @@ dom0:
   pin: true               # dom0_vcpus_pin boot param
 ```
 
-**Application**: `qlvm install` writes Xen boot params to `/etc/qvm/xen-boot-params.conf`:
+**Application**: `qlvm install` writes Xen boot params to `/etc/qlvm/xen-boot-params.conf`:
 
 ```
 dom0_mem=32G,max:32G dom0_max_vcpus=2 dom0_vcpus_pin
 ```
 
-**Boot param injection**: Modify `xen-dom0-refresh` (in `../os/files/system/usr/libexec/xen-dom0-refresh`) to read `/etc/qvm/xen-boot-params.conf` and append its contents to the `multiboot2` line:
+**Boot param injection**: Modify `xen-dom0-refresh` (in `../os/files/system/usr/libexec/xen-dom0-refresh`) to read `/etc/qlvm/xen-boot-params.conf` and append its contents to the `multiboot2` line:
 
 ```grub
-multiboot2 /xen-4.21.2.gz $(cat /etc/qvm/xen-boot-params.conf 2>/dev/null)
+multiboot2 /xen-4.21.2.gz $(cat /etc/qlvm/xen-boot-params.conf 2>/dev/null)
 ```
 
 The script change is minimal and safe: if the file doesn't exist, behavior is unchanged.
@@ -84,7 +84,7 @@ Cache the result; don't re-detect on every command. On the target CPU (Ultra 5 2
 
 ### 3. Core tracking
 
-A new state file: `/var/lib/qvm/coremap.yaml`
+A new state file: `/var/lib/qlvm/coremap.yaml`
 
 ```yaml
 total_cores: 14

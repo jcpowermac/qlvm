@@ -480,17 +480,17 @@ func TestDomainConfig_Agent(t *testing.T) {
     }
     tpl := &template.Template{
         Type: "agent",
-        Dir:  "/var/lib/qvm/templates/test",
+        Dir:  "/var/lib/qlvm/templates/test",
     }
-    spec := DomainConfig("/var/lib/qvm/vms/test-agent", m, tpl)
+    spec := DomainConfig("/var/lib/qlvm/vms/test-agent", m, tpl)
     
     if spec.Type != "PVH" {
         t.Errorf("expected PVH, got %s", spec.Type)
     }
-    if spec.Kernel != "/var/lib/qvm/vms/test-agent/vmlinuz" {
+    if spec.Kernel != "/var/lib/qlvm/vms/test-agent/vmlinuz" {
         t.Errorf("unexpected kernel path: %s", spec.Kernel)
     }
-    if spec.Ramdisk != "/var/lib/qvm/vms/test-agent/initramfs" {
+    if spec.Ramdisk != "/var/lib/qlvm/vms/test-agent/initramfs" {
         t.Errorf("unexpected ramdisk path: %s", spec.Ramdisk)
     }
     // Check boot params

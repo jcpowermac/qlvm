@@ -4,7 +4,7 @@
 
 **Goal:** Build `qlvm`, a Go rewrite of the bash qvm toolset: unified container-based VM creation (app/disposable) on Xen PVH with OVN network isolation, 9-subcommand CLI + vif hotplug binary, native control planes only.
 
-**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, x/crypto/ssh (+ sftp for provisioning; the original Go config-management dependency was dropped — see Task 12 ruling).
+**Architecture:** One cobra binary (`cmd/qlvm`) + one tiny hotplug binary (`cmd/qlvm-vif`). All system state flows from `/etc/qlvm/qlvm.toml`; `install` reconciles OVS/OVN/firewalld/systemd/NM declaratively; VMs are libxl domain configs built at runtime from per-VM `meta.toml` + template dirs (no .xl files). Control planes: xenlight (cgo), libovsdb, D-Bus (godbus), podman Go client, x/crypto/ssh (+ sftp for provisioning; the original Go config-management dependency was dropped — see Task 12 ruling).
 
 **Tech Stack:** Go (latest stable), cobra, ovn-kubernetes/libovsdb, xen-project xenlight (cgo/libxl), godbus, containers/podman client API, pkg/sftp, golang.org/x/crypto/ssh, golang.org/x/sys/unix, vishvananda/netlink, BurntSushi/toml, golangci-lint.
 
@@ -203,7 +203,7 @@ In-process OVSDB server as in Task 3. `TestApplyIdempotent` (twice → no dup br
   - `func Run(ctx context.Context, p *Plan, cfg *config.Config, opts Options) error`
   - `type Options struct { SkipNICMigration bool }`
   - dom0 check: `func IsDom0() (bool, error)` // reads `/proc/xen/capabilities` for `control_d` (path overridable via `Plan.Dom0Check func() (bool, error)`)
-  - `internal/cli`: cobra `install` cmd: flags `--config` (default `/etc/qvm/qlvm.toml`), `--skip-nic-migration`; writes config via `cfg.Save` as final step; ordering per spec §5 (dom0 → storage → services → OVS → OVN → firewall → vif → config save).
+  - `internal/cli`: cobra `install` cmd: flags `--config` (default `/etc/qlvm/qlvm.toml`), `--skip-nic-migration`; writes config via `cfg.Save` as final step; ordering per spec §5 (dom0 → storage → services → OVS → OVN → firewall → vif → config save).
 
 - [ ] **Step 1: Write the failing tests**
 

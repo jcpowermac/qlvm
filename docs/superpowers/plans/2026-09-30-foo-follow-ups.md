@@ -13,7 +13,7 @@ daily use, but #1 and #6 are the user-facing ones.
 - Unit tests: `go test -tags 'exclude_graphdriver_btrfs exclude_graphdriver_zfs containers_image_openpgp' ./...`
   (host go is fine; the cgo file is excluded by build tag).
 - Template ref: `jcpowermac-os-bolt-sha256:72e8ffbbcedab9a561cfab9aee3c6412bd8c8d4d5a406019f843dc5b3e46fd3e`
-  (dir under /var/lib/qvm/templates/). Guest user `user` (ssh pubkey, NO sudo in-guest);
+  (dir under /var/lib/qlvm/templates/). Guest user `user` (ssh pubkey, NO sudo in-guest);
   `qlvm vm create` does NOT start (spec §6.2.4) — `qlvm vm start <name>` explicitly.
 - Guest in-guest forensics without sudo: the one-shot systemd unit pattern (loop-attach p4
   while stopped, unit into the deployment etc overlay, self-removing) — see AGENTS.md
