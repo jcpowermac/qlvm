@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -206,8 +205,8 @@ func listCmd() *cobra.Command {
 	}
 }
 
-// listRows renders `qlvm vm list` output: a header, one row per Xen domain
-// (type from meta when known), then an "available" section with stopped VMs.
+// listRows renders `qlvm vm list` output: a flat table of running Xen
+// domains (type from meta when known) followed by stopped meta files.
 // Kept for backward compatibility with tests that use fake xenctl data.
 func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*vm.Meta) string {
 	var b strings.Builder
@@ -219,34 +218,19 @@ func listRows(infos []xenctl.DomainInfo, stopped []*vm.Meta, metas map[string]*v
 		}
 		fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", d.Name, typ, d.State, d.MemMB, d.VCPUs)
 	}
-	if len(stopped) > 0 {
-		b.WriteString("available:\n")
-		for _, m := range stopped {
-			fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", m.Name, m.Type, "stopped", m.MemoryMB, m.VCPUs)
-		}
+	for _, m := range stopped {
+		fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", m.Name, m.Type, "stopped", m.MemoryMB, m.VCPUs)
 	}
 	return b.String()
 }
 
-// listRowsFromAgent renders `qlvm vm list` output from agent.VMInfo rows.
-// Running VMs are listed first (by state), then stopped VMs under "available".
+// listRowsFromAgent renders `qlvm vm list` output from agent.VMInfo rows:
+// one flat table, in the order the agent returns the VMs.
 func listRowsFromAgent(vms []agent.VMInfo) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-16s %-12s %-10s %6s %6s\n", "NAME", "TYPE", "STATE", "MEM", "VCPUS")
-	var stopped []agent.VMInfo
 	for _, v := range vms {
-		if v.State == "stopped" {
-			stopped = append(stopped, v)
-			continue
-		}
 		fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", v.Name, v.Type, v.State, v.MemoryMB, v.VCPUs)
-	}
-	if len(stopped) > 0 {
-		b.WriteString("available:\n")
-		sort.Slice(stopped, func(i, j int) bool { return stopped[i].Name < stopped[j].Name })
-		for _, v := range stopped {
-			fmt.Fprintf(&b, "%-16s %-12s %-10s %6d %6d\n", v.Name, v.Type, "stopped", v.MemoryMB, v.VCPUs)
-		}
 	}
 	return b.String()
 }

@@ -75,7 +75,6 @@ func TestListRows(t *testing.T) {
 	want := "NAME             TYPE         STATE         MEM  VCPUS\n" +
 		"vm1              app          running       512      2\n" +
 		"vm2              app          paused       1024      1\n" +
-		"available:\n" +
 		"vm3              disposable   stopped       256      1\n"
 
 	require.Equal(t, want, listRows(infos, stopped, map[string]*vm.Meta{
@@ -166,9 +165,8 @@ func TestListRowsFromAgent(t *testing.T) {
 	got := listRowsFromAgent(vms)
 	want := "NAME             TYPE         STATE         MEM  VCPUS\n" +
 		"vm1              app          running       512      2\n" +
-		"vm3              agent        blocked      1024      4\n" +
-		"available:\n" +
 		"vm2              disposable   stopped       256      1\n" +
+		"vm3              agent        blocked      1024      4\n" +
 		"vm4              app          stopped       128      1\n"
 	require.Equal(t, want, got)
 }
@@ -189,7 +187,7 @@ func TestListCmd(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, out.String(), "vm1")
 	assert.Contains(t, out.String(), "vm2")
-	assert.Contains(t, out.String(), "available:")
+	assert.NotContains(t, out.String(), "available:")
 }
 
 func TestListCmdDaemonNotRunning(t *testing.T) {

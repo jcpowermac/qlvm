@@ -271,8 +271,8 @@ will (TDD: integration test runs it twice).
   OVS port (stale-port cleanup as in start), remove `vms/<name>/` (reflink —
   only private extents reclaimed), remove ssh-config block (app type).
 - **`vm list`** — `ListDomain` (xenlight) joined with `meta.yaml` files; columns
-  name, type (`app`/`disposable`), state, mem, vcpus; stopped VMs listed
-  under "available".
+  name, type (`app`/`disposable`), state, mem, vcpus; one flat table in the
+  order the agent returns the VMs (meta dirs, alphabetical).
 - **`vm run`** — `exec waypipe ssh <name> <app>…` (only local exec in the project;
   requires `WAYLAND_DISPLAY`, errors clearly when absent).
 - **sync-kernel** — over SSH (`x/crypto/ssh`): resolve the VM's current kernel
