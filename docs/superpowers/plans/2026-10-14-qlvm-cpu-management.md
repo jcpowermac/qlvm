@@ -82,7 +82,7 @@ Dom0 on a 14-core (6P+8E) / 65GB machine is unconstrained, starving guest VMs of
    - Model table: map of CPU model strings to `{p: int, e: int}`. Start with `"Ultra 5 245K": {p: 6, e: 8}`.
    - Read total cores from `/sys/devices/system/cpu/` (count cpu* dirs).
    - P cores = first N in Linux CPU numbering, E cores = rest.
-3. `Load(path string)` — read `/var/lib/qvm/coremap.yaml`.
+3. `Load(path string)` — read `/var/lib/qlvm/coremap.yaml`.
 4. `Save(path string)` — write coremap.yaml atomically (write to temp, rename).
 5. `Rebuild(topology Topology, dom0VCPUs int, vmMetas map[string]*vm.Meta)` — reconstruct coremap from existing VM meta files + dom0 config. Handles stale entries.
 6. `Allocate(cm *Coremap, vcpus int) ([]int, error)` — auto-placement: find contiguous block of E cores first, then P cores (excluding dom0 cores). Return the assigned cores.
@@ -169,8 +169,8 @@ Dom0 on a 14-core (6P+8E) / 65GB machine is unconstrained, starving guest VMs of
 2. In `install.go`'s `newInstallPlan()`, implement `Dom0Params`:
    - Read `cfg.Dom0`.
    - Format: `dom0_mem=<X>G,max:<X>G dom0_max_vcpus=<N>` + ` dom0_vcpus_pin` if `cfg.Dom0.Pin`.
-   - Write to `/etc/qvm/xen-boot-params.conf` (0644).
-   - Create `/etc/qvm/` dir if needed.
+   - Write to `/etc/qlvm/xen-boot-params.conf` (0644).
+   - Create `/etc/qlvm/` dir if needed.
 3. Add the step to `setup.Run()` after the "dom0" step (before storage).
 
 **Testing:** Unit test in `internal/setup/setup_test.go` (extend) verifying:
@@ -190,12 +190,12 @@ Dom0 on a 14-core (6P+8E) / 65GB machine is unconstrained, starving guest VMs of
 - `../os/files/system/usr/libexec/xen-dom0-refresh`
 
 **Changes:**
-1. In section 4 (user.cfg generation), read `/etc/qvm/xen-boot-params.conf` if it exists.
+1. In section 4 (user.cfg generation), read `/etc/qlvm/xen-boot-params.conf` if it exists.
 2. Append its contents to the `multiboot2` line:
    ```bash
    xen_params=""
-   if [ -f /etc/qvm/xen-boot-params.conf ]; then
-       xen_params=$(cat /etc/qvm/xen-boot-params.conf)
+   if [ -f /etc/qlvm/xen-boot-params.conf ]; then
+       xen_params=$(cat /etc/qlvm/xen-boot-params.conf)
    fi
    # ...
    multiboot2 /xen-${ver}.gz ${xen_params}

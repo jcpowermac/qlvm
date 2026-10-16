@@ -23,7 +23,7 @@
 - All controller logic behind interfaces so unit tests use `envtest`-style fake clients or real in-process apiserver (via the kine+apiserver harness built in Task 2).
 - Integration tests use `//go:build integration` and never run in default `go test ./...`.
 - **Binary distribution:** kine and kube-apiserver are external binaries. The `qlvm k8s start` command must check for their presence and provide clear error messages with install instructions. Do not embed them in the qlvm binary.
-- **Storage:** Single SQLite file at `/var/lib/qvm/k8s/kine.db`. API server state directory at `/var/lib/qvm/k8s/`.
+- **Storage:** Single SQLite file at `/var/lib/qlvm/k8s/kine.db`. API server state directory at `/var/lib/qlvm/k8s/`.
 - **API group:** `qlvm.io`, version `v1`.
 - **Namespace:** All CRs live in the `default` namespace (single-node, no multi-tenancy).
 
@@ -216,7 +216,7 @@ git add -A && git commit -m "feat: CRD types for VM, Template, Domain"
 
 **Ruling (controller):** `internal/apimgr` manages the kine and kube-apiserver subprocesses. It follows the k8senv pattern: start kine first, wait for TCP readiness, then start kube-apiserver. Shutdown is reverse order. TLS certificates are generated on first start and cached. Token auth is used for client authentication (simple, no CA needed for client certs). The manager exposes a `rest.Config` for the controller to use.
 
-State directory: `/var/lib/qvm/k8s/`
+State directory: `/var/lib/qlvm/k8s/`
 - `kine.db` — SQLite database
 - `certs/` — TLS certificates (ca.crt, server.crt, server.key, client.crt, client.key)
 - `tokens.csv` — auth tokens
@@ -240,7 +240,7 @@ Ports: apiserver on `:6443`, kine on `:2379` (both configurable via `apimgr.Conf
 
 - [ ] **Step 1: Write the failing tests**
 
-`internal/apimgr/config_test.go`: `TestConfigDefaults` (empty Config fills in defaults: StateDir=/var/lib/qvm/k8s, ports); `TestConfigValidate` (invalid port → error).
+`internal/apimgr/config_test.go`: `TestConfigDefaults` (empty Config fills in defaults: StateDir=/var/lib/qlvm/k8s, ports); `TestConfigValidate` (invalid port → error).
 
 `internal/apimgr/certs_test.go`: `TestGenerateCerts` (generate certs in temp dir, verify files exist, server cert is valid TLS, can be parsed); `TestCertsReuse` (generate twice, second time should reuse existing certs).
 
@@ -366,7 +366,7 @@ Run: `go test ./internal/controller/...` — FAIL.
 func main() {
     var stateDir, kineBin, apiserverBin string
     var logLevel string
-    flag.StringVar(&stateDir, "state-dir", "/var/lib/qvm/k8s", "...")
+    flag.StringVar(&stateDir, "state-dir", "/var/lib/qlvm/k8s", "...")
     // ... parse flags
 
     cfg := apimgr.Config{StateDir: stateDir, KineBinary: kineBin, APIServerBinary: apiserverBin}
@@ -831,7 +831,7 @@ func newStartCmd() *cobra.Command {
             return nil
         },
     }
-    cmd.Flags().StringVar(&stateDir, "state-dir", "/var/lib/qvm/k8s", "State directory")
+    cmd.Flags().StringVar(&stateDir, "state-dir", "/var/lib/qlvm/k8s", "State directory")
     // ...
     return cmd
 }
@@ -1044,7 +1044,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/qlvm k8s start --state-dir /var/lib/qvm/k8s --kine-binary /usr/local/bin/kine --apiserver-binary /usr/local/bin/kube-apiserver
+ExecStart=/usr/local/bin/qlvm k8s start --state-dir /var/lib/qlvm/k8s --kine-binary /usr/local/bin/kine --apiserver-binary /usr/local/bin/kube-apiserver
 Restart=on-failure
 RestartSec=5
 

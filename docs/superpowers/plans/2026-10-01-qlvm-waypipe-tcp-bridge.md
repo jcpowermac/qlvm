@@ -25,14 +25,14 @@ qlvm (Go):
   waypipe --socket /tmp/A.sock client  ←─── waypipe server (per app)
   TCP 0.0.0.0:PORT (ephemeral)          ncat -lkU /run/user/1000/B.sock
     accept → io.Copy ↔ unix A.sock        --sh-exec 'ncat DOM0IP PORT'
-  control: dial ip:4711, writes          qvm-ctl.service (oneshot,
+  control: dial ip:4711, writes          qlvm-ctl.service (oneshot,
     <token>\n<PORT>\n<dom0IP>\n<exec>\n   socket-activated on tcp:4711)
 ```
 
-- Guest: `qvm-ctl.socket` (systemd, `ListenStream=4711`) activates
-  `qvm-ctl.service` per connection; `/etc/qvm/qvm-ctl` (sh) reads the 4-line
-  frame, checks the token against `/etc/qvm/waypipe-token`, starts the
-  ncat bridge, then runs `waypipe -o -n -s B.sock --display qvm server -- <exec>`.
+- Guest: `qlvm-ctl.socket` (systemd, `ListenStream=4711`) activates
+  `qlvm-ctl.service` per connection; `/etc/qlvm/qlvm-ctl` (sh) reads the 4-line
+  frame, checks the token against `/etc/qlvm/waypipe-token`, starts the
+  ncat bridge, then runs `waypipe -o -n -s B.sock --display qlvm server -- <exec>`.
 - Dom0: `internal/projection` listens TCP, launches the `waypipe client`,
   forwards accepted TCP ↔ the client's unix socket, sends the control frame,
   waits for the client to exit (app exit), cleans up.
@@ -51,14 +51,14 @@ re-bake before live use.)
 
 ### 2. `internal/ostree/surgery.go` — `BakeControl`
 Per-VM bake (runs at create, same mount path as `BakeNetworkd`):
-- `/etc/qvm/qvm-ctl` (0755, sh script above; empty exec → `bash -l`)
-- `/etc/qvm/waypipe-token` (0600, per-VM token)
-- `/etc/systemd/system/qvm-ctl.socket` + `qvm-ctl.service`
+- `/etc/qlvm/qlvm-ctl` (0755, sh script above; empty exec → `bash -l`)
+- `/etc/qlvm/waypipe-token` (0600, per-VM token)
+- `/etc/systemd/system/qlvm-ctl.socket` + `qlvm-ctl.service`
   (`Type=oneshot`, `User=<user>`, `Requires/After=bolt-rundir.service`,
   `Environment=HOME=/var/home/<user> XDG_RUNTIME_DIR=/run/user/1000`,
-  `ExecStart=/bin/sh /etc/qvm/qvm-ctl` — `sh <file>` so SELinux only needs
+  `ExecStart=/bin/sh /etc/qlvm/qlvm-ctl` — `sh <file>` so SELinux only needs
   *read* on etc_t, not execute)
-- enable symlink `sockets.target.wants/qvm-ctl.socket`
+- enable symlink `sockets.target.wants/qlvm-ctl.socket`
 Extract `deploymentEtc()` from `BakeNetworkd`'s inline path computation and
 share it.
 
@@ -93,7 +93,7 @@ frame → wait for waypipe exit → close listener.
 
 ### 6. `internal/cli`
 - `run.go`: `vm run <vm> [app...]` → load meta + config (existing
-  `--config` default `/etc/qvm/qlvm.toml`), `dom0IP = cfg.Network.RouterIP`,
+  `--config` default `/etc/qlvm/qlvm.toml`), `dom0IP = cfg.Network.RouterIP`,
   `exec = strings.Join(args[1:], " ")` (empty → guest defaults to `bash -l`),
   `projection.Run`. Keep the `WAYLAND_DISPLAY` guard and the `runWaypipe`
   seam (tests use it).
@@ -129,7 +129,7 @@ frame → wait for waypipe exit → close listener.
 
 ## Pitfalls to watch (known classes from this repo)
 
-- SELinux: /etc/qvm files read by the unconfined_service_t service — the
+- SELinux: /etc/qlvm files read by the unconfined_service_t service — the
   `sh <file>` ExecStart form avoids execute-permission; verify in smoke.
 - waypipe server's first dial of B.sock can race the ncat listener — the
   script polls for the socket file; waypipe retries dials (ssh mode relies

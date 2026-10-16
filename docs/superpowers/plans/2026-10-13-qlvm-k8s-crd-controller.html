@@ -449,7 +449,7 @@
       <li><strong>os/exec exception:</strong> subprocess management of kine/kube-apiserver is permitted (control plane infrastructure, not management-plane operations)</li>
       <li><strong>Integration tests:</strong> <code>//go:build integration</code>, never run in default <code>go test ./...</code></li>
       <li><strong>Binary distribution:</strong> kine and kube-apiserver are external binaries (not embedded)</li>
-      <li><strong>Storage:</strong> Single SQLite file at <code>/var/lib/qvm/k8s/kine.db</code></li>
+      <li><strong>Storage:</strong> Single SQLite file at <code>/var/lib/qlvm/k8s/kine.db</code></li>
       <li><strong>API group:</strong> <code>qlvm.io</code>, version <code>v1</code></li>
       <li><strong>Namespace:</strong> All CRs in <code>default</code> namespace</li>
     </ul>
@@ -584,7 +584,7 @@
       </div>
       <div class="task-ruling">
         <strong>Ruling</strong>
-        <code>internal/apimgr</code> manages kine and kube-apiserver subprocesses (k8senv pattern). Start kine first, wait for TCP readiness, then start apiserver. Shutdown reverse order. TLS certs generated on first start. Token auth. State dir: <code>/var/lib/qvm/k8s/</code>. Ports: apiserver <code>:6443</code>, kine <code>:2379</code>.
+        <code>internal/apimgr</code> manages kine and kube-apiserver subprocesses (k8senv pattern). Start kine first, wait for TCP readiness, then start apiserver. Shutdown reverse order. TLS certs generated on first start. Token auth. State dir: <code>/var/lib/qlvm/k8s/</code>. Ports: apiserver <code>:6443</code>, kine <code>:2379</code>.
       </div>
       <div class="task-interfaces">
         <strong>Interfaces</strong>

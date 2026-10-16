@@ -15,7 +15,7 @@ and NVMe wear. Templates should be first-class, inspectable state.
 
 ## Current state (verified 2026-09-29)
 
-- Template dir: `/var/lib/qvm/templates/<slug>-<digest>/` where slug =
+- Template dir: `/var/lib/qlvm/templates/<slug>-<digest>/` where slug =
   image ref minus registry/path (e.g. `jcpowermac-os-bolt-sha256:9bc2...`).
   Contents after success: `template.raw`, `META` (JSON: Dir, Digest,
   Image, KernelVer, RootDev, RootFlags, OstreePath), `vmlinuz`, `initramfs`,
@@ -24,7 +24,7 @@ and NVMe wear. Templates should be first-class, inspectable state.
   exists (`internal/template/template.go`, `DirFor`/`LoadMeta`/`LoadByRef`).
 - `internal/cli/create.go` wires: `template.NewPodman(ctx,
   "unix:///run/podman/podman.sock")` → `template.Ensure(ctx, pod,
-  EnsureOpts{Root: "/var/lib/qvm", Ref: image, Log: stdout, Bake:
+  EnsureOpts{Root: "/var/lib/qlvm", Ref: image, Log: stdout, Bake:
   ostree.BakeTemplate(ctx, fs, dir, "xfs", sshAuthKeys())})`.
 - **`start` needs the template dir**: it loads kernel/initramfs via
   `template.LoadByRef(installRoot, m.Image, m.Digest)`
@@ -44,7 +44,7 @@ qlvm template clean [--force]           # drop unreferenced template dirs
 ```
 
 - **list**: table of `NAME-DIGEST  IMAGE  KERNEL  SIZE  REFERENCED-BY-VMs`
-  (walk `/var/lib/qvm/templates/*/META` via `template.LoadMeta`; scan
+  (walk `/var/lib/qlvm/templates/*/META` via `template.LoadMeta`; scan
   `vms/*/meta.toml` for `Image`+`Digest` matches). Warn on incomplete dirs
   (no `template.raw`).
 - **rebuild**: compute ref digest, remove that digest's dir (refuse if any
@@ -72,7 +72,7 @@ No new packages: reuse `internal/template` (Dir/Load/Ensure),
   and never wrap the command in a short timeout; a killed bake leaves the
   orphan states listed above. `rebuild` should first offer to reap:
   stale loops (`losetup -a` attached to deleted files under
-  `/var/lib/qvm`), leftover `/tmp/qlvm-ostree-*` mounts, and exited
+  `/var/lib/qlvm`), leftover `/tmp/qlvm-ostree-*` mounts, and exited
   image-builder containers.
 - `sudo qlvm create` must keep working from a root shell — the
   `sshAuthKeys()` collection (root + `SUDO_USER` pubkeys) is part of the

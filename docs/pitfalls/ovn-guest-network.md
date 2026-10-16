@@ -12,7 +12,7 @@
   from the legacy setup), so ping replies carry ttl=63. Legacy bash
   reference for the dom0 OVN/OVS/static plumbing: the legacy bash VM
   project (sibling tree, `qvm-install`, `qvm-harden-dom0`,
-  `qvm-setup-egress`, `vif-ovn` scripts).
+  `qlvm-setup-egress`, `vif-ovn` scripts).
 - **Verify in 3 commands**: `ping -c3 <vm-ip>` (ttl=63 = via OVN router);
   `sudo ovn-sbctl find Port_Binding` → the VM's port has `up: true`, a
   `chassis`, and `mac`/`port_security` = the assigned MAC (the OVN "MAC

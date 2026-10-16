@@ -21,7 +21,7 @@ var guiQlvmRoot = "/var/lib/qlvm"
 
 // guiConfigPath is the qlvm config file path. A var (not const) so tests
 // can redirect it.
-var guiConfigPath = "/etc/qvm/qlvm.yaml"
+var guiConfigPath = "/etc/qlvm/qlvm.yaml"
 
 // guiRunWaypipe execs waypipe — the only local process qlvm is allowed to
 // launch (design spec). The GUI runs as the user in a Wayland session, so

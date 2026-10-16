@@ -561,7 +561,7 @@ func TestBakeMountsReleasesBootPartition(t *testing.T) {
 }
 
 func TestSharedMountUnit(t *testing.T) {
-	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qvm/data\n_netdev=true\n"
+	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qlvm/data\n_netdev=true\n"
 	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qlvm/data\n"
 	want += "Type=9p\nOptions=trans=virtio\n\n[Install]\nWantedBy=multi-user.target\n"
 	assert.Equal(t, want,

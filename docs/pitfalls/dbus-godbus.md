@@ -38,7 +38,7 @@
     unsubstituted `{chain}_{zone}` template.
   - **The dom0-egress policy is a strict DROP allowlist. Any service the
     dom0 itself depends on (e.g. the llama.cpp inference endpoint — see
-    `firewall.egress.extra_rules` in /etc/qvm/qlvm.yaml) needs an allow
+    `firewall.egress.extra_rules` in /etc/qlvm/qlvm.yaml) needs an allow
     rule or the agent driving this repo loses its model connection mid-run.**
     Verify llama liveness after every firewall change.
   - Permanent state lives in `/etc/firewalld/{zones,policies}/*.xml` and

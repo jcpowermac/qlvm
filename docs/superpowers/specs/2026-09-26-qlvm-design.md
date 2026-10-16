@@ -86,7 +86,7 @@ standalone script (folded into `qlvm apps`), all NFS code.
 
 ## 4. Configuration
 
-Single source of truth: `/etc/qvm/qlvm.yaml` (YAML). `install` writes it;
+Single source of truth: `/etc/qlvm/qlvm.yaml` (YAML). `install` writes it;
 editing it + re-running `install` is the change path (reconciliation).
 
 ```yaml
@@ -127,7 +127,7 @@ validation and `vm create` reject lower values — a `4` meant as 4 GB is the
 classic unit typo, and below the floor Xen cannot build the guest's memory
 map.
 
-Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
+Per-VM state lives under `/var/lib/qlvm/vms/<name>/`:
 
 - `disk.img` — reflink copy of the template
 - `meta.yaml` — name, type, image ref + digest, domain, ip, mac, memory, vcpus, mounts
@@ -135,7 +135,7 @@ Per-VM state lives under `/var/lib/qvm/vms/<name>/`:
 Storage layout:
 
 ```
-/var/lib/qvm/
+/var/lib/qlvm/
 ├── templates/<slug>-<digest>/
 │   ├── template.raw
 │   ├── vmlinuz  initramfs
@@ -151,7 +151,7 @@ step is idempotent ("desired exists → skip") so `install` can be re-run at
 will (TDD: integration test runs it twice).
 
 1. **Verify dom0** — `/proc/xen/capabilities` contains `control_d`.
-2. **Storage** — btrfs subvolume (or plain dir fallback) `/var/lib/qvm` + tree.
+2. **Storage** — btrfs subvolume (or plain dir fallback) `/var/lib/qlvm` + tree.
 3. **Services** — enable+start openvswitch, ovn-northd, ovn-controller
    (systemd D-Bus `org.freedesktop.systemd1`).
 4. **OVS** — `br-int` with OVN encap external-ids; `br-ex` with the physical
@@ -178,7 +178,7 @@ will (TDD: integration test runs it twice).
      `extra_rules`)
 7. **vif script** — install `qlvm-vif` at `/etc/xen/scripts/vif-ovn` (copy
    binary, `chmod +x`).
-8. **Config** — write `/etc/qvm/qlvm.yaml`.
+8. **Config** — write `/etc/qlvm/qlvm.yaml`.
 
 ## 6. Templates and `vm create`
 
@@ -292,7 +292,7 @@ ruling).
 - Syncs `provision/base/dotfiles/` + `provision/<vm>/dotfiles/` into the VM
   user's home (per-vm layer wins), over sftp with the path confined to the
   home dir (absolute and `..` paths rejected).
-- `--dir PATH` (default `/etc/qvm/provision`). Repo ships a
+- `--dir PATH` (default `/etc/qlvm/provision`). Repo ships a
   `provision/base/` scaffold (example dotfiles layout).
 - **System packages are NOT provisioned**: the VM root is an ostree
   deployment built from the bootc container image, and dnf is disabled on it.
@@ -304,7 +304,7 @@ ruling).
 - `apps sync [vm]` — over SSH (`x/crypto/ssh`): fetch
   `/usr/share/applications/*.desktop` from running VM(s) (default: all
   running), split into per-app cached files under
-  `/var/lib/qvm/desktop-cache/<vm>/`.
+  `/var/lib/qlvm/desktop-cache/<vm>/`.
 - `apps` (rofi mode protocol on argv/env, like the former `qvm-appmenu`):
   `ROFI_RETV=0` → emit rofi entries from the cache (Type=Application only,
   NoDisplay filtered); `ROFI_RETV=1` → launch: if the VM is stopped, start it

@@ -7,7 +7,7 @@ package cli
 import "github.com/spf13/cobra"
 
 // defaultConfigPath is the default location of the qlvm config file.
-const defaultConfigPath = "/etc/qvm/qlvm.yaml"
+const defaultConfigPath = "/etc/qlvm/qlvm.yaml"
 
 // installRoot is the per-VM/template state tree (spec §5.2).
 const installRoot = "/var/lib/qlvm"

@@ -173,7 +173,7 @@ type Agent struct {
 	ovs         ovs.VifPorter
 	cfg         *config.Config
 	coremapPath string
-	root        string // qlvm state root (/var/lib/qvm)
+	root        string // qlvm state root (/var/lib/qlvm)
 
 	// podmanFactory creates the Podman client for template operations.
 	// Defaults to template.NewPodman; tests inject a fake.

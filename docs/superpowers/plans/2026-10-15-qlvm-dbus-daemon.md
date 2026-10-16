@@ -264,7 +264,7 @@ func main() {
 		cancel()
 	}()
 
-	cfg, err := config.Load("/etc/qvm/qlvm.yaml")
+	cfg, err := config.Load("/etc/qlvm/qlvm.yaml")
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -369,9 +369,9 @@ and `io.qlvm.Agent.ProgressDone(id)` signals. The client subscribes via
 **File:** `internal/agent/agent.go` (implement the read methods)
 
 Implementation details:
-- `ListVMs`: read `/var/lib/qvm/vms/*/meta.yaml`, merge with Xen domain
+- `ListVMs`: read `/var/lib/qlvm/vms/*/meta.yaml`, merge with Xen domain
   states from `ListDomains`.
-- `ListTemplates`: read `/var/lib/qvm/templates/*/META`, count referencing
+- `ListTemplates`: read `/var/lib/qlvm/templates/*/META`, count referencing
   VMs.
 - `ListDomains`: call `xen.List()`, map to DomainInfo.
 - `GetVM`: load single VM meta + domain state.
@@ -474,7 +474,7 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/qvm /var/run/qvm /run/xen /run/openvswitch /run/ovn /run/podman
+ReadWritePaths=/var/lib/qlvm /var/run/qlvm /run/xen /run/openvswitch /run/ovn /run/podman
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -814,7 +814,7 @@ auth dialog. This is optional for v1.
 
 ### Daemon restart on config change
 
-If `/etc/qvm/qlvm.yaml` changes, the daemon needs to reload. Options:
+If `/etc/qlvm/qlvm.yaml` changes, the daemon needs to reload. Options:
 1. `SIGHUP` triggers a config reload.
 2. External provisioning restarts the daemon after writing the config.
 3. The daemon watches the config file with inotify.
@@ -838,8 +838,8 @@ must handle:
    polkit action).
 3. Enabling and starting `qlvm-agent.service`.
 4. Setting up OVS bridges, OVN switches/routers, firewalld rules, networkd
-   config, `/var/lib/qvm` storage tree, `/etc/xen/scripts/vif-ovn`.
-5. Writing the initial `/etc/qvm/qlvm.yaml`.
+   config, `/var/lib/qlvm` storage tree, `/etc/xen/scripts/vif-ovn`.
+5. Writing the initial `/etc/qlvm/qlvm.yaml`.
 
 This is a significant shift: the provisioning logic currently in
 `internal/setup` must be moved elsewhere. Options:
@@ -855,4 +855,4 @@ The reconciliation property of `install` (idempotent re-run to fix drift)
 The systemd unit includes standard Fedora hardening directives
 (`ProtectSystem=strict`, `NoNewPrivileges`, etc.). Tune `ReadWritePaths` as
 needed based on live testing — the initial list covers the known paths
-(`/var/lib/qvm`, `/run/xen`, `/run/openvswitch`, `/run/ovn`, `/run/podman`).
+(`/var/lib/qlvm`, `/run/xen`, `/run/openvswitch`, `/run/ovn`, `/run/podman`).
