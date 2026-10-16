@@ -231,7 +231,7 @@ func newOpID(prefix string) string {
 }
 
 // New creates an Agent with the given control planes. root is the qlvm
-// state root (e.g. /var/lib/qvm) where VM and template state is stored.
+// state root (e.g. /var/lib/qlvm) where VM and template state is stored.
 func New(x xenctl.Xen, o vm.OVNPorter, v ovs.VifPorter, cfg *config.Config, coremapPath, root string) *Agent {
 	return &Agent{
 		xen:           x,
@@ -1237,7 +1237,7 @@ func sshAuthKeys() (string, error) {
 
 // provisionDefaultDir is where dom0 looks for the layered provision
 // content (base/ + per-vm/), next to the qlvm config tree.
-const provisionDefaultDir = "/etc/qvm/provision"
+const provisionDefaultDir = "/etc/qlvm/provision"
 
 // ProvisionVM syncs layered dotfiles into a running VM's home over sftp.
 // Dom0 provisioning is external; this provisions the guest.

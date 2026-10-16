@@ -13,7 +13,7 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/qvm /var/run/qvm /run/xen /run/openvswitch /run/ovn /run/podman
+ReadWritePaths=/var/lib/qlvm /var/lib/xen /run/qlvm /run/xen /run/openvswitch /run/ovn /run/podman
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -23,6 +23,7 @@ LockPersonality=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 MemoryDenyWriteExecute=true
+RuntimeDirectory=qlvm
 
 [Install]
 WantedBy=multi-user.target

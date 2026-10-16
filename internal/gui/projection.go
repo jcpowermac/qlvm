@@ -17,7 +17,7 @@ import (
 // guiQlvmRoot is the per-VM/template state tree (spec §5.2). The GUI reads
 // meta.yaml from here as the user (vms/<name>/meta.yaml is 0644). A var
 // (not const) so tests can redirect it.
-var guiQlvmRoot = "/var/lib/qvm"
+var guiQlvmRoot = "/var/lib/qlvm"
 
 // guiConfigPath is the qlvm config file path. A var (not const) so tests
 // can redirect it.

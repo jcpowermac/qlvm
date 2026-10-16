@@ -40,7 +40,7 @@ const (
 	ovsEndpoint = "unix:/var/run/openvswitch/db.sock" // Open_vSwitch
 
 	configPath = "/etc/qvm/qlvm.yaml"
-	stateRoot  = "/var/lib/qvm"
+	stateRoot  = "/var/lib/qlvm"
 )
 
 // One minimal row model per table; libovsdb resolves the table from the

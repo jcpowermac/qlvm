@@ -6,7 +6,7 @@
 //     sshd (which every template ships).
 //   - tcp: a per-run ephemeral TCP data port bridged to waypipe's unix
 //     protocol socket, plus a token-authenticated control dial to the
-//     guest's qvm-ctl relay (baked at create, tcp:4711).
+//     guest's qlvm-ctl relay (baked at create, tcp:4711).
 //   - vsock: waypipe --vsock (AF_VSOCK) — the relay runs a waypipe server
 //     that dials the dom0's vsock port. Needs the xen-vsock transport in
 //     both dom0 and guest kernels (stock Fedora 44 has none).
@@ -29,7 +29,7 @@ import (
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
-// ControlPort is the guest-side qvm-ctl relay socket (baked at vm create).
+// ControlPort is the guest-side qlvm-ctl relay socket (baked at vm create).
 const ControlPort = 4711
 
 // Connect selects the channel Run carries the projection over.
@@ -55,7 +55,7 @@ func ParseConnect(s string) (Connect, error) {
 }
 
 // waitPort is the readiness-gate port per channel: ssh waits for sshd,
-// the relay channels wait for the qvm-ctl relay.
+// the relay channels wait for the qlvm-ctl relay.
 func waitPort(c Connect) int {
 	if c == ConnectSSH {
 		return 22
@@ -130,7 +130,7 @@ func execWaypipe(args []string, stdin io.Reader, out, errW io.Writer) error {
 //	       here once the app starts), launch `waypipe client` on a unix
 //	       socket and wait for it to bind, forward the accepted TCP
 //	       connection to that socket, then send the 5-line control frame
-//	       (token, mode, data port, dom0 IP, exec) to the guest's qvm-ctl
+//	       (token, mode, data port, dom0 IP, exec) to the guest's qlvm-ctl
 //	       relay and wait for the client to exit (app exit), then clean up.
 //	vsock: launch `waypipe --vsock -s <port> client` (the guest relay runs
 //	       a waypipe server that dials this port back) and send the
@@ -243,7 +243,7 @@ func forward(ln net.Listener, sock string) {
 }
 
 // WaitControl is the guest-readiness gate: ssh waits for sshd (port 22),
-// the relay channels wait for the qvm-ctl relay (port 4711).
+// the relay channels wait for the qlvm-ctl relay (port 4711).
 func WaitControl(ctx context.Context, ip string, c Connect, interval, timeout time.Duration) error {
 	addr := net.JoinHostPort(ip, strconv.Itoa(waitPort(c)))
 	var dl net.Dialer

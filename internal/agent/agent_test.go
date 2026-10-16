@@ -57,15 +57,15 @@ func TestNew(t *testing.T) {
 		VM:      config.VMDefaults{MemoryMB: 4096, VCPUs: 2},
 	}
 
-	a := New(x, o, v, cfg, "/var/lib/qvm/coremap.yaml", "/var/lib/qvm")
+	a := New(x, o, v, cfg, "/var/lib/qlvm/coremap.yaml", "/var/lib/qlvm")
 
 	require.NotNil(t, a)
 	assert.Equal(t, x, a.xen)
 	assert.Equal(t, o, a.ovn)
 	assert.Equal(t, v, a.ovs)
 	assert.Equal(t, cfg, a.cfg)
-	assert.Equal(t, "/var/lib/qvm/coremap.yaml", a.coremapPath)
-	assert.Equal(t, "/var/lib/qvm", a.root)
+	assert.Equal(t, "/var/lib/qlvm/coremap.yaml", a.coremapPath)
+	assert.Equal(t, "/var/lib/qlvm", a.root)
 	assert.NotNil(t, a.progress)
 	assert.Empty(t, a.progress)
 	assert.Nil(t, a.conn)

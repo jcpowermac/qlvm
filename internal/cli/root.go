@@ -10,7 +10,7 @@ import "github.com/spf13/cobra"
 const defaultConfigPath = "/etc/qvm/qlvm.yaml"
 
 // installRoot is the per-VM/template state tree (spec §5.2).
-const installRoot = "/var/lib/qvm"
+const installRoot = "/var/lib/qlvm"
 
 var rootCmd *cobra.Command
 

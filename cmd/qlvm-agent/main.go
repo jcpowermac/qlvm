@@ -25,10 +25,10 @@ import (
 )
 
 // configPath is where the daemon reads its configuration.
-const configPath = "/etc/qvm/qlvm.yaml"
+const configPath = "/etc/qlvm/qlvm.yaml"
 
 // stateRoot is the qlvm state root where VM and template state lives.
-const stateRoot = "/var/lib/qvm"
+const stateRoot = "/var/lib/qlvm"
 
 // System paths for embedded service files.
 const (

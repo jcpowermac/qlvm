@@ -137,7 +137,7 @@ func testDeps(t *testing.T, root string, events *[]string, reflinkErr error) (Cr
 	t.Helper()
 	return CreateDeps{
 		OVN: &recOVN{events: events},
-		Tpl: &template.Template{Dir: "/var/lib/qvm/templates/os-abc", Digest: "sha256:abc"},
+		Tpl: &template.Template{Dir: "/var/lib/qlvm/templates/os-abc", Digest: "sha256:abc"},
 		FS:  &recBakeFS{events: events},
 		Reflink: func(dst, src string) error {
 			*events = append(*events, "reflink:"+dst+":"+src)
@@ -171,7 +171,7 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm1/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall"}
+		want := []string{"ovn-add:vm1", "reflink:" + disk + ":/var/lib/qlvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall"}
 		require.Equal(t, want, events, "order: OVN port -> reflink -> UniqueXFS (loopattach) -> networkd bake (loopattach) -> control bake (loopattach) -> (meta save, file on disk)")
 		// The per-VM XFS UUID step must have invoked xfs_admin -U generate on
 		// the root partition only — the image fstab pins the /boot XFS UUID,
@@ -213,7 +213,7 @@ func TestCreateHappyPath(t *testing.T) {
 
 		disk := filepath.Join(root, "vms/vm2/disk.img")
 		bake := "bake:" + ostree.NetworkdFile("10.100.1.10", "10.100.1.1", "02:00:00:00:00:0a", "10.100.0.1")
-		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall", "ssh"}
+		want := []string{"ovn-add:vm2", "reflink:" + disk + ":/var/lib/qlvm/templates/os-abc/template.raw", "loopattach", "loopattach", bake, "loopattach", "mkdirall", "ssh"}
 		require.Equal(t, want, events, "order: OVN -> reflink -> UniqueXFS (loopattach) -> bake (loopattach) -> control bake (loopattach) -> meta save -> ssh config")
 		require.Equal(t, m.Name, sshMeta.Name)
 		got, err := os.ReadFile(filepath.Join(home, ".ssh", "config")) // #nosec G304 -- t.TempDir path
@@ -260,7 +260,7 @@ func TestCreateHappyPath(t *testing.T) {
 		d, _ := testDeps(t, root, &events, nil)
 		_, err := Create(context.Background(), d, testCfg(), Spec{
 			Name: "vm1", Domain: "work", Type: "disposable",
-			Mounts: []Mount{{Host: "/srv/data", Guest: "data"}, {Host: "/home/user/projects", Guest: "/var/lib/qvm/projects"}},
+			Mounts: []Mount{{Host: "/srv/data", Guest: "data"}, {Host: "/home/user/projects", Guest: "/var/lib/qlvm/projects"}},
 		})
 		require.NoError(t, err)
 		var unit0, unit1 bool
@@ -272,9 +272,9 @@ func TestCreateHappyPath(t *testing.T) {
 				require.Contains(t, e, "Type=9p")
 				require.Contains(t, e, "WantedBy=multi-user.target")
 				unit0 = true
-			case strings.HasPrefix(e, "mountbake:var-lib-qvm-projects-1.mount:"):
+			case strings.HasPrefix(e, "mountbake:var-lib-qlvm-projects-1.mount:"):
 				require.Contains(t, e, "What=vm1-1", "unit 1 must carry the unique 9p tag")
-				require.Contains(t, e, "Where=/var/lib/qvm/projects", "absolute guest path used verbatim")
+				require.Contains(t, e, "Where=/var/lib/qlvm/projects", "absolute guest path used verbatim")
 				unit1 = true
 			}
 		}
@@ -328,7 +328,7 @@ func TestCreateReflinkFailureLeavesNoOrphanPort(t *testing.T) {
 	_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "same filesystem")
-	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qvm/templates/os-abc/template.raw", "ovn-del:vm1"},
+	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qlvm/templates/os-abc/template.raw", "ovn-del:vm1"},
 		events, "failed create must delete the OVN port")
 	require.NoFileExists(t, filepath.Join(root, "vms/vm1/meta.yaml"))
 	require.NoFileExists(t, filepath.Join(root, "vms/vm1/disk.img"))
@@ -363,7 +363,7 @@ func TestCreateXFSAdminFailureLeavesNoOrphan(t *testing.T) {
 	_, err := Create(context.Background(), d, testCfg(), Spec{Name: "vm1", Domain: "work", Type: "app"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unique xfs uuids")
-	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qvm/templates/os-abc/template.raw", "loopattach", "ovn-del:vm1"},
+	require.Equal(t, []string{"ovn-add:vm1", "reflink:" + filepath.Join(root, "vms/vm1/disk.img") + ":/var/lib/qlvm/templates/os-abc/template.raw", "loopattach", "ovn-del:vm1"},
 		events, "failed create must delete the OVN port")
 	require.NoDirExists(t, filepath.Join(root, "vms/vm1"), "failed create must remove the VM dir (no orphan disk.img)")
 }
@@ -393,7 +393,7 @@ func TestMetaRoundTrip(t *testing.T) {
 }
 
 var goldenTpl = &template.Template{
-	Dir:        "/var/lib/qvm/templates/os-abc",
+	Dir:        "/var/lib/qlvm/templates/os-abc",
 	Image:      "os",
 	Digest:     "sha256:abc",
 	KernelVer:  "6.12.0",
@@ -421,13 +421,13 @@ var goldenMeta = &Meta{
 }
 
 func TestDomainConfigGolden(t *testing.T) {
-	vmDir := "/var/lib/qvm/vms/vm1"
+	vmDir := "/var/lib/qlvm/vms/vm1"
 	got := DomainConfig(vmDir, goldenMeta, goldenTpl)
 	require.Equal(t, "PVH", got.Type)
 	require.Equal(t, "vm1", got.Name)
 	require.Equal(t, goldenMeta.UUID, got.UUID)
-	require.Equal(t, "/var/lib/qvm/vms/vm1/vmlinuz", got.Kernel)
-	require.Equal(t, "/var/lib/qvm/vms/vm1/initramfs", got.Ramdisk)
+	require.Equal(t, "/var/lib/qlvm/vms/vm1/vmlinuz", got.Kernel)
+	require.Equal(t, "/var/lib/qlvm/vms/vm1/initramfs", got.Ramdisk)
 	require.Equal(t,
 		"root=PARTUUID=1234abcd-0000-0000-0000-000000000001 ostree=/ostree/boot.loader/fedora/c0ffee00/0 "+
 			"systemd.default-target=multi-user.target console=hvc0",

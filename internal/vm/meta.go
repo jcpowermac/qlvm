@@ -27,7 +27,7 @@ type Meta struct {
 	UUID     string    `yaml:"uuid"`
 	Created  time.Time `yaml:"created"`
 	// Token authenticates the waypipe control channel (guest :4711); the
-	// same secret is baked into the guest's /etc/qvm/waypipe-token.
+	// same secret is baked into the guest's /etc/qlvm/waypipe-token.
 	Token string `yaml:"token"`
 	// WorkspaceSizeMB is the size of the agent VM's workspace disk (0 = none).
 	WorkspaceSizeMB int `yaml:"workspace_size_mb"`

@@ -269,7 +269,7 @@ func removeInt(slice []int, v int) []int {
 }
 
 // DefaultPath is the default location of coremap.yaml.
-const DefaultPath = "/var/lib/qvm/coremap.yaml"
+const DefaultPath = "/var/lib/qlvm/coremap.yaml"
 
 // Ensure returns a Coremap for the given path: loads it if it exists,
 // otherwise detects the topology and builds a fresh one (dom0 gets the

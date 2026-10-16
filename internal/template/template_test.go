@@ -366,8 +366,8 @@ func TestReapBuilderContainersSurfacesRemoveError(t *testing.T) {
 
 func TestDirOfRef(t *testing.T) {
 	assert.Equal(t,
-		filepath.Join("/var/lib/qvm", "templates", "ns-os-bolt-"+testDigest),
-		DirOfRef("/var/lib/qvm", testRef, testDigest))
+		filepath.Join("/var/lib/qlvm", "templates", "ns-os-bolt-"+testDigest),
+		DirOfRef("/var/lib/qlvm", testRef, testDigest))
 }
 
 func TestEnsureBackfillsEmptyImageFromBakeMeta(t *testing.T) {

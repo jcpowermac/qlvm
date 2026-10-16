@@ -39,8 +39,8 @@ func TestModelSelectVM(t *testing.T) {
 func TestModelSelectTemplate(t *testing.T) {
 	m := NewAppModel(time.Second, time.Second)
 
-	m.SelectTemplate("/var/lib/qvm/templates/test")
-	if m.SelectedTemplateDir() != "/var/lib/qvm/templates/test" {
+	m.SelectTemplate("/var/lib/qlvm/templates/test")
+	if m.SelectedTemplateDir() != "/var/lib/qlvm/templates/test" {
 		t.Errorf("expected selected template dir, got %q", m.SelectedTemplateDir())
 	}
 }

@@ -464,15 +464,15 @@ func TestBakeControl(t *testing.T) {
 	}
 	const base = "r/ostree/deploy/os1/deploy/def456.0/etc"
 
-	ctl, ok := wrote[base+"/qvm/qvm-ctl"]
+	ctl, ok := wrote[base+"/qlvm/qlvm-ctl"]
 	require.True(t, ok, "relay script must be baked, wrote: %+v", f.wrote)
 	assert.Equal(t, ControlScript, string(ctl.data))
 	assert.Equal(t, os.FileMode(0o755), ctl.mode)
 
 	// The token lives in the VM user's home on the shared var, not in
-	// /etc/qvm: the service runs unprivileged and cannot read a root-only
-	// /etc/qvm (that EACCES was the status=126 relay failure).
-	tok, ok := wrote["r/ostree/deploy/os1/var/home/user/.qvm/waypipe-token"]
+	// /etc/qlvm: the service runs unprivileged and cannot read a root-only
+	// /etc/qlvm (that EACCES was the status=126 relay failure).
+	tok, ok := wrote["r/ostree/deploy/os1/var/home/user/.qlvm/waypipe-token"]
 	require.True(t, ok, "token must be baked under the user home on the shared var, wrote: %+v", f.wrote)
 	assert.Equal(t, token+"\n", string(tok.data))
 	assert.Equal(t, os.FileMode(0o600), tok.mode, "the token must not be world-readable")
@@ -481,17 +481,17 @@ func TestBakeControl(t *testing.T) {
 	// socket activation: a socket-activated service gets the connection on
 	// fd 3 (LISTEN_FDS), not stdin, so the relay's first read hit /dev/null
 	// and the frame was never consumed (CLOSE-WAIT on 4711).
-	svc, ok := wrote[base+"/systemd/system/qvm-ctl.service"]
+	svc, ok := wrote[base+"/systemd/system/qlvm-ctl.service"]
 	require.True(t, ok)
 	assert.Equal(t, ControlServiceUnit("user"), string(svc.data))
 	assert.Contains(t, string(svc.data), "User=user")
-	assert.Contains(t, string(svc.data), "ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl")
+	assert.Contains(t, string(svc.data), "ExecStart=/usr/bin/ncat -lk 4711 --sh-exec /etc/qlvm/qlvm-ctl")
 
 	assertAllReleased(t, f, "/dev/loop3")
 	require.Contains(t, f.links, linkRec{
 		// links are recorded target-relative (no partRoot prefix)
-		path:   "ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/qvm-ctl.service",
-		target: "../qvm-ctl.service",
+		path:   "ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/qlvm-ctl.service",
+		target: "../qlvm-ctl.service",
 	}, "the listener service must be enabled in multi-user.target.wants")
 }
 
@@ -556,18 +556,18 @@ func TestBakeMountsReleasesBootPartition(t *testing.T) {
 	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
 	f := bootFirstFS()
 	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs",
-		[]SharedMount{{Where: "/var/lib/qvm/data", What: "vm1-0"}}))
+		[]SharedMount{{Where: "/var/lib/qlvm/data", What: "vm1-0"}}))
 	assertAllReleased(t, f, "/dev/loop3")
 }
 
 func TestSharedMountUnit(t *testing.T) {
 	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qvm/data\n_netdev=true\n"
-	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qvm/data\n"
+	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qlvm/data\n"
 	want += "Type=9p\nOptions=trans=virtio\n\n[Install]\nWantedBy=multi-user.target\n"
 	assert.Equal(t, want,
-		SharedMountUnit(SharedMount{Where: "/var/lib/qvm/data", What: "vm1-0"}),
+		SharedMountUnit(SharedMount{Where: "/var/lib/qlvm/data", What: "vm1-0"}),
 		"9p unit: 9p type with trans=virtio (xen9pfsd), tag in What, guest path in Where")
-	assert.Equal(t, "var-lib-qvm-data-0", MountUnitName(SharedMount{Where: "/var/lib/qvm/data"}, 0))
+	assert.Equal(t, "var-lib-qlvm-data-0", MountUnitName(SharedMount{Where: "/var/lib/qlvm/data"}, 0))
 	assert.Equal(t, "data-1", MountUnitName(SharedMount{Where: "/data"}, 1))
 }
 
@@ -576,19 +576,19 @@ func TestBakeMounts(t *testing.T) {
 	require.NoError(t, os.WriteFile(disk, []byte("raw"), 0o600))
 	f := networkdFS()
 	mounts := []SharedMount{
-		{Where: "/var/lib/qvm/data", What: "vm1-0"},
+		{Where: "/var/lib/qlvm/data", What: "vm1-0"},
 		{Where: "/projects", What: "vm1-1"},
 	}
 	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs", mounts))
 
 	require.Len(t, f.wrote, 2)
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/var-lib-qvm-data-0.mount", f.wrote[0].path)
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/var-lib-qlvm-data-0.mount", f.wrote[0].path)
 	assert.Equal(t, SharedMountUnit(mounts[0]), string(f.wrote[0].data))
 	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/projects-1.mount", f.wrote[1].path)
 	assert.Equal(t, SharedMountUnit(mounts[1]), string(f.wrote[1].data))
 
 	wantLinks := map[string]string{
-		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/var-lib-qvm-data-0.mount": "/etc/systemd/system/var-lib-qvm-data-0.mount",
+		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/var-lib-qlvm-data-0.mount": "/etc/systemd/system/var-lib-qlvm-data-0.mount",
 		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/projects-1.mount":         "/etc/systemd/system/projects-1.mount",
 	}
 	for path, want := range wantLinks {

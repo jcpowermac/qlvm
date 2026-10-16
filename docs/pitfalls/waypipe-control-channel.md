@@ -2,7 +2,7 @@
 
 - **`--connect` picks the channel** (default `ssh`): ssh = `waypipe ssh`
   over the VM's sshd (works on every template, no relay needed); tcp =
-  token control frame to the guest's qvm-ctl relay + ephemeral TCP data
+  token control frame to the guest's qlvm-ctl relay + ephemeral TCP data
   port; vsock = waypipe `--vsock` (guest relay dials the dom0's vsock
   port). **vsock kernel-module path is dead; Xen Argo is the real
   alternative (investigated 2026-10-03).** There is no
@@ -28,7 +28,7 @@
   socket-activated service receives the connection on **fd 3** (via
   LISTEN_FDS), NOT stdin — the relay's `read -r tok` from stdin got
   /dev/null EOF and the frame was never consumed (CLOSE-WAIT pileup on
-  4711, dom0 hung forever). `ncat -lk 4711 --sh-exec /etc/qvm/qvm-ctl`
+  4711, dom0 hung forever). `ncat -lk 4711 --sh-exec /etc/qlvm/qlvm-ctl`
   hands each connection to the script as fd 0. ncat `--sh-exec` takes
   exactly ONE argument, so it points at the executable script path, not a
   split command line. A failed relay now kills only its child; no

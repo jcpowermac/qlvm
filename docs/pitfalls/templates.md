@@ -21,7 +21,7 @@
   template dir is immutable after the bake — one VM's in-guest upgrade never
   re-points a sibling's boot.
 - `create` reaps a killed bake's residue on both paths, before baking: loop
-  devices whose backing file under `/var/lib/qvm` is gone (a force-killed
+  devices whose backing file under `/var/lib/qlvm` is gone (a force-killed
   VM leaves one attached to `(deleted)` — `losetup -a` shows the suffix,
   parsers must allow it), leftover `/tmp/qlvm-ostree-*` mounts
   (`unix.Unmount`; std has no `os.Unmount`), and exited image-builder
