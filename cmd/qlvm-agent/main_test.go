@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jcpowermac/qlvm/internal/agent"
+	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +53,9 @@ func TestInstallSystemFilesRequiresRoot(t *testing.T) {
 	polkitPath := filepath.Join(dir, "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := installSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := installSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires root")
@@ -66,7 +69,9 @@ func TestInstallSystemFilesWritesFiles(t *testing.T) {
 	polkitPath := filepath.Join(dir, "actions", "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 	require.NoError(t, err)
 
 	// Verify service file
@@ -83,6 +88,11 @@ func TestInstallSystemFilesWritesFiles(t *testing.T) {
 	data, err = os.ReadFile(polkitPath) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, agent.PolkitAction(), data)
+
+	// Verify dom0 boot params (nil Pin means pinned)
+	data, err = os.ReadFile(paramsPath) //nolint:gosec,G304
+	require.NoError(t, err)
+	assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=2\n", string(data))
 }
 
 func TestInstallSystemFilesRunsSystemctl(t *testing.T) {
@@ -92,7 +102,9 @@ func TestInstallSystemFilesRunsSystemctl(t *testing.T) {
 	polkitPath := filepath.Join(dir, "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 	require.NoError(t, err)
 
 	// Verify systemctl calls in order
@@ -111,7 +123,9 @@ func TestInstallSystemFilesServiceWriteFailure(t *testing.T) {
 	polkitPath := filepath.Join(t.TempDir(), "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(t.TempDir(), "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writing service file")
@@ -127,7 +141,9 @@ func TestInstallSystemFilesDBusWriteFailure(t *testing.T) {
 	polkitPath := filepath.Join(dir, "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writing D-Bus policy")
@@ -143,7 +159,9 @@ func TestInstallSystemFilesPolkitWriteFailure(t *testing.T) {
 	polkitPath := filepath.Join(file, "subdir", "io.qlvm.agent.policy")
 
 	runner := newMockRunner()
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writing polkit action")
@@ -159,7 +177,9 @@ func TestInstallSystemFilesDaemonReloadFailure(t *testing.T) {
 	runner := newMockRunner()
 	runner.errFor["systemctl daemon-reload"] = errors.New("daemon-reload failed")
 
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "systemctl daemon-reload")
@@ -175,7 +195,9 @@ func TestInstallSystemFilesEnableFailure(t *testing.T) {
 	runner := newMockRunner()
 	runner.errFor["systemctl enable qlvm-agent"] = errors.New("enable failed")
 
-	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, runner.run)
+	paramsPath := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+	cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2}}
+	err := doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runner.run)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "systemctl enable qlvm-agent")

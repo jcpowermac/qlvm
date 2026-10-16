@@ -55,7 +55,7 @@ dom0:
   pin: true               # dom0_vcpus_pin boot param
 ```
 
-**Application**: `qlvm install` writes Xen boot params to `/etc/qlvm/xen-boot-params.conf`:
+**Application**: `qlvm install` writes Xen boot params to `/etc/qlvm/xen-boot-params.conf` (final home: `qlvm-agent install-system-files` — Task 15 removed `qlvm install` from the CLI, so the write moved there):
 
 ```
 dom0_mem=32G,max:32G dom0_max_vcpus=2 dom0_vcpus_pin

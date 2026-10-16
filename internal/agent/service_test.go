@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -164,6 +165,38 @@ func TestWritePolkitAction(t *testing.T) {
 	data, err := os.ReadFile(path) //nolint:gosec,G304
 	require.NoError(t, err)
 	assert.Equal(t, PolkitAction(), data)
+}
+
+func TestWriteDom0Params(t *testing.T) {
+	t.Run("pinned", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "qlvm", "xen-boot-params.conf")
+		cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2, Pin: boolPtr(true)}}
+		require.NoError(t, WriteDom0Params(cfg, path))
+		data, err := os.ReadFile(path) //nolint:gosec,G304
+		require.NoError(t, err)
+		assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=2\n", string(data))
+	})
+
+	t.Run("nil pin means pinned", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "xen-boot-params.conf")
+		cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 16384, VCPUs: 4}}
+		require.NoError(t, WriteDom0Params(cfg, path))
+		data, err := os.ReadFile(path) //nolint:gosec,G304
+		require.NoError(t, err)
+		assert.Equal(t, "dom0_mem=16384M dom0_max_vcpus=4 dom0_vcpus_pin=4\n", string(data))
+	})
+
+	t.Run("unpinned omits dom0_vcpus_pin", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "xen-boot-params.conf")
+		cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 2, Pin: boolPtr(false)}}
+		require.NoError(t, WriteDom0Params(cfg, path))
+		data, err := os.ReadFile(path) //nolint:gosec,G304
+		require.NoError(t, err)
+		assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2\n", string(data))
+	})
 }
 
 func TestEmbeddedFSContainsFiles(t *testing.T) {

@@ -35,6 +35,7 @@ const (
 	serviceFilePath = "/etc/systemd/system/qlvm-agent.service"
 	dbusPolicyPath  = "/etc/dbus-1/system.d/io.qlvm.agent.conf"
 	polkitActionPath = "/usr/share/polkit-1/actions/io.qlvm.agent.policy"
+	dom0ParamsPath  = "/etc/qlvm/xen-boot-params.conf"
 )
 
 // commandRunner runs an external command. Used to allow mocking in tests.
@@ -44,7 +45,14 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install-system-files":
-			if err := installSystemFiles(serviceFilePath, dbusPolicyPath, polkitActionPath, runExternalCommand); err != nil {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				log.Fatalf("config: %v", err)
+			}
+			if err := cfg.Validate(); err != nil {
+				log.Fatalf("config: %v", err)
+			}
+			if err := installSystemFiles(serviceFilePath, dbusPolicyPath, polkitActionPath, dom0ParamsPath, cfg, runExternalCommand); err != nil {
 				log.Fatalf("install-system-files: %v", err)
 			}
 			return
@@ -106,19 +114,21 @@ func runExternalCommand(name string, args ...string) error {
 }
 
 // installSystemFiles checks for root privileges and extracts the embedded
-// service files to the given paths, then runs systemctl to reload and enable
-// the service. It does not start the service.
-func installSystemFiles(servicePath, dbusPath, polkitPath string, runCmd commandRunner) error {
+// service files and the dom0 boot params (from cfg) to the given paths, then
+// runs systemctl to reload and enable the service. It does not start the
+// service.
+func installSystemFiles(servicePath, dbusPath, polkitPath, paramsPath string, cfg *config.Config, runCmd commandRunner) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("install-system-files requires root (run with sudo)")
 	}
-	return doInstallSystemFiles(servicePath, dbusPath, polkitPath, runCmd)
+	return doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath, cfg, runCmd)
 }
 
-// doInstallSystemFiles extracts the embedded service files to the given paths
-// and runs systemctl to reload and enable the service. It does not start the
-// service. It does not check for root privileges (the caller must do that).
-func doInstallSystemFiles(servicePath, dbusPath, polkitPath string, runCmd commandRunner) error {
+// doInstallSystemFiles extracts the embedded service files and the dom0 boot
+// params to the given paths and runs systemctl to reload and enable the
+// service. It does not start the service. It does not check for root
+// privileges (the caller must do that).
+func doInstallSystemFiles(servicePath, dbusPath, polkitPath, paramsPath string, cfg *config.Config, runCmd commandRunner) error {
 	if err := agent.WriteServiceFile(servicePath); err != nil {
 		return fmt.Errorf("writing service file to %s: %w", servicePath, err)
 	}
@@ -133,6 +143,11 @@ func doInstallSystemFiles(servicePath, dbusPath, polkitPath string, runCmd comma
 		return fmt.Errorf("writing polkit action to %s: %w", polkitPath, err)
 	}
 	log.Printf("wrote %s", polkitPath)
+
+	if err := agent.WriteDom0Params(cfg, paramsPath); err != nil {
+		return fmt.Errorf("writing dom0 params to %s: %w", paramsPath, err)
+	}
+	log.Printf("wrote %s", paramsPath)
 
 	if err := runCmd("systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)

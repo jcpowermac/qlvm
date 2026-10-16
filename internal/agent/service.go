@@ -12,8 +12,12 @@ package agent
 
 import (
 	"embed"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/jcpowermac/qlvm/internal/config"
 )
 
 //go:embed embedded/qlvm-agent.service
@@ -56,6 +60,25 @@ func WriteDBusPolicy(path string) error {
 // WritePolkitAction writes the embedded polkit action file to path.
 func WritePolkitAction(path string) error {
 	return writeEmbedded(path, polkitAction)
+}
+
+// WriteDom0Params writes the Xen dom0 boot parameters (dom0_mem,
+// dom0_max_vcpus, and dom0_vcpus_pin when pinning is enabled) as
+// space-separated key=value pairs. The xen-dom0-refresh script (os repo)
+// reads this file and appends the parameters to the GRUB multiboot2 line,
+// constraining dom0 resources at boot.
+func WriteDom0Params(cfg *config.Config, path string) error {
+	var params []string
+	params = append(params, fmt.Sprintf("dom0_mem=%dM", cfg.Dom0.MemoryMB))
+	params = append(params, fmt.Sprintf("dom0_max_vcpus=%d", cfg.Dom0.VCPUs))
+	if cfg.Dom0.Pinned() {
+		params = append(params, fmt.Sprintf("dom0_vcpus_pin=%d", cfg.Dom0.VCPUs))
+	}
+	content := strings.Join(params, " ") + "\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // writeEmbedded writes content to path, creating parent directories as needed.
