@@ -1,13 +1,15 @@
 # qlvm
 
-Go CLI for managing Xen app/disposable VMs from an ostree Fedora dom0.
+Go toolset for managing Xen app/disposable VMs from an ostree Fedora dom0:
+`qlvm` (CLI, D-Bus client), `qlvm-agent` (root daemon, D-Bus server),
+`qlvm-gui` (Fyne GUI, D-Bus client), `qlvm-vif` (Xen vif hotplug script).
 Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
 
 ## Hard constraints
 
-- **Always rebuild the binary after any change**: `sudo make container-build`
-  before re-running live commands. The stub in `bin/` cannot talk to Xen —
-  only `/usr/local/bin/qlvm` (the cgo build) can. If you changed code and
+- **Always rebuild the binaries after any change**: `sudo make container-build`
+  before re-running live commands. The stubs in `bin/` cannot talk to Xen —
+  only `/usr/local/bin/qlvm*` (the cgo builds) can. If you changed code and
   ran a live command without rebuilding, the results are from the OLD binary
   and you are debugging ghost behavior.
 - **Container build is the completion gate**: Never mark work complete, claim
@@ -40,12 +42,29 @@ Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
   firewall-cmd, nmcli, podman CLI) — use the native Go control planes
   (xenlight, libovsdb, godbus, podman REST). Exceptions: the `waypipe`
   exec helper and the Makefile's own `podman run` build step.
+- **TEST against the live system, not just the build.** A successful
+  `make container-build` means the code compiles — it does NOT mean the
+  code works. Every D-Bus method, systemd unit, and integration point must
+  be verified against the live dom0:
+  - D-Bus methods: call each one with `busctl call` and check the response
+    (don't assume ExportAll works — verify with `busctl call`, not just
+    `busctl list` or `busctl introspect` which godbus doesn't support).
+  - CLI commands: run every affected `qlvm` subcommand end-to-end.
+  - systemd units: test stop/start/restart/failure-recovery (SIGKILL the
+    daemon, verify it auto-restarts).
+  - **Never mark work complete without live verification.** The
+    `Pin *bool` godbus marshaling bug (found 2026-10-16) passed all
+    builds and unit tests but hung every `GetConfig` call silently —
+    only a live `busctl call` would have caught it. This is not a
+    hypothetical: it cost a full session of debugging.
 
 ## Docs
 
 - Design spec: `docs/superpowers/specs/2026-09-26-qlvm-design.md`
   (source of truth for architecture, CLI surface, VM model)
 - Implementation plan: `docs/superpowers/plans/2026-09-26-qlvm-implementation.md`
+- D-Bus daemon + GUI spec: `docs/superpowers/specs/2026-10-15-qlvm-ui-design.md`
+- D-Bus daemon plan: `docs/superpowers/plans/2026-10-15-qlvm-dbus-daemon.md`
 - Dom0 hardening guide: `docs/hardening.md` (rpm-ostree-based)
 - Build/usage: `README.md` (Quick start, Development sections)
 - Agent VM (pi-in-xen): `../pi-in-xen/` (Alpine initramfs-based agent VMs)
@@ -70,3 +89,4 @@ or older docs.**
 | In-guest reboot → zombie `---sr-` | `docs/pitfalls/in-guest-reboot-zombie.md` |
 | Podman (pkg/bindings REST) | `docs/pitfalls/podman-rest.md` |
 | Templates (`qlvm template`) | `docs/pitfalls/templates.md` |
+| D-Bus daemon (`qlvm-agent`) | `docs/superpowers/specs/2026-10-15-qlvm-ui-design.md` §6 |

@@ -1,5 +1,26 @@
 # D-Bus (godbus) Pitfalls
 
+- **godbus v5 silently drops responses that contain pointer-to-basic-type
+  fields** (`*bool`, `*int`, `*string`, etc.) in exported method return
+  values. The method IS called (logs appear), but the response is never
+  sent — the client hangs until timeout with no error. Use non-pointer
+  basic types in all D-Bus return structs; add a separate `XSet bool`
+  field if the value is optional. Found live 2026-10-16: `Dom0ConfigInfo`
+  had `Pin *bool` which made `GetConfig` hang forever.
+- **`conn.Export()` only exports methods whose last return value is
+  `*dbus.Error`.** Methods returning plain `error` are silently skipped
+  and return "Unknown method" on the bus. Use `conn.ExportAll()` instead
+  (which wraps plain `error` returns automatically). Found live 2026-10-16.
+- **godbus does not provide introspection data.** `busctl introspect` and
+  `busctl tree` return "Access denied" even as root unless you separately
+  export an introspectable object. You cannot verify method signatures via
+  introspection — you must test with `busctl call` and read the type codes
+  in the response.
+- **D-Bus policy must allow `org.freedesktop.DBus.Peer.Ping`** on the
+  destination service if the client uses it for liveness checks. The
+  qlvm CLI calls `Peer.Ping` before every operation; without it in the
+  policy, all CLI commands fail with a connection error even though other
+  methods work via `busctl`.
 - `bus.Object(dest, path)`: the first arg is the **destination service
   name** (e.g. `org.freedesktop.NetworkManager`, the systemd service), not
   the interface. An interface name as destination makes dbus-daemon try to

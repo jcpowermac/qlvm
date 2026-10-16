@@ -5,12 +5,13 @@ subnet-scoped VM domains with per-domain gateways, a single OVN-backed SNAT
 router to the physical LAN, and a declarative dom0 egress firewall —
 configured through a single TOML file.
 
-`qlvm` is one cobra binary (`cmd/qlvm`) plus a small libxl hotplug helper
-(`cmd/qlvm-vif`, installed to `/etc/xen/scripts/vif-ovn`). It talks to every
-control plane through libraries — OVN/OVS via libovsdb, firewalld and
-systemd (networkd/system units) over D-Bus, Xen via xenlight — and never shells out to a
-management CLI. The only local process it launches is `waypipe` (for
-`qlvm vm run` GUI sessions).
+`qlvm` is a cobra CLI binary (`cmd/qlvm`), a root D-Bus daemon (`cmd/qlvm-agent`,
+service `qlvm-agent.service`, bus name `io.qlvm.Agent`), and a small libxl
+hotplug helper (`cmd/qlvm-vif`, installed to `/etc/xen/scripts/vif-ovn`). The
+CLI talks to the daemon over D-Bus; the daemon owns the live control planes
+(OVN/OVS via libovsdb, firewalld and systemd over D-Bus, Xen via xenlight)
+and never shells out to a management CLI. The only local process it launches
+is `waypipe` (for `qlvm vm run` GUI sessions).
 
 ## Quick start
 
@@ -199,9 +200,11 @@ supernet.
 ```
 qlvm/
 ├── cmd/
-│   ├── qlvm/main.go            # entrypoint; cobra tree lives in internal/cli
+│   ├── qlvm/main.go            # CLI entrypoint; cobra tree in internal/cli
+│   ├── qlvm-agent/main.go      # D-Bus daemon entrypoint (root service)
 │   └── qlvm-vif/main.go        # vif hotplug binary (reads xenstore, writes OVSDB)
 ├── internal/
+│   ├── agent/                  # D-Bus daemon: exported methods, embedded policy/service files
 │   ├── cli/                    # cobra commands, one file per subcommand
 │   ├── config/                 # qlvm.yaml load/validate/save
 │   ├── xenctl/                 # xenlight wrapper (libxl cgo; stub without it)

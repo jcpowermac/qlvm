@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -143,7 +144,8 @@ type FirewallEgressInfo struct {
 type Dom0ConfigInfo struct {
 	MemoryMB int
 	VCPUs    int
-	Pin      *bool
+	Pin      bool
+	PinSet   bool
 }
 
 // CoremapInfo is the D-Bus-friendly representation of the CPU core map.
@@ -255,18 +257,20 @@ func (a *Agent) Run(ctx context.Context) (string, error) {
 	}
 	a.conn = conn
 
-	if err := conn.Export(a, dbus.ObjectPath(ObjectPath), Iface); err != nil {
+	if err := conn.ExportAll(a, dbus.ObjectPath(ObjectPath), Iface); err != nil {
 		_ = conn.Close()
 		a.conn = nil
 		return "", fmt.Errorf("export agent: %w", err)
 	}
 
 	if _, err := conn.RequestName(ServiceName, dbus.NameFlagDoNotQueue|dbus.NameFlagReplaceExisting); err != nil {
-		_ = conn.Export(nil, dbus.ObjectPath(ObjectPath), Iface)
+		_ = conn.ExportAll(nil, dbus.ObjectPath(ObjectPath), Iface)
 		_ = conn.Close()
 		a.conn = nil
 		return "", fmt.Errorf("request name %s: %w", ServiceName, err)
 	}
+
+	log.Printf("qlvm-agent running on system bus as %s", ServiceName)
 
 	// Block until ctx is cancelled or the connection closes. conn.Context()
 	// is cancelled by godbus when the connection is closed or the peer
@@ -276,7 +280,7 @@ func (a *Agent) Run(ctx context.Context) (string, error) {
 	case <-conn.Context().Done():
 	}
 
-	_ = conn.Export(nil, dbus.ObjectPath(ObjectPath), Iface)
+	_ = conn.ExportAll(nil, dbus.ObjectPath(ObjectPath), Iface)
 	_ = conn.Close()
 	a.conn = nil
 	return ServiceName, nil
@@ -535,7 +539,7 @@ func (a *Agent) GetConfig() (*ConfigInfo, error) {
 	if a.cfg == nil {
 		return nil, fmt.Errorf("config not loaded")
 	}
-	return &ConfigInfo{
+	result := &ConfigInfo{
 		Network: NetworkInfo{
 			NIC:      a.cfg.Network.NIC,
 			Gateway:  a.cfg.Network.Gateway,
@@ -559,9 +563,15 @@ func (a *Agent) GetConfig() (*ConfigInfo, error) {
 		Dom0: Dom0ConfigInfo{
 			MemoryMB: a.cfg.Dom0.MemoryMB,
 			VCPUs:    a.cfg.Dom0.VCPUs,
-			Pin:      a.cfg.Dom0.Pin,
+			Pin:      false,
+			PinSet:   false,
 		},
-	}, nil
+	}
+	if a.cfg.Dom0.Pin != nil {
+		result.Dom0.Pin = *a.cfg.Dom0.Pin
+		result.Dom0.PinSet = true
+	}
+	return result, nil
 }
 
 // domainConfigsToInfo converts config domains to D-Bus-friendly info.

@@ -88,11 +88,10 @@ func main() {
 	defer br.Close()
 
 	a := agent.New(x, nb, br, cfg, coremap.DefaultPath, stateRoot)
-	name, err := a.Run(ctx)
+	_, err = a.Run(ctx)
 	if err != nil {
 		log.Fatalf("agent: %v", err)
 	}
-	log.Printf("qlvm-agent running on system bus as %s", name)
 }
 
 // runExternalCommand runs a command and returns its error, capturing

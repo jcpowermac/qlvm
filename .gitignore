@@ -1,4 +1,6 @@
 .worktrees/
 .superpowers/
 bin/
-./qlvm-agent
+qlvm
+qlvm-agent
+qlvm-vif
