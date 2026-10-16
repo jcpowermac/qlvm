@@ -475,8 +475,8 @@ func TestGetConfig(t *testing.T) {
 
 	assert.Equal(t, 32768, info.Dom0.MemoryMB)
 	assert.Equal(t, 2, info.Dom0.VCPUs)
-	require.NotNil(t, info.Dom0.Pin)
-	assert.True(t, *info.Dom0.Pin)
+	assert.True(t, info.Dom0.PinSet)
+	assert.True(t, info.Dom0.Pin)
 }
 
 func TestGetConfigNil(t *testing.T) {
