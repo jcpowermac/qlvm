@@ -253,9 +253,22 @@ func parseUUID(s string) (xenlight.Uuid, error) {
 	return u, nil
 }
 
+// guestSizeMarker formats the in-band terminal-size marker the guest's
+// console bridge (conmux, pi-in-xen) watches for: DCS 8 ; rows ; cols ST.
+// The Xen console ring is a pure byte stream with no winsize channel
+// (struct xencons_interface has no size fields, the console daemon never
+// forwards the pty winsize, and hvc_xen.c never calls __hvc_resize), so
+// TIOCSWINSZ on the dom0 console pty is invisible to the guest. conmux
+// applies this marker to the pty pi's tmux session runs on.
+func guestSizeMarker(ws *unix.Winsize) []byte {
+	return []byte(fmt.Sprintf("\x1bP8;%d;%d\x1b\\", ws.Row, ws.Col))
+}
+
 // syncWinsize copies the terminal size (rows, cols) from localFd to
 // targetFd. The guest console TTY needs this so that full-screen apps
-// and wrapped text match the user's local terminal dimensions.
+// and wrapped text match the user's local terminal dimensions. In
+// addition to TIOCSWINSZ (which covers the dom0-side console pty), it
+// pushes the size in-band to the guest (see guestSizeMarker).
 func syncWinsize(localFd, targetFd int) error {
 	ws, err := unix.IoctlGetWinsize(localFd, unix.TIOCGWINSZ)
 	if err != nil {
@@ -267,6 +280,9 @@ func syncWinsize(localFd, targetFd int) error {
 	}
 	if err := unix.IoctlSetWinsize(targetFd, unix.TIOCSWINSZ, ws); err != nil {
 		return fmt.Errorf("set guest terminal size: %w", err)
+	}
+	if _, err := syscall.Write(targetFd, guestSizeMarker(ws)); err != nil {
+		return fmt.Errorf("write guest size marker: %w", err)
 	}
 	return nil
 }
