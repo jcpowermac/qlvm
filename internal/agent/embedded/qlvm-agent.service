@@ -13,9 +13,12 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/qlvm /var/lib/xen /run/qlvm /run/xen /run/openvswitch /run/ovn /run/podman
+ReadWritePaths=/var/lib/qlvm /var/lib/xen /var/log/xen /run/qlvm /run/xen /run/openvswitch /run/ovn /run/podman
 PrivateTmp=true
-PrivateDevices=true
+# No PrivateDevices: the Xen block hotplug script (child of this daemon)
+# needs losetup on /dev/loop*, which requires the host loop nodes that a
+# private /dev tmpfs lacks. Hardening is carried by NoNewPrivileges +
+# ProtectSystem=strict + ProtectHome + the Restrict* lines below.
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictNamespaces=true
