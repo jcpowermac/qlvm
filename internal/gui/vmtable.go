@@ -14,6 +14,7 @@ type vmTable struct {
 	model    *AppModel
 	window   fyne.Window
 	actions  *Actions
+	client   Client
 	onSelect func(name string)
 }
 
@@ -24,7 +25,7 @@ var vmTableColumns = []string{"Name", "Type", "State", "Memory", "vCPUs", "Domai
 var vmTableDefaultWidths = []float32{200, 100, 100, 100, 80, 100} // Name, Type, State, Memory, vCPUs, Domain
 
 // newVMTable creates a VM table view.
-func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect func(name string)) *vmTable {
+func newVMTable(model *AppModel, window fyne.Window, actions *Actions, client Client, onSelect func(name string)) *vmTable {
 	table := widget.NewTableWithHeaders(
 		func() (rows, cols int) {
 			return len(model.GetVMs()), len(vmTableColumns)
@@ -98,6 +99,7 @@ func newVMTable(model *AppModel, window fyne.Window, actions *Actions, onSelect 
 		model:    model,
 		window:   window,
 		actions:  actions,
+		client:   client,
 		onSelect: onSelect,
 	}
 	t.rightClickTable = newRightClickTable(table, func(pos fyne.Position) {
@@ -126,7 +128,7 @@ func (t *vmTable) showContextMenu(pos fyne.Position) {
 
 	menu := fyne.NewMenu("",
 		fyne.NewMenuItem("Details...", func() {
-			ShowVMDetailDialog(t.window, t.model, name)
+			ShowVMDetailDialog(t.window, t.model, t.client, nil, name)
 		}),
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("Start", func() {

@@ -20,17 +20,17 @@ import (
 
 // App is the main GUI application.
 type App struct {
-	fyneApp       fyne.App
-	window        fyne.Window
-	model         *AppModel
-	client        Client
+	fyneApp        fyne.App
+	window         fyne.Window
+	model          *AppModel
+	client         Client
 	cancelProgress func()
-	vmTable       *vmTable
-	templateTable *templateTable
-	actions       *Actions
-	logPane       *LogPane
-	logVisible    bool
-	statusLabel   *widget.Label
+	vmTable        *vmTable
+	templateTable  *templateTable
+	actions        *Actions
+	logPane        *LogPane
+	logVisible     bool
+	statusLabel    *widget.Label
 }
 
 // New creates the GUI application with the given model. It connects to the
@@ -120,7 +120,7 @@ func (g *App) buildLayout() {
 			}
 
 			// VM table view.
-			g.vmTable = newVMTable(g.model, g.window, g.actions, func(string) {
+			g.vmTable = newVMTable(g.model, g.window, g.actions, g.client, func(string) {
 				// Single click just selects; right-click opens context menu.
 			})
 
@@ -273,7 +273,7 @@ func (g *App) buildMenu() *fyne.MainMenu {
 		fyne.NewMenuItem("Details...", func() {
 			name := g.model.SelectedVMName()
 			if name != "" {
-				ShowVMDetailDialog(g.window, g.model, name)
+				ShowVMDetailDialog(g.window, g.model, g.client, g.logPane.Add, name)
 			}
 		}),
 		fyne.NewMenuItemSeparator(),

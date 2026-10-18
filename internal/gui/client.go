@@ -15,6 +15,9 @@ type Client interface {
 	CreateVM(opts *agent.CreateVMOptions) (string, error)
 	CreateTemplate(image string, force bool) (string, error)
 	DeleteTemplate(dir string) error
+	ListApps(vm string) ([]agent.AppInfo, error)
+	SyncApps(vm string) (int, error)
+	SetAppWhitelist(vm string, names []string) error
 	SubscribeProgress(callback func(id, message string)) func()
 	Close() error
 }

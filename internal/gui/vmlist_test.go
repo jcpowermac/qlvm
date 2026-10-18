@@ -23,7 +23,7 @@ func TestVMTableFilteredVMs(t *testing.T) {
 	w := fyneApp.NewWindow("test")
 	defer w.Close()
 
-	table := newVMTable(model, w, nil, nil)
+	table := newVMTable(model, w, nil, nil, nil)
 
 	// No filter: all 3 VMs.
 	entries := table.filteredVMs()
