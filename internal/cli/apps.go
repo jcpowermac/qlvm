@@ -24,9 +24,6 @@ import (
 // redirect it.
 var appsCacheDir = "/var/lib/qlvm/desktop-cache"
 
-// desktopGlob is the remote stream apps sync fetches: the VM shell
-// expands the glob and cat concatenates the files (sshx.FetchFile).
-const desktopGlob = "/usr/share/applications/*.desktop"
 
 // appsCmd is the rofi mode — bare `apps` driven by the ROFI_RETV/ROFI_INFO
 // env like the former bash appmenu helper — and the parent of `apps sync`.
@@ -369,7 +366,7 @@ func fetchDesktops(ctx context.Context, home, name string) (map[string]string, e
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	rc, err := sshx.FetchFile(ctx, c, desktopGlob)
+	rc, err := sshx.FetchFile(ctx, c, apps.DesktopGlob)
 	if err != nil {
 		return nil, err
 	}
