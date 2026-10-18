@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 
+	"github.com/jcpowermac/qlvm/internal/apps"
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/mounts"
@@ -203,6 +204,10 @@ type Agent struct {
 	// Nil = use sshx.Connect; tests inject a fake.
 	sshConnectFunc func(ctx context.Context, home, host, user string) (*ssh.Client, error)
 
+	// appSyncFetch pulls one VM's desktop entries using the SSH identity
+	// of home. Nil = defaultAppSyncFetch; tests inject a fake.
+	appSyncFetch func(ctx context.Context, home, host string) (map[string]string, error)
+
 	// Progress signal state (mutex-protected).
 	mu       sync.Mutex
 	progress map[string]*ProgressTracker
@@ -323,10 +328,10 @@ func (a *Agent) ListVMs() ([]VMInfo, error) {
 	for _, d := range domains {
 		if !seen[d.Name] {
 			result = append(result, VMInfo{
-				Name:    d.Name,
-				State:   d.State,
+				Name:     d.Name,
+				State:    d.State,
 				MemoryMB: d.MemMB,
-				VCPUs:   d.VCPUs,
+				VCPUs:    d.VCPUs,
 			})
 		}
 	}
@@ -843,14 +848,14 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 		CoremapPath: a.coremapPath,
 		Dom0VCPUs:   a.cfg.Dom0.VCPUs,
 	}, a.cfg, vm.Spec{
-		Name:   opts.Name,
-		Domain: domain,
-		Type:   typ,
-		Image:  tpl.Image,
+		Name:     opts.Name,
+		Domain:   domain,
+		Type:     typ,
+		Image:    tpl.Image,
 		MemoryMB: memory,
-		VCPUs:  vcpus,
-		Mounts: ms,
-		Cores:  cores,
+		VCPUs:    vcpus,
+		Mounts:   ms,
+		Cores:    cores,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create %s: %w", opts.Name, err)
@@ -1157,6 +1162,21 @@ func leftoverBakeMounts(out io.Writer) {
 	}
 }
 
+// wheelGroupMembersFn and userLookupFn are the /etc-group and /etc/passwd
+// seams behind appSyncHomes; tests stub them.
+var (
+	wheelGroupMembersFn = wheelGroupMembers
+	userLookupFn        = userHomeDir
+)
+
+func userHomeDir(name string) (string, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
+
 // wheelGroupMembers returns the supplementary members of the wheel group by
 // parsing /etc/group. os/user.Group has no member list field, so we parse
 // the file directly (format: name:password:GID:member1,member2,...).
@@ -1443,4 +1463,141 @@ func (a *Agent) emitProgressDone(id string) {
 	if a.conn != nil {
 		_ = a.conn.Emit(dbus.ObjectPath(ObjectPath), Iface+".ProgressDone", id)
 	}
+}
+
+// --- App methods (desktop cache + per-VM whitelist) ---
+
+// AppInfo is one cached app row for the GUI's Apps tab: the full cached set
+// plus per-app whitelist state (absent whitelist file = all visible).
+type AppInfo struct {
+	Name        string
+	Icon        string
+	Whitelisted bool
+}
+
+// appCacheDir is the per-VM desktop cache under the state root.
+func (a *Agent) appCacheDir() string {
+	return filepath.Join(a.root, "desktop-cache")
+}
+
+// appSyncHomes returns the SSH home candidates for SyncApps, in order: the
+// daemon's own home (root under systemd), then each wheel-group member's
+// home in sorted order. The first candidate that connects wins.
+func (a *Agent) appSyncHomes() []string {
+	var homes []string
+	home := a.homeDir
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	if home != "" {
+		homes = append(homes, home)
+	}
+	members := wheelGroupMembersFn()
+	sort.Strings(members)
+	seen := map[string]bool{home: true}
+	for _, mem := range members {
+		h, err := userLookupFn(mem)
+		if err != nil || h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		homes = append(homes, h)
+	}
+	return homes
+}
+
+// defaultAppSyncFetch pulls one VM's concatenated desktop stream over SSH
+// with the identity of home and splits it into per-app entries.
+func defaultAppSyncFetch(ctx context.Context, home, host string) (map[string]string, error) {
+	c, err := sshx.Connect(ctx, home, host, vm.SSHUser)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = c.Close() }()
+	rc, err := sshx.FetchFile(ctx, c, apps.DesktopGlob)
+	if err != nil {
+		return nil, err
+	}
+	data, rerr := io.ReadAll(rc)
+	cerr := rc.Close()
+	if rerr != nil {
+		return nil, rerr
+	}
+	if cerr != nil {
+		return nil, cerr
+	}
+	return apps.SplitDesktops(data)
+}
+
+// ListApps returns the VM's full cached app set with per-app whitelist
+// state. No cache dir (never synced) yields an empty list, not an error.
+func (a *Agent) ListApps(name string) (out []AppInfo, err error) {
+	defer func() {
+		if out == nil {
+			out = []AppInfo{}
+		}
+	}()
+	all, err := apps.CachedApps(a.appCacheDir(), name)
+	if err != nil {
+		return nil, err
+	}
+	wl, err := apps.ReadWhitelist(a.appCacheDir(), name)
+	if err != nil {
+		return nil, err
+	}
+	active := wl != nil
+	allowed := make(map[string]bool, len(wl))
+	for _, n := range wl {
+		allowed[strings.ToLower(n)] = true
+	}
+	for _, e := range all {
+		out = append(out, AppInfo{
+			Name:        e.Name,
+			Icon:        e.Icon,
+			Whitelisted: !active || allowed[strings.ToLower(e.Base)],
+		})
+	}
+	return out, nil
+}
+
+// SetAppWhitelist replaces the VM's whitelist (sorted, deduped basenames);
+// an empty list deletes the file, which is the "all apps visible" state.
+func (a *Agent) SetAppWhitelist(name string, entries []string) error {
+	return apps.WriteWhitelist(a.appCacheDir(), name, entries)
+}
+
+// SyncApps refreshes the VM's desktop cache from the guest, trying the SSH
+// identity of each home in appSyncHomes in order (root home, then wheel
+// members sorted) and using the first that connects. The existing
+// per-VM whitelist file survives the swap.
+func (a *Agent) SyncApps(name string) (int, error) {
+	m, err := vm.LoadMeta(a.vmDir(name))
+	if err != nil {
+		return 0, fmt.Errorf("sync apps %s: %w", name, err)
+	}
+	fetch := a.appSyncFetch
+	if fetch == nil {
+		fetch = defaultAppSyncFetch
+	}
+	ctx := context.Background()
+	var tried []string
+	var lastErr error
+	for _, home := range a.appSyncHomes() {
+		tried = append(tried, home)
+		entries, ferr := fetch(ctx, home, m.IP)
+		if ferr == nil {
+			n, werr := apps.SyncCache(a.appCacheDir(), name, entries)
+			if werr != nil {
+				return 0, fmt.Errorf("sync apps %s: %w", name, werr)
+			}
+			return n, nil
+		}
+		lastErr = ferr
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no home candidates")
+	}
+	return 0, fmt.Errorf("sync apps %s: no working ssh identity (tried %s): %w", name, strings.Join(tried, ", "), lastErr)
 }

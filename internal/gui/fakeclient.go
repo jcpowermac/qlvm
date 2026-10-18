@@ -8,22 +8,30 @@ import (
 
 // fakeClient is a test implementation of the Client interface.
 type fakeClient struct {
-	mu          sync.Mutex
-	vmInfos     []agent.VMInfo
-	tplInfos    []agent.TemplateInfo
-	startCalls  []string
-	stopCalls   []string
-	killCalls   []string
-	restartCalls []string
-	deleteCalls []string
-	createVMCalls []*agent.CreateVMOptions
+	mu             sync.Mutex
+	vmInfos        []agent.VMInfo
+	tplInfos       []agent.TemplateInfo
+	startCalls     []string
+	stopCalls      []string
+	killCalls      []string
+	restartCalls   []string
+	deleteCalls    []string
+	createVMCalls  []*agent.CreateVMOptions
 	createTplCalls []struct {
 		image string
 		force bool
 	}
 	deleteTplCalls []string
-	progressFunc  func(id, message string)
-	err           error
+	progressFunc   func(id, message string)
+	err            error
+
+	// App (whitelist) test state.
+	appInfos          []agent.AppInfo
+	appInfosAfterSync []agent.AppInfo
+	syncCalls         []string
+	syncN             int
+	syncErr           error
+	appSaveCalls      [][]string
 }
 
 func newFakeClient() *fakeClient {
@@ -146,4 +154,65 @@ func (f *fakeClient) Close() error {
 	return nil
 }
 
+func (f *fakeClient) setApps(apps []agent.AppInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appInfos = apps
+}
 
+func (f *fakeClient) SetApps(apps []agent.AppInfo) {
+	f.setApps(apps)
+}
+
+func (f *fakeClient) SetAppsAfterSync(apps []agent.AppInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appInfosAfterSync = apps
+}
+
+func (f *fakeClient) SetSyncResult(n int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.syncN = n
+	f.syncErr = err
+}
+
+// AppSaveCalls returns the recorded SetAppWhitelist argument sets, in order.
+func (f *fakeClient) AppSaveCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.appSaveCalls))
+	for i, c := range f.appSaveCalls {
+		out[i] = append([]string(nil), c...)
+	}
+	return out
+}
+
+func (f *fakeClient) ListApps(vm string) ([]agent.AppInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.appInfos, nil
+}
+
+func (f *fakeClient) SyncApps(vm string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
+	f.syncCalls = append(f.syncCalls, vm)
+	if f.appInfosAfterSync != nil {
+		f.appInfos = f.appInfosAfterSync
+	}
+	return f.syncN, f.syncErr
+}
+
+func (f *fakeClient) SetAppWhitelist(vm string, names []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appSaveCalls = append(f.appSaveCalls, append([]string(nil), names...))
+	return f.err
+}

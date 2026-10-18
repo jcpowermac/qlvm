@@ -142,6 +142,27 @@ func (c *Client) SyncKernel(name string) error {
 
 // --- Progress ---
 
+// ListApps returns the VM's full cached app set with per-app whitelist
+// state (absent whitelist = all visible; Whitelisted is false then).
+func (c *Client) ListApps(vm string) ([]AppInfo, error) {
+	var result []AppInfo
+	err := c.obj.Call(Iface+".ListApps", 0, vm).Store(&result)
+	return result, err
+}
+
+// SyncApps refreshes the VM's desktop cache (daemon-side SSH) and returns
+// the number of entries written.
+func (c *Client) SyncApps(vm string) (int, error) {
+	var n int
+	err := c.obj.Call(Iface+".SyncApps", 0, vm).Store(&n)
+	return n, err
+}
+
+// SetAppWhitelist replaces the VM's app whitelist (empty list = all apps).
+func (c *Client) SetAppWhitelist(vm string, names []string) error {
+	return c.obj.Call(Iface+".SetAppWhitelist", 0, vm, names).Err
+}
+
 // SubscribeProgress registers a callback for progress signals. Returns a
 // cancel function. The GUI uses this to update progress bars during
 // long-running operations. Progress signals carry (id, message);

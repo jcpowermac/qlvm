@@ -1,0 +1,14 @@
+[Unit]
+Description=qlvm system tray (per-VM app launcher)
+# Runs in the user's graphical (Wayland) session; the tray needs
+# WAYLAND_DISPLAY to project apps over waypipe.
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/qlvm-tray
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

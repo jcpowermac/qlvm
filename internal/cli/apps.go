@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -23,9 +24,6 @@ import (
 // redirect it.
 var appsCacheDir = "/var/lib/qlvm/desktop-cache"
 
-// desktopGlob is the remote stream apps sync fetches: the VM shell
-// expands the glob and cat concatenates the files (sshx.FetchFile).
-const desktopGlob = "/usr/share/applications/*.desktop"
 
 // appsCmd is the rofi mode — bare `apps` driven by the ROFI_RETV/ROFI_INFO
 // env like the former bash appmenu helper — and the parent of `apps sync`.
@@ -60,7 +58,183 @@ func appsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&connect, "connect", string(projection.ConnectSSH),
 		"waypipe channel for launched apps: ssh (default), tcp, vsock (see 'qlvm vm run')")
 	cmd.AddCommand(appsSyncCmd())
+	cmd.AddCommand(appsWhitelistCmd())
 	return cmd
+}
+
+// appsWhitelistCmd manages the per-VM app whitelist (Qubes appmenus-style):
+// <cacheDir>/<vm>/whitelisted-appmenus.list, one .desktop basename per
+// line. Absent file = all apps visible; an empty list deletes the file.
+func appsWhitelistCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "whitelist",
+		Short: "Per-VM app whitelist (no file = all apps; first edit pins the full set)",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "list <vm>",
+			Short: "Show the VM's visible apps and whitelist state",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(_ *cobra.Command, args []string) error {
+				vm := args[0]
+				if err := checkVMExists(vm); err != nil {
+					return err
+				}
+				visible, err := apps.VisibleApps(appsCacheDir, vm)
+				if err != nil {
+					return err
+				}
+				all, err := apps.CachedApps(appsCacheDir, vm)
+				if err != nil {
+					return err
+				}
+				wl, err := apps.ReadWhitelist(appsCacheDir, vm)
+				if err != nil {
+					return err
+				}
+				if wl != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "# whitelist active (%d/%d apps)\n", len(visible), len(all))
+				}
+				for _, a := range visible {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", a.Base, a.Name)
+				}
+				return nil
+			},
+		},
+		whitelistEditCmd("add <vm> <app...>", "Add apps to the VM's whitelist (materializes the full set first when absent)"),
+		whitelistEditCmd("remove <vm> <app...>", "Remove apps from the VM's whitelist (removing the last one = all apps visible)"),
+		&cobra.Command{
+			Use:   "clear <vm>",
+			Short: "Delete the VM's whitelist (all apps visible again)",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				vm := args[0]
+				if err := checkVMExists(vm); err != nil {
+					return err
+				}
+				if err := apps.WriteWhitelist(appsCacheDir, vm, nil); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: cleared (all apps visible)\n", vm)
+				return nil
+			},
+		},
+	)
+	return cmd
+}
+
+// whitelistEditCmd builds the shared add/remove implementation. Each app
+// argument is matched case-insensitively against the cached apps' .desktop
+// basenames and Names; a unique prefix (e.g. "firef") is accepted.
+func whitelistEditCmd(use, short string) *cobra.Command {
+	isAdd := strings.HasPrefix(use, "add")
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vm, appArgs := args[0], args[1:]
+			if err := checkVMExists(vm); err != nil {
+				return err
+			}
+			all, err := apps.CachedApps(appsCacheDir, vm)
+			if err != nil {
+				return err
+			}
+			wl, err := apps.ReadWhitelist(appsCacheDir, vm)
+			if err != nil {
+				return err
+			}
+			if wl == nil {
+				wl = basenames(all) // absent = all: materialize the full set first
+			}
+			matched, err := matchApps(all, appArgs)
+			if err != nil {
+				return err
+			}
+			cur := map[string]bool{}
+			for _, n := range wl {
+				cur[n] = true
+			}
+			for _, a := range matched {
+				if isAdd {
+					cur[a.Base] = true
+				} else {
+					delete(cur, a.Base)
+				}
+			}
+			var next []string
+			for n := range cur {
+				next = append(next, n)
+			}
+			if err := apps.WriteWhitelist(appsCacheDir, vm, next); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: %s %d app(s), %d now visible\n", vm, useSpace(use), len(appArgs), len(cur))
+			return nil
+		},
+	}
+}
+
+func useSpace(use string) string { return strings.TrimSpace(strings.SplitN(use, " ", 2)[0]) }
+
+func basenames(all []apps.AppEntry) []string {
+	out := make([]string, 0, len(all))
+	for _, a := range all {
+		out = append(out, a.Base)
+	}
+	return out
+}
+
+// checkVMExists rejects typos before writing cache state for a VM that
+// doesn't exist.
+func checkVMExists(name string) error {
+	if _, err := vm.LoadMeta(vmDirOf(name)); err != nil {
+		return fmt.Errorf("no such VM %s: %w", name, err)
+	}
+	return nil
+}
+
+// matchApps resolves each argument to a cached app entry: case-insensitive
+// exact match on the .desktop basename or the app Name first, then a
+// unique prefix over both. 0 or >1 candidates is an error.
+func matchApps(all []apps.AppEntry, args []string) ([]apps.AppEntry, error) {
+	var out []apps.AppEntry
+	for _, arg := range args {
+		q := strings.ToLower(arg)
+		var exact, prefix []apps.AppEntry
+		for _, a := range all {
+			base, name := strings.ToLower(a.Base), strings.ToLower(a.Name)
+			switch {
+			case base == q || name == q:
+				exact = append(exact, a)
+			case strings.HasPrefix(base, q) || strings.HasPrefix(name, q):
+				prefix = append(prefix, a)
+			}
+		}
+		switch {
+		case len(exact) == 1:
+			out = append(out, exact[0])
+		case len(exact) > 1:
+			return nil, fmt.Errorf("app %q is ambiguous (%s): match it by its full name", arg, joinBases(exact))
+		case len(prefix) == 1:
+			out = append(out, prefix[0])
+		case len(prefix) > 1:
+			return nil, fmt.Errorf("app prefix %q is ambiguous (%s): match it by its full name", arg, joinBases(prefix))
+		default:
+			return nil, fmt.Errorf("no app matching %q in the cache (%d apps; run 'qlvm apps sync' to refresh)", arg, len(all))
+		}
+	}
+	return out, nil
+}
+
+func joinBases(es []apps.AppEntry) string {
+	bases := make([]string, len(es))
+	for i, a := range es {
+		bases[i] = a.Base
+	}
+	sort.Strings(bases)
+	return strings.Join(bases, ", ")
 }
 
 // launchApp runs the ROFI_INFO selection "<vm>|<exec>", starting the VM
@@ -138,7 +312,7 @@ func appsSyncCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("sync %s: %w", name, err)
 				}
-				n, err := apps.WriteCache(appsCacheDir, name, entries)
+				n, err := apps.SyncCache(appsCacheDir, name, entries)
 				if err != nil {
 					return fmt.Errorf("sync %s: %w", name, err)
 				}
@@ -192,7 +366,7 @@ func fetchDesktops(ctx context.Context, home, name string) (map[string]string, e
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	rc, err := sshx.FetchFile(ctx, c, desktopGlob)
+	rc, err := sshx.FetchFile(ctx, c, apps.DesktopGlob)
 	if err != nil {
 		return nil, err
 	}

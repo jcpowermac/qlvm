@@ -18,6 +18,15 @@ import (
 // %d, %D, %n, %N, %i, %c, %k, %v, %m) stripped from Exec= before launch.
 var execFieldCodes = regexp.MustCompile(`%[fFuUdDnNickvm]`)
 
+// DefaultIcon is the fallback rofi icon for cached apps without an
+// Icon= key.
+const DefaultIcon = "application-x-executable"
+
+// DesktopGlob is the remote stream an app sync fetches: the VM shell
+// expands the glob and cat concatenates the files (sshx.FetchFile). Shared
+// by the CLI (apps sync) and the daemon (SyncApps).
+const DesktopGlob = "/usr/share/applications/*.desktop"
+
 // SplitDesktops splits a concatenated .desktop file stream into
 // per-entry name→content. Entries begin at their [Desktop Entry] line
 // and run to the next one; the key is the entry's Name= value, falling
@@ -83,7 +92,11 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	if err := os.RemoveAll(tmp); err != nil { // a crash may leave a stale temp dir
 		return 0, err
 	}
-	if err := os.MkdirAll(tmp, 0o750); err != nil {
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return 0, err
+	}
+	if err := os.Chmod(tmp, 0o755); err != nil { // umask-proof: desktop user must traverse
+		_ = os.RemoveAll(tmp)
 		return 0, err
 	}
 	names := make([]string, 0, len(entries))
@@ -93,7 +106,11 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		path := filepath.Join(tmp, cacheName(name)+".desktop")
-		if err := os.WriteFile(path, []byte(entries[name]), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(entries[name]), 0o644); err != nil {
+			_ = os.RemoveAll(tmp)
+			return 0, err
+		}
+		if err := os.Chmod(path, 0o644); err != nil { // umask-proof: desktop user must read
 			_ = os.RemoveAll(tmp)
 			return 0, err
 		}
@@ -106,12 +123,16 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 		_ = os.RemoveAll(tmp)
 		return 0, err
 	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		_ = os.RemoveAll(tmp)
+		return 0, err
+	}
 	return len(entries), nil
 }
 
 // EmitRofi renders the rofi mode protocol output from the whole cache:
-// one line per cached .desktop file with Type=Application, NoDisplay
-// != true, and non-empty Name+Exec —
+// one line per launchable cached app (see CachedApps) that passes the
+// per-VM whitelist filter (absent whitelist file = all apps) —
 //
 //	[<vm>] <name>\x00icon\x1f<icon|application-x-executable>\x1finfo\x1f<vm>|<exec>\n
 //
@@ -130,32 +151,12 @@ func EmitRofi(cacheDir string) (string, error) {
 		if !d.IsDir() {
 			continue
 		}
-		vmName := d.Name()
-		files, err := os.ReadDir(filepath.Join(cacheDir, vmName))
+		entries, err := VisibleApps(cacheDir, d.Name())
 		if err != nil {
 			return "", err
 		}
-		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".desktop") {
-				continue
-			}
-			content, err := os.ReadFile(filepath.Join(cacheDir, vmName, f.Name())) // #nosec G304 -- paths derive from the fixed desktop cache dir
-			if err != nil {
-				return "", err
-			}
-			if DesktopKey(content, "Type") != "Application" || DesktopKey(content, "NoDisplay") == "true" {
-				continue
-			}
-			name := DesktopKey(content, "Name")
-			exec := strings.TrimSpace(execFieldCodes.ReplaceAllString(DesktopKey(content, "Exec"), ""))
-			if name == "" || exec == "" {
-				continue
-			}
-			icon := DesktopKey(content, "Icon")
-			if icon == "" {
-				icon = "application-x-executable"
-			}
-			lines = append(lines, fmt.Sprintf("[%s] %s\x00icon\x1f%s\x1finfo\x1f%s|%s\n", vmName, name, icon, vmName, exec))
+		for _, a := range entries {
+			lines = append(lines, fmt.Sprintf("[%s] %s\x00icon\x1f%s\x1finfo\x1f%s|%s\n", d.Name(), a.Name, a.Icon, d.Name(), a.Exec))
 		}
 	}
 	sort.Strings(lines)

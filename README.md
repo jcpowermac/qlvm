@@ -33,7 +33,8 @@ or the `provision/` directory for a reference implementation.
 
 ```sh
 # 1. Build (dom0: containerized cgo build, no dev packages on the host;
-#    writes qlvm + qlvm-vif + qlvm-agent + bundled libyajl.so.2 to /usr/local/bin)
+#    writes qlvm + qlvm-vif + qlvm-agent + qlvm-gui + qlvm-tray +
+#    bundled libyajl.so.2 to /usr/local/bin)
 sudo make container-build
 
 # 2. External provisioning (one-time, see above)
@@ -85,6 +86,20 @@ which triggers a config reload).
 | `qlvm template delete [dir...] [--force]` | Remove the named template dirs (exact dir name or unique prefix; flat refusal while a VM references one — delete the VMs first). With no args, removes every dir no VM references (a `vm create` that wants one fails until `qlvm template create <ref>` re-bakes it); `--force` also removes incomplete dirs (no META) |
 | `qlvm apps` | rofi launcher: serves a menu of the cached VM desktops (rofi mode, `ROFI_RETV`) and launches the selection. Run rofi with `-field 4` so `ROFI_INFO` carries the selected `<vm>\|<exec>` |
 | `qlvm apps sync [vm]` | Refresh the desktop-file cache from the VM(s) |
+| `qlvm apps whitelist list <vm>` | Show the VM's visible apps (its whitelist when set, otherwise the full cached set) |
+| `qlvm apps whitelist add <vm> <app...>` | Add apps to the VM's whitelist (materializes the full set first when none exists). App args match `.desktop` basename or Name, case-insensitively; a unique prefix is accepted |
+| `qlvm apps whitelist remove <vm> <app...>` | Remove apps from the VM's whitelist; removing the last one deletes the whitelist (all apps visible again) |
+| `qlvm apps whitelist clear <vm>` | Delete the VM's whitelist (all apps visible again) |
+
+### App whitelist
+
+A per-VM whitelist controls which of the VM's cached apps are offered by the
+rofi launcher (`qlvm apps`), the system tray, and the GUI's Apps tab. The
+semantics mirror Qubes `qvm-appmenus`: **an absent whitelist file means every
+cached app is visible**; an empty whitelist is the same as absent (the file is
+deleted). `whitelist add`/`remove` materialize the full set first when no
+whitelist exists, then apply the change — so the first edit pins the current
+full set. The file lives at `desktop-cache/<vm>/whitelisted-appmenus.list`
 
 **In-guest reboot is unsupported.** A reboot issued from inside the guest
 leaves the Xen domain a zombie: `xl list` shows `---sr-`, vCPUs halted,
@@ -98,6 +113,33 @@ real `---sr-` zombie, 2026-09-30). For a manual low-level recovery, use
 `sudo xl destroy <name>` + `qlvm vm start <name>`. Plain `systemctl reboot`
 in the guest was shown to hang deterministically (live evidence in
 `AGENTS.md`, "Live-smoke pitfalls").
+
+## System tray (qlvm-tray)
+
+`qlvm-tray` is a Qubes-style system tray (StatusNotifierItem, so it appears in
+waybar's `tray` module with no config change) that lists every VM with its run
+state and, per VM, a submenu of its whitelisted apps plus start/stop/sync
+actions. Clicking an app starts the VM if it is stopped, waits for the guest
+control channel, and projects the app over `waypipe` (ssh mode, v1). It runs as
+the **desktop user** inside a Wayland session (so `WAYLAND_DISPLAY` is set), and
+it is a pure client of the `qlvm-agent` D-Bus daemon (no Xen access of its own).
+
+```sh
+qlvm-tray install-system-files   # write + enable the user unit, then start it
+systemctl --user status qlvm-tray
+```
+
+The tray polls the daemon every 2 s and rebuilds the menu only when the model
+changes (a hash of the tree). Per-VM app lists come from the same whitelist-aware
+cache as `qlvm apps`; "Sync app list" refreshes one VM's cache (it needs a
+running VM — the list is fetched over SSH), and "Refresh all apps" does it for
+every running VM. While an action for a VM is in flight its items are disabled.
+If the daemon is unreachable it shows a single disabled `qlvm agent unreachable`
+item and recovers automatically.
+
+**v1 limitation:** launch/wait use the ssh channel only (the CLI's `--connect
+tcp|vsock` modes are a follow-up). The user unit is installed from the repo via
+`install-system-files`, not from the ostree recipe.
 
 ## Shared mounts
 
@@ -202,10 +244,15 @@ qlvm/
 ├── cmd/
 │   ├── qlvm/main.go            # CLI entrypoint; cobra tree in internal/cli
 │   ├── qlvm-agent/main.go      # D-Bus daemon entrypoint (root service)
-│   └── qlvm-vif/main.go        # vif hotplug binary (reads xenstore, writes OVSDB)
+│   ├── qlvm-vif/main.go        # vif hotplug binary (reads xenstore, writes OVSDB)
+│   ├── qlvm-gui/main.go        # Fyne Wayland GUI (VM list + details, incl. Apps tab)
+│   └── qlvm-tray/main.go       # system tray (SNI/DBusMenu) + user-unit installer
 ├── internal/
 │   ├── agent/                  # D-Bus daemon: exported methods, embedded policy/service files
 │   ├── cli/                    # cobra commands, one file per subcommand
+│   ├── gui/                    # Fyne GUI: VM table, detail dialogs, Apps tab
+│   ├── tray/                   # tray menu model (ComputeMenu/Signature) + dispatch
+
 │   ├── config/                 # qlvm.yaml load/validate/save
 │   ├── xenctl/                 # xenlight wrapper (libxl cgo; stub without it)
 │   ├── xenstore/               # xenstore text-protocol client (for vif-ovn)
@@ -220,7 +267,8 @@ qlvm/
 │   ├── provisioner/            # dotfile sync over sftp (Runner seam)
 │   │                           #   + sftp dotfile upload (Runner seam)
 │   ├── sshx/                   # x/crypto/ssh client (auth, wait, run, fetch)
-│   ├── apps/                   # desktop-file cache + rofi menu
+│   ├── apps/                   # desktop-file cache, whitelist, rofi menu
+
 │   ├── mounts/                 # FICLONE reflink + p9 mount specs
 │   └── itest/                  # real-plane integration tests (build tag: integration)
 ├── provision/base/             # default provision dir: dotfiles/
@@ -231,7 +279,7 @@ qlvm/
 ## Development
 
 ```sh
-make build          # bin/qlvm + bin/qlvm-vif
+make build          # bin/qlvm + qlvm-vif + qlvm-gui + qlvm-agent + qlvm-tray
 make test           # unit tests
 make lint           # golangci-lint v2.14.0 (gosec, errcheck, revive)
 make test-integration  # real-plane tests; touch the live dom0 (see internal/itest)
