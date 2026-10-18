@@ -4,6 +4,7 @@ go 1.26.8
 
 require (
 	fyne.io/fyne/v2 v2.8.2
+	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4
 	github.com/containers/podman/v5 v5.8.7
 	github.com/go-logr/logr v1.4.3
 	github.com/godbus/dbus/v5 v5.2.2
@@ -22,7 +23,6 @@ require (
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
-	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/FyshOS/fancyfs v0.0.1 // indirect
