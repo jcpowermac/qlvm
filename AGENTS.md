@@ -42,6 +42,16 @@ Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
   firewall-cmd, nmcli, podman CLI) — use the native Go control planes
   (xenlight, libovsdb, godbus, podman REST). Exceptions: the `waypipe`
   exec helper and the Makefile's own `podman run` build step.
+- **Don't `systemctl restart dbus` under a live graphical session.** The
+  system D-Bus bus is a long-lived connection for sway, the greetd login
+  manager, and other session daemons; restarting the daemon drops every
+  live peer, which can kill the running sway session and the login
+  manager (recurring pitfall — it has broken this dom0's UI before). When
+  a D-Bus *policy* change (`/etc/dbus-1/system.d/*.conf`) must take
+  effect, prefer restarting only the affected service (e.g.
+  `qlvm-agent`); if you must restart the bus itself, do it from a TTY/VGA
+  (not the graphical session) or after logging out. `busctl call`
+  verifies methods without touching the bus lifecycle.
 - **TEST against the live system, not just the build.** A successful
   `make container-build` means the code compiles — it does NOT mean the
   code works. Every D-Bus method, systemd unit, and integration point must
