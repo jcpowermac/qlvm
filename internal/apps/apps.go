@@ -22,6 +22,11 @@ var execFieldCodes = regexp.MustCompile(`%[fFuUdDnNickvm]`)
 // Icon= key.
 const DefaultIcon = "application-x-executable"
 
+// DesktopGlob is the remote stream an app sync fetches: the VM shell
+// expands the glob and cat concatenates the files (sshx.FetchFile). Shared
+// by the CLI (apps sync) and the daemon (SyncApps).
+const DesktopGlob = "/usr/share/applications/*.desktop"
+
 // SplitDesktops splits a concatenated .desktop file stream into
 // per-entry name→content. Entries begin at their [Desktop Entry] line
 // and run to the next one; the key is the entry's Name= value, falling
