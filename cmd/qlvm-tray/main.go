@@ -66,13 +66,13 @@ func main() {
 func runTray(args []string) error {
 	fs := flag.NewFlagSet("qlvm-tray", flag.ExitOnError)
 	cacheDir := fs.String("cache-dir", defaultCacheDir, "desktop cache dir (whitelist + cached apps)")
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError exits on its own
 
 	cl, err := agent.NewClient()
 	if err != nil {
 		return err
 	}
-	defer cl.Close()
+	defer func() { _ = cl.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

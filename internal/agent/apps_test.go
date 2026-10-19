@@ -29,8 +29,8 @@ func setupAppsAgent(t *testing.T) *Agent {
 		[]byte("name: web\ntype: app\nip: 10.100.1.9\n"), 0o600))
 	cache := filepath.Join(root, "desktop-cache", "web")
 	require.NoError(t, os.MkdirAll(cache, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(cache, "Firefox.desktop"), []byte(appsTestFirefox), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(cache, "code.desktop"), []byte(appsTestCode), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cache, "Firefox.desktop"), []byte(appsTestFirefox), 0o644)) //nolint:gosec,G306
+	require.NoError(t, os.WriteFile(filepath.Join(cache, "code.desktop"), []byte(appsTestCode), 0o644))       //nolint:gosec,G306
 	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{},
 		&config.Config{}, filepath.Join(root, "coremap.yaml"), root)
 	return a
@@ -59,10 +59,7 @@ func TestAgentListApps(t *testing.T) {
 	assert.True(t, byName["Firefox"])
 	assert.False(t, byName["Code"])
 
-	// No cache dir: empty, no error.
-	out, err = a.ListApps("web")
-	require.NoError(t, err)
-	// (same VM, cache present) — use a VM without a cache:
+	// No cache dir: empty, no error (a never-synced VM).
 	require.NoError(t, os.MkdirAll(filepath.Join(a.root, "vms", "plain"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(a.root, "vms", "plain", "meta.yaml"),
 		[]byte("name: plain\nip: 10.100.1.10\n"), 0o600))
@@ -105,7 +102,7 @@ func TestAgentSyncAppsIdentityOrdering(t *testing.T) {
 
 	var tried []string
 	a.homeDir = rootHome
-	a.appSyncFetch = func(_ context.Context, home, host string) (map[string]string, error) {
+	a.appSyncFetch = func(_ context.Context, home, _ string) (map[string]string, error) {
 		tried = append(tried, home)
 		if home == wheelHome {
 			return map[string]string{"Firefox": appsTestFirefox, "Code": appsTestCode, "Extra": "[Desktop Entry]\nType=Application\nName=Extra\nExec=extra\n"}, nil

@@ -24,7 +24,6 @@ import (
 // redirect it.
 var appsCacheDir = "/var/lib/qlvm/desktop-cache"
 
-
 // appsCmd is the rofi mode — bare `apps` driven by the ROFI_RETV/ROFI_INFO
 // env like the former bash appmenu helper — and the parent of `apps sync`.
 func appsCmd() *cobra.Command {
@@ -93,10 +92,10 @@ func appsWhitelistCmd() *cobra.Command {
 					return err
 				}
 				if wl != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "# whitelist active (%d/%d apps)\n", len(visible), len(all))
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "# whitelist active (%d/%d apps)\n", len(visible), len(all))
 				}
 				for _, a := range visible {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", a.Base, a.Name)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s  %s\n", a.Base, a.Name)
 				}
 				return nil
 			},
@@ -115,7 +114,7 @@ func appsWhitelistCmd() *cobra.Command {
 				if err := apps.WriteWhitelist(appsCacheDir, vm, nil); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: cleared (all apps visible)\n", vm)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: cleared (all apps visible)\n", vm)
 				return nil
 			},
 		},
@@ -170,7 +169,7 @@ func whitelistEditCmd(use, short string) *cobra.Command {
 			if err := apps.WriteWhitelist(appsCacheDir, vm, next); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: %s %d app(s), %d now visible\n", vm, useSpace(use), len(appArgs), len(cur))
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "whitelist %s: %s %d app(s), %d now visible\n", vm, useSpace(use), len(appArgs), len(cur))
 			return nil
 		},
 	}

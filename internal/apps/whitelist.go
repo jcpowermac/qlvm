@@ -58,13 +58,14 @@ func WriteWhitelist(cacheDir, vm string, names []string) error {
 		}
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// World-readable by design: the desktop user's tray/GUI reads this cache.
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec,G301
 		return fmt.Errorf("create cache dir for %s: %w", vm, err)
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(clean, "\n")+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(clean, "\n")+"\n"), 0o644); err != nil { //nolint:gosec,G306
 		return fmt.Errorf("write whitelist for %s: %w", vm, err)
 	}
-	if err := os.Chmod(path, 0o644); err != nil { // umask-proof
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec,G302 // umask-proof
 		return fmt.Errorf("chmod whitelist for %s: %w", vm, err)
 	}
 	return nil
@@ -103,7 +104,7 @@ func CachedApps(cacheDir, vm string) ([]AppEntry, error) {
 		if de.IsDir() || !strings.HasSuffix(de.Name(), ".desktop") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, de.Name()))
+		raw, err := os.ReadFile(filepath.Join(dir, de.Name())) //nolint:gosec,G304 // name is a ReadDir entry, not user input
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", de.Name(), err)
 		}

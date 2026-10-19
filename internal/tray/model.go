@@ -110,7 +110,7 @@ func ComputeMenu(states []VMState, visible func(vm string) ([]apps.AppEntry, err
 func (t MenuTree) Signature() string {
 	h := fnv.New32a()
 	write := func(s string) {
-		fmt.Fprintf(h, "%s\x00", s)
+		_, _ = fmt.Fprintf(h, "%s\x00", s) // fnv never fails to write
 	}
 	write(t.Header)
 	for _, v := range t.VMs {

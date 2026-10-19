@@ -188,7 +188,7 @@ func (f *fakeClient) AppSaveCalls() [][]string {
 	return out
 }
 
-func (f *fakeClient) ListApps(vm string) ([]agent.AppInfo, error) {
+func (f *fakeClient) ListApps(_ string) ([]agent.AppInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -210,7 +210,7 @@ func (f *fakeClient) SyncApps(vm string) (int, error) {
 	return f.syncN, f.syncErr
 }
 
-func (f *fakeClient) SetAppWhitelist(vm string, names []string) error {
+func (f *fakeClient) SetAppWhitelist(_ string, names []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.appSaveCalls = append(f.appSaveCalls, append([]string(nil), names...))

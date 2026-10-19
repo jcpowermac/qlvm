@@ -9,7 +9,7 @@ var errBoom = errors.New("boom")
 
 func TestLaunchAppStoppedStartsWaitsThenRuns(t *testing.T) {
 	var calls []string
-	running := func(vm string) bool { return false }
+	running := func(string) bool { return false }
 	start := func(vm string) error { calls = append(calls, "start:"+vm); return nil }
 	wait := func(vm string) error { calls = append(calls, "wait:"+vm); return nil }
 	run := func(vm, exec string) error { calls = append(calls, "run:"+vm+"/"+exec); return nil }
@@ -35,7 +35,7 @@ func TestLaunchAppRunningSkipsStartAndWait(t *testing.T) {
 	running := func(string) bool { return true }
 	start := func(string) error { calls = append(calls, "start"); return nil }
 	wait := func(string) error { calls = append(calls, "wait"); return nil }
-	run := func(vm, exec string) error { calls = append(calls, "run"); return nil }
+	run := func(string, string) error { calls = append(calls, "run"); return nil }
 	notify := func(string) {}
 
 	if err := LaunchApp(running, start, wait, run, notify, "web", "firefox.desktop"); err != nil {

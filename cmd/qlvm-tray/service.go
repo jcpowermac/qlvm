@@ -27,7 +27,7 @@ func installSystemFiles() error {
 		return err
 	}
 	path := filepath.Join(dir, "qlvm-tray.service")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o644); err != nil { //nolint:gosec,G306 // user unit: 0644 is systemd convention
 		return err
 	}
 	fmt.Println("wrote", path)

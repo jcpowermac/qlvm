@@ -55,7 +55,7 @@ func TestReadWhitelistEmptyFile(t *testing.T) {
 func TestWriteWhitelistRoundTrip(t *testing.T) {
 	cache := t.TempDir()
 	require.NoError(t, WriteWhitelist(cache, "web", []string{"b.desktop", "a.desktop", "b.desktop"}))
-	raw, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName))
+	raw, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName)) //nolint:gosec,G304 // t.TempDir path
 	require.NoError(t, err)
 	assert.Equal(t, "a.desktop\nb.desktop\n", string(raw), "sorted, deduped, one per line")
 	info, err := os.Stat(filepath.Join(cache, "web", WhitelistFileName))
@@ -134,7 +134,7 @@ func TestSyncCachePreservesWhitelist(t *testing.T) {
 	writeVMDesktop(t, cache, "web", "Firefox.desktop", firefoxDesktop)
 	writeVMDesktop(t, cache, "web", "code.desktop", codeDesktop)
 	require.NoError(t, WriteWhitelist(cache, "web", []string{"firefox.desktop"}))
-	before, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName))
+	before, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName)) //nolint:gosec,G304 // t.TempDir path
 	require.NoError(t, err)
 
 	entries := map[string]string{
@@ -146,7 +146,7 @@ func TestSyncCachePreservesWhitelist(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)
 
-	after, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName))
+	after, err := os.ReadFile(filepath.Join(cache, "web", WhitelistFileName)) //nolint:gosec,G304 // t.TempDir path
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "sync must not clobber user whitelist state")
 

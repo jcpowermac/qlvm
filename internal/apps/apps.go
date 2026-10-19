@@ -92,10 +92,11 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	if err := os.RemoveAll(tmp); err != nil { // a crash may leave a stale temp dir
 		return 0, err
 	}
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	// World-readable by design: the desktop user's tray/GUI reads this cache.
+	if err := os.MkdirAll(tmp, 0o755); err != nil { //nolint:gosec,G301
 		return 0, err
 	}
-	if err := os.Chmod(tmp, 0o755); err != nil { // umask-proof: desktop user must traverse
+	if err := os.Chmod(tmp, 0o755); err != nil { //nolint:gosec,G302 // umask-proof: desktop user must traverse
 		_ = os.RemoveAll(tmp)
 		return 0, err
 	}
@@ -106,11 +107,11 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		path := filepath.Join(tmp, cacheName(name)+".desktop")
-		if err := os.WriteFile(path, []byte(entries[name]), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(entries[name]), 0o644); err != nil { //nolint:gosec,G306
 			_ = os.RemoveAll(tmp)
 			return 0, err
 		}
-		if err := os.Chmod(path, 0o644); err != nil { // umask-proof: desktop user must read
+		if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec,G302 // umask-proof: desktop user must read
 			_ = os.RemoveAll(tmp)
 			return 0, err
 		}
@@ -123,7 +124,7 @@ func WriteCache(cacheDir, vm string, entries map[string]string) (int, error) {
 		_ = os.RemoveAll(tmp)
 		return 0, err
 	}
-	if err := os.Chmod(dir, 0o755); err != nil {
+	if err := os.Chmod(dir, 0o755); err != nil { //nolint:gosec,G302
 		_ = os.RemoveAll(tmp)
 		return 0, err
 	}

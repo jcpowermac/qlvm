@@ -1,3 +1,6 @@
+// Package tray implements the Qubes-style system-tray menu for qlvm: a
+// render-agnostic menu model (ComputeMenu/Signature), the click dispatch to
+// Actions, and the StatusNotifierItem rendering used by cmd/qlvm-tray.
 package tray
 
 import (

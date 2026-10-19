@@ -78,7 +78,7 @@ func WriteDom0Params(cfg *config.Config, path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(path, []byte(content), 0o644) //nolint:gosec,G306 // dom0 refresh script (root) reads it
 }
 
 // writeEmbedded writes content to path, creating parent directories as needed.
