@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jcpowermac/qlvm/internal/config"
+	"github.com/jcpowermac/qlvm/internal/coremap"
 	"github.com/jcpowermac/qlvm/internal/ostree"
 	"github.com/jcpowermac/qlvm/internal/template"
 	"github.com/stretchr/testify/require"
@@ -109,6 +110,35 @@ func (f *recBakeFS) WriteFile(p string, data []byte, _ os.FileMode) error {
 }
 
 func (f *recBakeFS) CopyFile(_, _ string) (int, error) { return 0, nil }
+
+// TestCreatePassesMachineCpusToCoremap: the hypervisor CPU count flows
+// into coremap.Ensure so a dom0 capped by dom0_max_vcpus still sees the
+// full machine topology (14 cores, not dom0's 2 vCPUs).
+func TestCreatePassesMachineCpusToCoremap(t *testing.T) {
+	t.Setenv("COREMAP_CPUINFO", `processor\t: 0\nmodel name\t: Intel(R) Core(TM) Ultra 5 245K\n\nprocessor\t: 1\nmodel name\t: Intel(R) Core(TM) Ultra 5 245K\n`)
+	root := t.TempDir()
+	coremapPath := filepath.Join(root, "coremap.yaml")
+	var events []string
+	d, _ := testDeps(t, root, &events, nil)
+	d.CoremapPath = coremapPath
+	d.Dom0VCPUs = 2
+	d.MachineCpus = 14
+
+	_, err := Create(context.Background(), d, testCfg(), Spec{
+		Name: "corevm", Type: "disposable", Image: "os-abc", Domain: "work",
+		MemoryMB: 1024, VCPUs: 1,
+	})
+	require.NoError(t, err)
+
+	cm, err := coremap.Load(coremapPath)
+	require.NoError(t, err)
+	require.Equal(t, 14, cm.Topology.TotalCores, "topology must come from the hypervisor count")
+	require.Equal(t, 12, len(cm.FreeCores())+1, "one E core assigned to the VM, 12 free")
+	m, err := LoadMeta(filepath.Join(root, "vms", "corevm"))
+	require.NoError(t, err)
+	require.Len(t, m.Cores, 1)
+	require.GreaterOrEqual(t, m.Cores[0], 6, "E-first: the VM must land on an E core (6-13)")
+}
 
 func testCfg() *config.Config {
 	return &config.Config{

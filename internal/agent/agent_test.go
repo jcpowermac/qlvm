@@ -24,7 +24,9 @@ import (
 )
 
 // fakeXen is a no-op Xen for construction tests.
-type fakeXen struct{}
+type fakeXen struct {
+	machineCpus int
+}
 
 func (f *fakeXen) CreateDomain(_ *vm.DomainSpec) error { return nil }
 func (f *fakeXen) Destroy(_ string) error              { return nil }
@@ -32,6 +34,7 @@ func (f *fakeXen) Shutdown(_ string) error             { return nil }
 func (f *fakeXen) List() ([]xenctl.DomainInfo, error)  { return nil, nil }
 func (f *fakeXen) Running(_ string) (bool, error)      { return false, nil }
 func (f *fakeXen) Console(_ string) error              { return nil }
+func (f *fakeXen) MachineCpus() (int, error)           { return f.machineCpus, nil }
 func (f *fakeXen) Close() error                        { return nil }
 
 // fakeOVNPorter is a no-op OVNPorter for construction tests.

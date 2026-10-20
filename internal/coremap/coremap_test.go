@@ -99,6 +99,80 @@ model name	: Unknown CPU Model
 	}
 }
 
+// TestDetectTopologyHypervisorCpus: when Xen caps dom0 (dom0_max_vcpus),
+// dom0's own /proc/cpuinfo only lists dom0's vCPUs; the machine topology
+// must come from the hypervisor's CPU count, not the cpuinfo processor list.
+func TestDetectTopologyHypervisorCpus(t *testing.T) {
+	t.Setenv("COREMAP_CPUINFO", `processor	: 0
+model name	: Intel(R) Core(TM) Ultra 5 245K
+
+processor	: 1
+model name	: Intel(R) Core(TM) Ultra 5 245K
+`)
+	topo, err := DetectTopologyWith(14)
+	if err != nil {
+		t.Fatalf("DetectTopologyWith: %v", err)
+	}
+	if topo.TotalCores != 14 {
+		t.Errorf("TotalCores = %d, want 14", topo.TotalCores)
+	}
+	wantP := []int{0, 1, 2, 3, 4, 5}
+	if !reflect.DeepEqual(topo.PCores, wantP) {
+		t.Errorf("PCores = %v, want %v", topo.PCores, wantP)
+	}
+	wantE := []int{6, 7, 8, 9, 10, 11, 12, 13}
+	if !reflect.DeepEqual(topo.ECores, wantE) {
+		t.Errorf("ECores = %v, want %v", topo.ECores, wantE)
+	}
+}
+
+// TestDetectTopologyUnknownModelHypervisorCpus: unknown model with a
+// hypervisor count takes the half-P fallback against the hypervisor count.
+func TestDetectTopologyUnknownModelHypervisorCpus(t *testing.T) {
+	t.Setenv("COREMAP_CPUINFO", `processor	: 0
+model name	: Unknown CPU Model
+
+processor	: 1
+model name	: Unknown CPU Model
+`)
+	topo, err := DetectTopologyWith(14)
+	if err != nil {
+		t.Fatalf("DetectTopologyWith: %v", err)
+	}
+	if topo.TotalCores != 14 {
+		t.Errorf("TotalCores = %d, want 14", topo.TotalCores)
+	}
+	if len(topo.PCores) != 7 || len(topo.ECores) != 7 {
+		t.Errorf("P/E split = %d/%d, want 7/7", len(topo.PCores), len(topo.ECores))
+	}
+}
+
+// TestEnsureUsesHypervisorCpus: a fresh coremap built with a hypervisor
+// count tracks the full machine, not just dom0's visible CPUs.
+func TestEnsureUsesHypervisorCpus(t *testing.T) {
+	t.Setenv("COREMAP_CPUINFO", `processor	: 0
+model name	: Intel(R) Core(TM) Ultra 5 245K
+
+processor	: 1
+model name	: Intel(R) Core(TM) Ultra 5 245K
+`)
+	path := filepath.Join(t.TempDir(), "coremap.yaml")
+	cm, err := Ensure(path, 2, 14, nil)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if cm.Topology.TotalCores != 14 {
+		t.Errorf("TotalCores = %d, want 14", cm.Topology.TotalCores)
+	}
+	if !reflect.DeepEqual(cm.Dom0Cores, []int{0, 1}) {
+		t.Errorf("Dom0Cores = %v, want [0 1]", cm.Dom0Cores)
+	}
+	// 14 - 2 dom0 = 12 free cores.
+	if got := len(cm.FreeCores()); got != 12 {
+		t.Errorf("FreeCores = %d, want 12", got)
+	}
+}
+
 func TestSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "coremap.yaml")

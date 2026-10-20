@@ -37,6 +37,10 @@ type CreateDeps struct {
 	CoremapPath string
 	// Dom0VCPUs is the dom0's vcpu count (for coremap dom0 core exclusion).
 	Dom0VCPUs int
+	// MachineCpus is the hypervisor's CPU count (0 = unknown; the coremap
+	// then falls back to the cpuinfo processor count, which under a
+	// dom0_max_vcpus cap is only dom0's vCPUs).
+	MachineCpus int
 }
 
 // Spec is the user-requested VM; zero MemoryMB/VCPUs take defaults from cfg
@@ -114,7 +118,7 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		if err != nil {
 			return nil, fmt.Errorf("load existing VM cores: %w", err)
 		}
-		cm, err := coremap.Ensure(d.CoremapPath, d.Dom0VCPUs, vmCores)
+		cm, err := coremap.Ensure(d.CoremapPath, d.Dom0VCPUs, d.MachineCpus, vmCores)
 		if err != nil {
 			return nil, fmt.Errorf("ensure coremap: %w", err)
 		}

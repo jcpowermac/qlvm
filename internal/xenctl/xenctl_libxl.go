@@ -85,6 +85,15 @@ func (x *libxlXen) List() ([]DomainInfo, error) {
 	return out, nil
 }
 
+// MachineCpus returns the hypervisor's CPU count (libxl physinfo nr_cpus).
+func (x *libxlXen) MachineCpus() (int, error) {
+	pi, err := x.GetPhysinfo()
+	if err != nil {
+		return 0, err
+	}
+	return int(pi.NrCpus), nil
+}
+
 func (x *libxlXen) Running(name string) (bool, error) {
 	if _, err := x.NameToDomid(name); err != nil {
 		// An absent domain is not running; a broken context will

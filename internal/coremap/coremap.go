@@ -55,10 +55,17 @@ type Coremap struct {
 // DetectTopology reads /proc/cpuinfo to determine the P/E core split.
 // It uses the CPU model to look up the known P count; if unknown, it
 // falls back to assuming the first half of cores are P.
-func DetectTopology() (Topology, error) {
+func DetectTopology() (Topology, error) { return DetectTopologyWith(0) }
+
+// DetectTopologyWith builds the machine topology. machineCpus is the
+// hypervisor's CPU count (libxl physinfo): when Xen caps dom0
+// (dom0_max_vcpus), dom0's own /proc/cpuinfo only lists dom0's vCPUs,
+// so the machine-wide topology must come from the hypervisor. 0 = fall
+// back to the cpuinfo processor count.
+func DetectTopologyWith(machineCpus int) (Topology, error) {
 	// Allow tests to override the cpuinfo path via environment variable.
 	if env := os.Getenv("COREMAP_CPUINFO"); env != "" {
-		return detectFromContent(env)
+		return detectFromContent(env, machineCpus)
 	}
 
 	f, err := os.Open(cpuinfoPath)
@@ -80,10 +87,10 @@ func DetectTopology() (Topology, error) {
 	if err := scanner.Err(); err != nil {
 		return Topology{}, fmt.Errorf("read %s: %w", cpuinfoPath, err)
 	}
-	return detectFromContent(content.String())
+	return detectFromContent(content.String(), machineCpus)
 }
 
-func detectFromContent(content string) (Topology, error) {
+func detectFromContent(content string, machineCpus int) (Topology, error) {
 	// Parse processor count and model name.
 	procs := 0
 	model := ""
@@ -104,27 +111,34 @@ func detectFromContent(content string) (Topology, error) {
 		return Topology{}, fmt.Errorf("no processors found in cpuinfo")
 	}
 
+	// The machine-wide count comes from the hypervisor when known; the
+	// cpuinfo processor list is only dom0's vCPUs when dom0 is capped.
+	total := procs
+	if machineCpus > 0 {
+		total = machineCpus
+	}
+
 	// Look up the model's P/E split.
-	pCount := procs / 2 // fallback: half are P
+	pCount := total / 2 // fallback: half are P
 	if m, ok := knownModels[model]; ok {
 		pCount = m.p
 	}
 	// Clamp pCount to the actual number of processors.
-	if pCount > procs {
-		pCount = procs
+	if pCount > total {
+		pCount = total
 	}
 
 	pCores := make([]int, pCount)
 	for i := 0; i < pCount; i++ {
 		pCores[i] = i
 	}
-	eCores := make([]int, procs-pCount)
-	for i := 0; i < procs-pCount; i++ {
+	eCores := make([]int, total-pCount)
+	for i := 0; i < total-pCount; i++ {
 		eCores[i] = pCount + i
 	}
 
 	return Topology{
-		TotalCores: procs,
+		TotalCores: total,
 		PCores:     pCores,
 		ECores:     eCores,
 	}, nil
@@ -273,8 +287,10 @@ const DefaultPath = "/var/lib/qlvm/coremap.yaml"
 
 // Ensure returns a Coremap for the given path: loads it if it exists,
 // otherwise detects the topology and builds a fresh one (dom0 gets the
-// first N P cores). metas is used to restore existing VM assignments.
-func Ensure(path string, dom0VCPUs int, vmCores map[string][]int) (*Coremap, error) {
+// first N P cores). machineCpus is the hypervisor's CPU count (0 = fall
+// back to the cpuinfo processor count); vmCores restores existing VM
+// assignments.
+func Ensure(path string, dom0VCPUs, machineCpus int, vmCores map[string][]int) (*Coremap, error) {
 	cm, err := Load(path)
 	if err == nil {
 		return cm, nil
@@ -282,7 +298,7 @@ func Ensure(path string, dom0VCPUs int, vmCores map[string][]int) (*Coremap, err
 	if !os.IsNotExist(err) {
 		return nil, err
 	}
-	topo, err := DetectTopology()
+	topo, err := DetectTopologyWith(machineCpus)
 	if err != nil {
 		return nil, fmt.Errorf("detect topology: %w", err)
 	}

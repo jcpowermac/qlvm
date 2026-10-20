@@ -54,7 +54,8 @@ func (f *fakeXen) Console(name string) error {
 	*f.events = append(*f.events, "console:"+name)
 	return nil
 }
-func (f *fakeXen) Close() error { return nil }
+func (f *fakeXen) MachineCpus() (int, error) { return 0, nil }
+func (f *fakeXen) Close() error              { return nil }
 
 // shortStopSeams shrinks stopPollInterval/stopMaxWait so stopForced's poll
 // loop finishes in milliseconds, restoring both on test cleanup.

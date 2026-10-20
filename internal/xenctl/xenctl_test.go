@@ -41,7 +41,8 @@ func (f *fakeXen) Console(name string) error {
 	*f.events = append(*f.events, "console:"+name)
 	return nil
 }
-func (f *fakeXen) Close() error { return nil }
+func (f *fakeXen) MachineCpus() (int, error) { return 0, nil }
+func (f *fakeXen) Close() error              { return nil }
 
 // fakeVif is a VifPorter that reports f.stale from StaleVifPorts.
 type fakeVif struct {

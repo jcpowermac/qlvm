@@ -29,6 +29,7 @@ func (f *fakeXenWithDomains) List() ([]xenctl.DomainInfo, error) {
 }
 func (f *fakeXenWithDomains) Running(_ string) (bool, error) { return false, nil }
 func (f *fakeXenWithDomains) Console(_ string) error         { return nil }
+func (f *fakeXenWithDomains) MachineCpus() (int, error)      { return 0, nil }
 func (f *fakeXenWithDomains) Close() error                   { return nil }
 
 var _ xenctl.Xen = &fakeXenWithDomains{}

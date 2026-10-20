@@ -25,6 +25,8 @@ type trackingXen struct {
 	destroyErr     error
 	shutdownErr    error
 	createDomainErr error
+	machineCpus     int
+	machineCpusCalls int
 }
 
 func (f *trackingXen) CreateDomain(_ *vm.DomainSpec) error { return f.createDomainErr }
@@ -47,8 +49,12 @@ func (f *trackingXen) Running(name string) (bool, error) {
 	}
 	return false, nil
 }
-func (f *trackingXen) Console(_ string) error { return nil }
-func (f *trackingXen) Close() error           { return nil }
+func (f *trackingXen) Console(_ string) error   { return nil }
+func (f *trackingXen) MachineCpus() (int, error) {
+	f.machineCpusCalls++
+	return f.machineCpus, nil
+}
+func (f *trackingXen) Close() error              { return nil }
 
 var _ xenctl.Xen = &trackingXen{}
 
@@ -288,6 +294,26 @@ func TestCreateVMAgentTemplateTypeConflict(t *testing.T) {
 	_, err := a.CreateVM(&CreateVMOptions{Name: "test-vm", Template: "agent-test", Type: "app"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "incompatible with agent template")
+}
+
+// TestCreateVMQueriesMachineCpus: CreateVM asks the hypervisor for the
+// machine-wide CPU count (dom0's /proc/cpuinfo is capped by
+// dom0_max_vcpus) before creating the VM.
+func TestCreateVMQueriesMachineCpus(t *testing.T) {
+	root := testRoot(t)
+	tplDir := filepath.Join(root, "templates", "ostree-test-template")
+	require.NoError(t, os.MkdirAll(tplDir, 0o755)) //nolint:gosec,G301
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "META"), []byte("image: quay.io/fedora/fedora:42\ndigest: sha256:abc123\ntype: ostree\n"), 0o644)) //nolint:gosec,G306
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.raw"), []byte("raw"), 0o644)) //nolint:gosec,G306
+
+	x := &trackingXen{machineCpus: 14}
+	cfg := &config.Config{Domains: []config.Domain{{Name: "work", Subnet: "10.100.1", Gateway: "10.100.1.1"}}, Disposable: config.VMDefaults{MemoryMB: 1024, VCPUs: 1}}
+	a := New(x, &fakeOVNPorter{}, &fakeVifPorter{}, cfg, filepath.Join(root, "coremap.yaml"), root)
+
+	// The create itself will fail later (no real template content), but
+	// the hypervisor CPU count must have been queried first.
+	_, _ = a.CreateVM(&CreateVMOptions{Name: "corevm", Template: "ostree-test", Type: "disposable"})
+	assert.Equal(t, 1, x.machineCpusCalls, "CreateVM must query the hypervisor CPU count")
 }
 
 // --- RestartVM tests ---

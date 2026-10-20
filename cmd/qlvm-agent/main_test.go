@@ -92,7 +92,7 @@ func TestInstallSystemFilesWritesFiles(t *testing.T) {
 	// Verify dom0 boot params (nil Pin means pinned)
 	data, err = os.ReadFile(paramsPath) //nolint:gosec,G304
 	require.NoError(t, err)
-	assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=2\n", string(data))
+	assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=0-1\n", string(data))
 }
 
 func TestInstallSystemFilesRunsSystemctl(t *testing.T) {

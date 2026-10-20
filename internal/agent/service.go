@@ -72,7 +72,13 @@ func WriteDom0Params(cfg *config.Config, path string) error {
 	params = append(params, fmt.Sprintf("dom0_mem=%dM", cfg.Dom0.MemoryMB))
 	params = append(params, fmt.Sprintf("dom0_max_vcpus=%d", cfg.Dom0.VCPUs))
 	if cfg.Dom0.Pinned() {
-		params = append(params, fmt.Sprintf("dom0_vcpus_pin=%d", cfg.Dom0.VCPUs))
+		// dom0_vcpus_pin takes a cpumask (not a count): pin to the first
+		// N cores, which are the P cores.
+		mask := "0"
+		if cfg.Dom0.VCPUs > 1 {
+			mask = fmt.Sprintf("0-%d", cfg.Dom0.VCPUs-1)
+		}
+		params = append(params, "dom0_vcpus_pin="+mask)
 	}
 	content := strings.Join(params, " ") + "\n"
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

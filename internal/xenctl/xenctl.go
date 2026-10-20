@@ -28,6 +28,11 @@ type Xen interface {
 	// Console attaches to a running VM's primary console (TTY).
 	// Blocks until the console closes (VM stopped or user disconnects).
 	Console(name string) error
+	// MachineCpus returns the hypervisor's CPU count (libxl physinfo).
+	// dom0's own /proc/cpuinfo only lists dom0's vCPUs when dom0 is
+	// capped by dom0_max_vcpus, so machine-wide topology (coremap) must
+	// use this.
+	MachineCpus() (int, error)
 	Close() error
 }
 

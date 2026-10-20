@@ -837,6 +837,13 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 	memory := int(opts.MemoryMB) //nolint:gosec,G115
 	vcpus := int(opts.VCPUs)     //nolint:gosec,G115
 
+	// Machine-wide CPU count for coremap topology: under a dom0_max_vcpus
+	// cap, dom0's /proc/cpuinfo only lists dom0's vCPUs.
+	machineCpus := 0
+	if mc, e := a.xen.MachineCpus(); e == nil {
+		machineCpus = mc
+	}
+
 	a.emitProgress(opID, "creating VM")
 	meta, err := vm.Create(context.Background(), vm.CreateDeps{
 		OVN:         a.ovn,
@@ -847,6 +854,7 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 		FSType:      "xfs",
 		CoremapPath: a.coremapPath,
 		Dom0VCPUs:   a.cfg.Dom0.VCPUs,
+		MachineCpus: machineCpus,
 	}, a.cfg, vm.Spec{
 		Name:     opts.Name,
 		Domain:   domain,

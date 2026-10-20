@@ -175,7 +175,7 @@ func TestWriteDom0Params(t *testing.T) {
 		require.NoError(t, WriteDom0Params(cfg, path))
 		data, err := os.ReadFile(path) //nolint:gosec,G304
 		require.NoError(t, err)
-		assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=2\n", string(data))
+		assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=2 dom0_vcpus_pin=0-1\n", string(data))
 	})
 
 	t.Run("nil pin means pinned", func(t *testing.T) {
@@ -185,7 +185,17 @@ func TestWriteDom0Params(t *testing.T) {
 		require.NoError(t, WriteDom0Params(cfg, path))
 		data, err := os.ReadFile(path) //nolint:gosec,G304
 		require.NoError(t, err)
-		assert.Equal(t, "dom0_mem=16384M dom0_max_vcpus=4 dom0_vcpus_pin=4\n", string(data))
+		assert.Equal(t, "dom0_mem=16384M dom0_max_vcpus=4 dom0_vcpus_pin=0-3\n", string(data))
+	})
+
+	t.Run("single vcpu pin is a bare core", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "xen-boot-params.conf")
+		cfg := &config.Config{Dom0: config.Dom0{MemoryMB: 32768, VCPUs: 1, Pin: boolPtr(true)}}
+		require.NoError(t, WriteDom0Params(cfg, path))
+		data, err := os.ReadFile(path) //nolint:gosec,G304
+		require.NoError(t, err)
+		assert.Equal(t, "dom0_mem=32768M dom0_max_vcpus=1 dom0_vcpus_pin=0\n", string(data))
 	})
 
 	t.Run("unpinned omits dom0_vcpus_pin", func(t *testing.T) {
