@@ -837,6 +837,16 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 	memory := int(opts.MemoryMB) //nolint:gosec,G115
 	vcpus := int(opts.VCPUs)     //nolint:gosec,G115
 
+	// The app-type create writes an ssh-config block into the desktop
+	// user's home; resolve it up front (the daemon has no $HOME).
+	var home string
+	if typ == "app" {
+		home, err = a.resolveHome()
+		if err != nil {
+			return "", fmt.Errorf("create %s: home dir: %w", opts.Name, err)
+		}
+	}
+
 	// Machine-wide CPU count for coremap topology: under a dom0_max_vcpus
 	// cap, dom0's /proc/cpuinfo only lists dom0's vCPUs.
 	machineCpus := 0
@@ -848,6 +858,7 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 	meta, err := vm.Create(context.Background(), vm.CreateDeps{
 		OVN:         a.ovn,
 		Tpl:         tpl,
+		Home:        home,
 		FS:          ostree.NewFS(nil),
 		Reflink:     mounts.Reflink,
 		Root:        a.root,
@@ -873,6 +884,31 @@ func (a *Agent) CreateVM(opts *CreateVMOptions) (string, error) {
 	return meta.Name, nil
 }
 
+// resolveHome returns the home dir for SSH-side effects (ssh-config
+// blocks, provisioner/SyncKernel auth). Under systemd the daemon runs as
+// root with no $HOME, so the resolution order is: the injected homeDir
+// (tests), $HOME, $SUDO_USER's home, then the first wheel-group member
+// (the desktop-user heuristic, same as sshAuthKeys).
+func (a *Agent) resolveHome() (string, error) {
+	if a.homeDir != "" {
+		return a.homeDir, nil
+	}
+	if h := os.Getenv("HOME"); h != "" {
+		return h, nil
+	}
+	if su := os.Getenv("SUDO_USER"); su != "" && su != "root" {
+		if h, err := userLookupFn(su); err == nil && h != "" {
+			return h, nil
+		}
+	}
+	for _, mem := range wheelGroupMembersFn() {
+		if h, err := userLookupFn(mem); err == nil && h != "" {
+			return h, nil
+		}
+	}
+	return "", errors.New("$HOME is unset and no desktop (wheel) user was found")
+}
+
 // DeleteVM removes a VM (domain, OVN/OVS ports, state dir, ssh block).
 func (a *Agent) DeleteVM(name string) error {
 	if err := validateVMName(name); err != nil {
@@ -880,7 +916,7 @@ func (a *Agent) DeleteVM(name string) error {
 	}
 
 	ctx := context.Background()
-	home, err := os.UserHomeDir()
+	home, err := a.resolveHome()
 	if err != nil {
 		return fmt.Errorf("delete %s: home dir: %w", name, err)
 	}
@@ -1281,13 +1317,9 @@ func (a *Agent) ProvisionVM(name string) error {
 		return fmt.Errorf("provision %s: %w", name, err)
 	}
 
-	home := a.homeDir
-	if home == "" {
-		var err error
-		home, err = os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("home dir: %w", err)
-		}
+	home, err := a.resolveHome()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
 	}
 
 	opID := newOpID("provision")
@@ -1344,13 +1376,9 @@ func (a *Agent) SyncKernel(name string) error {
 		return fmt.Errorf("sync-kernel %s: %w", name, err)
 	}
 
-	home := a.homeDir
-	if home == "" {
-		var err error
-		home, err = os.UserHomeDir()
-		if err != nil {
-			return err
-		}
+	home, err := a.resolveHome()
+	if err != nil {
+		return fmt.Errorf("sync-kernel %s: home dir: %w", name, err)
 	}
 
 	opID := newOpID("sync-kernel")
@@ -1493,12 +1521,7 @@ func (a *Agent) appCacheDir() string {
 // home in sorted order. The first candidate that connects wins.
 func (a *Agent) appSyncHomes() []string {
 	var homes []string
-	home := a.homeDir
-	if home == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			home = h
-		}
-	}
+	home, _ := a.resolveHome()
 	if home != "" {
 		homes = append(homes, home)
 	}

@@ -33,6 +33,9 @@ type CreateDeps struct {
 	Reflink func(dst, src string) error
 	Root    string
 	FSType  string
+	// Home is the host home dir for the app-type ssh-config block.
+	// Empty = use os.UserHomeDir (the calling process must have $HOME).
+	Home string
 	// CoremapPath is the path to coremap.yaml; empty = no CPU pinning.
 	CoremapPath string
 	// Dom0VCPUs is the dom0's vcpu count (for coremap dom0 core exclusion).
@@ -224,9 +227,13 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 		return fail(fmt.Errorf("save meta: %w", err))
 	}
 	if spec.Type == "app" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fail(fmt.Errorf("home dir: %w", err))
+		home := d.Home
+		if home == "" {
+			var err error
+			home, err = os.UserHomeDir()
+			if err != nil {
+				return fail(fmt.Errorf("home dir: %w", err))
+			}
 		}
 		if err := sshConfigFn(home, m); err != nil {
 			return fail(fmt.Errorf("ssh config: %w", err))

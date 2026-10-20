@@ -600,6 +600,57 @@ func TestProvisionVMRunnerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "sftp failed")
 }
 
+// stubWheelHomes redirects the wheel-group / user-lookup seams so the
+// desktop-user home resolves to home. Returns a cleanup func.
+func stubWheelHomes(t *testing.T, home string) func() {
+	t.Helper()
+	oldMembers, oldLookup := wheelGroupMembersFn, userLookupFn
+	t.Cleanup(func() { wheelGroupMembersFn, userLookupFn = oldMembers, oldLookup })
+	wheelGroupMembersFn = func() []string { return []string{"desktopuser"} }
+	userLookupFn = func(name string) (string, error) {
+		if name == "desktopuser" {
+			return home, nil
+		}
+		return "", errors.New("no such user")
+	}
+	return func() {}
+}
+
+// TestDeleteVMResolvesHomeWithoutEnvHome: under systemd the daemon runs as
+// root with no $HOME; DeleteVM must resolve the desktop (wheel) user's home
+// for the ssh-config side effect instead of failing.
+func TestDeleteVMResolvesHomeWithoutEnvHome(t *testing.T) {
+	root, home := setupVMTest(t, "vm1")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	t.Setenv("HOME", "")
+	t.Setenv("SUDO_USER", "")
+	stubWheelHomes(t, home)
+
+	require.NoError(t, a.DeleteVM("vm1"))
+	_, err := os.Stat(filepath.Join(root, "vms", "vm1"))
+	require.True(t, os.IsNotExist(err), "vmDir removed")
+	_, err = os.Stat(filepath.Join(home, ".ssh", "config"))
+	require.True(t, os.IsNotExist(err), "app type: ssh config removed from the wheel user's home (VM block was the only one)")
+}
+
+// TestDeleteVMHomeUnresolvable: no $HOME, no SUDO_USER, no wheel users ->
+// a clear home error before any state is touched.
+func TestDeleteVMHomeUnresolvable(t *testing.T) {
+	root, _ := setupVMTest(t, "vm1")
+	a := New(&fakeXen{}, &fakeOVNPorter{}, &fakeVifPorter{}, &config.Config{}, "", root)
+	t.Setenv("HOME", "")
+	t.Setenv("SUDO_USER", "")
+	oldMembers := wheelGroupMembersFn
+	t.Cleanup(func() { wheelGroupMembersFn = oldMembers })
+	wheelGroupMembersFn = func() []string { return nil }
+
+	err := a.DeleteVM("vm1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "home")
+	_, statErr := os.Stat(filepath.Join(root, "vms", "vm1"))
+	require.NoError(t, statErr, "vm state untouched when home is unresolvable")
+}
+
 // setupProvisionTest creates a temp provision dir with base/dotfiles content.
 func setupProvisionTest(t *testing.T, _ string) string {
 	t.Helper()
