@@ -116,12 +116,13 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 
 	// CPU core assignment: manual (spec.Cores) or auto (coremap, E-first).
 	var cores []int
+	var cm *coremap.Coremap // hoisted so fail() can free the assignment
 	if d.CoremapPath != "" {
 		vmCores, err := existingVMCores(d.Root)
 		if err != nil {
 			return nil, fmt.Errorf("load existing VM cores: %w", err)
 		}
-		cm, err := coremap.Ensure(d.CoremapPath, d.Dom0VCPUs, d.MachineCpus, vmCores)
+		cm, err = coremap.Ensure(d.CoremapPath, d.Dom0VCPUs, d.MachineCpus, vmCores)
 		if err != nil {
 			return nil, fmt.Errorf("ensure coremap: %w", err)
 		}
@@ -159,6 +160,12 @@ func Create(ctx context.Context, d CreateDeps, cfg *config.Config, spec Spec) (*
 	fail := func(err error) (*Meta, error) {
 		_ = d.OVN.DelLSPort(ctx, spec.Name)
 		_ = os.RemoveAll(vmDir)
+		// The coremap assignment was persisted above (before the disk work);
+		// release it or the VM's cores leak out of the pool.
+		if cm != nil {
+			cm.Free(spec.Name)
+			_ = cm.Save(d.CoremapPath)
+		}
 		return nil, err
 	}
 	// 0755 + world-readable meta.yaml: `qlvm vm run` is a user-session command

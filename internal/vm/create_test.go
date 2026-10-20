@@ -364,6 +364,31 @@ func TestCreateReflinkFailureLeavesNoOrphanPort(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(root, "vms/vm1/disk.img"))
 }
 
+// TestCreateReflinkFailureFreesCoremapAssignment: the coremap assignment is
+// persisted before the disk work starts; a later failure must release it or
+// the VM's cores leak out of the pool until the next manual edit.
+func TestCreateReflinkFailureFreesCoremapAssignment(t *testing.T) {
+	t.Setenv("COREMAP_CPUINFO", `processor\t: 0\nmodel name\t: Intel(R) Core(TM) Ultra 5 245K\n\nprocessor\t: 1\nmodel name\t: Intel(R) Core(TM) Ultra 5 245K\n`)
+	root := t.TempDir()
+	coremapPath := filepath.Join(root, "coremap.yaml")
+	var events []string
+	d, _ := testDeps(t, root, &events, errors.New("clone: same filesystem required (EXDEV)"))
+	d.CoremapPath = coremapPath
+	d.Dom0VCPUs = 2
+	d.MachineCpus = 14
+
+	_, err := Create(context.Background(), d, testCfg(), Spec{
+		Name: "leakvm", Type: "disposable", Image: "os-abc", Domain: "work",
+		MemoryMB: 1024, VCPUs: 1,
+	})
+	require.Error(t, err)
+
+	cm, err := coremap.Load(coremapPath)
+	require.NoError(t, err)
+	require.Len(t, cm.Assignments, 0, "failed create must free its coremap assignment")
+	require.Len(t, cm.FreeCores(), 12, "all non-dom0 cores must be back in the pool (14 - 2 dom0)")
+}
+
 func TestCreateMemoryFloor(t *testing.T) {
 	root := t.TempDir()
 	var events []string
