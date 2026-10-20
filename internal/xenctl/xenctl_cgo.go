@@ -13,15 +13,44 @@ package xenctl
 
 /*
 #cgo LDFLAGS: -lxenlight -lyajl -lxentoollog
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <libxl.h>
 #include <libxl_utils.h>
 
-// Same childproc setup as the xenlight binding's preamble (4.21 API):
-// libxl runs the vif script as our child during create and expects the
-// owning process to forward SIGCHLD to it.
-static const libxl_childproc_hooks qlvm_childproc_hooks = { .chldowner = libxl_sigchld_owner_mainloop };
+// Save the current SIGCHLD disposition and install a bare SIG_IGN
+// (sa_flags=0) for the duration of a create; qlvm_chld_restore puts the
+// saved disposition back. libxl's sigchld_installhandler_core
+// (libxl_fork.c) asserts the previous action was SIG_DFL or SIG_IGN
+// WITHOUT SA_SIGINFO. Go's os/signal.Ignore is not sufficient: the
+// runtime's setsig installs SIG_IGN with the trampoline's
+// SA_SIGINFO|SA_ONSTACK|SA_RESTORER|SA_RESTART flags still set, which
+// trips the assert (SIGABRT on vm start, 2026-10-19). createMu keeps at
+// most one save window open at a time, so a static is safe.
+static struct sigaction qlvm_chld_saved;
+static void qlvm_chld_ignore(void) {
+    struct sigaction sa;
+    sigaction(SIGCHLD, NULL, &qlvm_chld_saved);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGCHLD, &sa, NULL);
+}
+static void qlvm_chld_restore(void) {
+    sigaction(SIGCHLD, &qlvm_chld_saved, NULL);
+}
+
+// libxl runs the vif script as our child during create. Use the
+// libxl-owned SIGCHLD path (self-pipe): libxl installs its own handler
+// while it has children and reaps them inside ev_dispatch, on the
+// create thread. The mainloop owner + a Go-goroutine forwarder (the
+// xenlight Go binding's design) reaps from a different thread than
+// ev_dispatch and crashed with a use-after-free when vif-ovn exited
+// (2026-10-19). libxl saves/restores the previous handler around its
+// ownership window, so other Go children (losetup, exec helpers) keep
+// working: their Wait uses a blocking wait4 that does not depend on
+// receiving the signal.
+static const libxl_childproc_hooks qlvm_childproc_hooks = { .chldowner = libxl_sigchld_owner_libxl };
 
 static void qlvm_set_chldproc(libxl_ctx *ctx) {
 	libxl_childproc_setmode(ctx, &qlvm_childproc_hooks, NULL);
@@ -86,21 +115,42 @@ int qlvm_create_domain(libxl_ctx *ctx,
     d.b_info.ramdisk = qlvm_qstr(ramdisk);
     d.b_info.cmdline = qlvm_qstr(cmdline);
 
-    // CPU pinning: set the domain's allowed CPUs as a bitmask in b_info.cpumap.
-    // ncpus is the number of cores to pin; cpus is the list of core IDs.
-    // libxl_bitmap is a byte array where bit i is set if CPU i is allowed.
-    // The size is (max_cpu_id + 8) / 8 bytes (libxl rounds up to byte boundaries).
+    // CPU pinning. libxl_domain_config_init leaves b_info.cpumap empty
+    // (map=NULL, size=0); libxl_cpu_bitmap_alloc(ctx, b, 0) allocates it
+    // at machine size, which is what libxl's create path requires: it
+    // converts the domain cpumap into per-vCPU hard affinity by copying
+    // it into machine-sized bitmaps and asserts on a size mismatch
+    // (libxl_bitmap_copy). Writing the bits on the empty map crashed the
+    // first start of a core-pinned VM (SIGSEGV, 2026-10-19); a short
+    // (max_cpu + 8) / 8 buffer hit the size assertion.
     if (ncpus > 0 && cpus != NULL) {
-        int max_cpu = cpus[0];
-        for (i = 1; i < ncpus; i++) {
-            if (cpus[i] > max_cpu) max_cpu = cpus[i];
+        rc = libxl_cpu_bitmap_alloc(ctx, &d.b_info.cpumap, 0);
+        if (rc != 0) {
+            libxl_domain_config_dispose(&d);
+            // ctx is owned by the Go side (cgoCtx.Close frees it).
+            return rc;
         }
-        uint32_t nbytes = (uint32_t)((max_cpu + 8) / 8);
-        d.b_info.cpumap.size = nbytes;
-        d.b_info.cpumap.map = calloc(nbytes, 1);
         for (i = 0; i < ncpus; i++) {
-            d.b_info.cpumap.map[cpus[i] / 8] |= (uint8_t)(1u << (cpus[i] % 8));
+            libxl_bitmap_set(&d.b_info.cpumap, cpus[i]);
         }
+        // Pre-populate vcpu_hard_affinity with plain mallocs so
+        // libxl__domain_build_info_setdefault (libxl_create.c:188) skips
+        // its own cpumap->vcpu_hard_affinity conversion, which allocates
+        // the array from the AO's GC arena. That arena is freed when the
+        // AO is destroyed at the end of create_new, leaving a dangling
+        // array that libxl_domain_config_dispose would free a second
+        // time (double free / SIGSEGV, 2026-10-19). The conversion is
+        // skipped when num_vcpu_hard_affinity != 0; the values are
+        // identical (machine-sized copies of the cpumap).
+        d.b_info.vcpu_hard_affinity = calloc(maxvcpus, sizeof(libxl_bitmap));
+        for (i = 0; i < maxvcpus; i++) {
+            if (libxl_cpu_bitmap_alloc(ctx, &d.b_info.vcpu_hard_affinity[i], 0)) {
+                libxl_domain_config_dispose(&d);
+                return ERROR_FAIL;
+            }
+            libxl_bitmap_copy(ctx, &d.b_info.vcpu_hard_affinity[i], &d.b_info.cpumap);
+        }
+        d.b_info.num_vcpu_hard_affinity = maxvcpus;
     }
 
     disks = calloc(1, sizeof *disks);
@@ -148,49 +198,37 @@ import "C"
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+	"sync"
 	"unsafe"
 
 	"github.com/jcpowermac/qlvm/internal/vm"
 )
 
 // cgoCtx is a standalone libxl context (the binding's context pointer is
-// unexported). It mirrors the binding's NewContext: its own logger, its own
-// SIGCHLD forwarder, because libxl spawns the vif script as a child during
-// create and expects libxl_childproc_sigchld_occurred on its context.
+// unexported) with its own logger. SIGCHLD needs no Go forwarder: libxl
+// owns the signal itself while it has children (see qlvm_childproc_hooks).
 type cgoCtx struct {
-	ctx     *C.libxl_ctx
-	logger  *C.xentoollog_logger_stdiostream
-	sigchld chan os.Signal
-	done    chan struct{}
+	ctx    *C.libxl_ctx
+	logger *C.xentoollog_logger_stdiostream
 }
 
 func newCGOContext() (*cgoCtx, error) {
 	c := &cgoCtx{}
-	c.logger = C.xtl_createlogger_stdiostream(C.stderr, C.XTL_ERROR, 0)
+	var loglvl C.xentoollog_level = C.XTL_ERROR
+	if os.Getenv("QLVM_LIBXL_LOG") == "debug" {
+		loglvl = C.XTL_DEBUG
+	}
+	c.logger = C.xtl_createlogger_stdiostream(C.stderr, loglvl, 0)
 	if r := C.libxl_ctx_alloc(&c.ctx, C.LIBXL_VERSION, 0, (*C.xentoollog_logger)(unsafe.Pointer(c.logger))); r != 0 {
 		C.xtl_logger_destroy((*C.xentoollog_logger)(unsafe.Pointer(c.logger)))
 		return nil, fmt.Errorf("libxl_ctx_alloc: rc=%d", r)
 	}
 	C.qlvm_set_chldproc(c.ctx)
-	c.sigchld = make(chan os.Signal, 2)
-	c.done = make(chan struct{}, 1)
-	signal.Notify(c.sigchld, syscall.SIGCHLD)
-	go func() {
-		for range c.sigchld {
-			C.libxl_childproc_sigchld_occurred(c.ctx)
-		}
-		close(c.done)
-	}()
 	return c, nil
 }
 
 func (c *cgoCtx) close() {
-	signal.Stop(c.sigchld)
-	close(c.sigchld)
-	<-c.done
 	C.libxl_ctx_free(c.ctx)
 	C.xtl_logger_destroy((*C.xentoollog_logger)(unsafe.Pointer(c.logger)))
 }
@@ -255,6 +293,18 @@ func cgoCreateDomain(spec *vm.DomainSpec) error {
 		nCpus = C.int(len(slice))
 	}
 
+	// libxl (chldowner=libxl) installs its own SIGCHLD handler when it
+	// forks the first hotplug helper, and asserts the previous
+	// disposition was SIG_DFL or SIG_IGN without SA_SIGINFO
+	// (libxl_fork.c). The Go runtime always installs its own SIGCHLD
+	// trampoline, so for the duration of the call save the disposition
+	// and install a bare SIG_IGN (qlvm_chld_ignore). libxl saves that
+	// disposition and restores it when its last child is reaped; the
+	// restore below returns whatever we saved. createMu serializes
+	// concurrent creates: libxl's SIGCHLD install state is
+	// process-global, as is our save/restore window.
+	createMu.Lock()
+	C.qlvm_chld_ignore()
 	var domid C.uint
 	rc := C.qlvm_create_domain(
 		c.ctx,
@@ -277,8 +327,13 @@ func cgoCreateDomain(spec *vm.DomainSpec) error {
 		cCpus,
 		&domid,
 	)
+	C.qlvm_chld_restore()
+	createMu.Unlock()
 	if rc != 0 {
 		return fmt.Errorf("libxl create %s: rc=%d (see libxl log above)", spec.Name, rc)
 	}
 	return nil
 }
+
+// createMu serializes cgoCreateDomain (see the qlvm_chld_ignore comment).
+var createMu sync.Mutex
