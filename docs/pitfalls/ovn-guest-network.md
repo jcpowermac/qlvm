@@ -7,13 +7,15 @@
   on the configured switch (`work`), plus an OVS port `vif<domid>.0`
   (type=system, `external-ids:iface-id=<vm-name>` — that is how
   ovn-controller ties the physical port to the LSP). Dom0 is NOT on the VM
-  subnet: traffic dom0→VM routes over the uplink subnet via the OVN
-  gateway router (`10.100.0.0/16 via <gw> dev br-ex`, static route on dom0
-  from the legacy setup), so ping replies carry ttl=63. Legacy bash
+  subnet: dom0→VM traffic for a configured domain takes the direct LSW path
+  (the per-subnet `/24` route on `qvm-dom0`, ttl=64); the supernet route
+  (`10.100.0.0/16 via <router_ip> dev br-ex`) covers the rest via the OVN
+  gateway router (ttl=63). Both are systemd-networkd drop-ins re-Ensured on
+  every `qlvm-agent` start — see the "dom0 LSW join" bullet below. Legacy bash
   reference for the dom0 OVN/OVS/static plumbing: the legacy bash VM
   project (sibling tree, `qvm-install`, `qvm-harden-dom0`,
   `qlvm-setup-egress`, `vif-ovn` scripts).
-- **Verify in 3 commands**: `ping -c3 <vm-ip>` (ttl=63 = via OVN router);
+- **Verify in 3 commands**: `ping -c3 <vm-ip>` (ttl=64 = direct via the `qvm-dom0` /24 LSW route, ttl=63 = via the OVN router; 100% loss = broken — check `ip route | grep 10.100` on the dom0 first);
   `sudo ovn-sbctl find Port_Binding` → the VM's port has `up: true`, a
   `chassis`, and `mac`/`port_security` = the assigned MAC (the OVN "MAC
   binding"); `sudo ovs-vsctl show` → `vif<domid>.0` under br-int.
@@ -98,12 +100,28 @@
   (26.03 trace syntax: positional datapath, `&&` separators in the
   microflow). NB: table 79's `MAC_CACHE_USE` rows on localnet routers are
   harmless usage counters (resubmit semantics), not a drop — an earlier
-  read of them as the cause was wrong. The dom0 also still joins the work LSW directly (STILL MANUAL, not in the
-  qlvm reconcilers: `qvm-dom0` OVS port on br-int + LSP `dom0`
-  `10.100.1.2` + per-subnet /24 kernel routes) so that guest→dom0 replies
-  (e.g. the waypipe tcp/vsock data port dials) land on an address the dom0
-  owns, since the router SNATs guest egress to `router_ip`; that part is
-  unchanged and separate from the SNAT fix.
+  read of them as the cause was wrong.
+- **dom0 LSW join: kernel side reconciled, OVS/OVN side still legacy**
+  (rework 2026-10-30). The dom0 joins the work LSW so guest→dom0 dials
+  (waypipe tcp/vsock data port) land on an address the dom0 owns — the
+  router SNATs guest egress to `router_ip`, so without a dom0-owned address
+  on the LSW those replies can't route back. Pieces: (a) the `qvm-dom0` OVS
+  port on br-int + LSP `dom0` `10.100.1.2` are STILL MANUAL — created by
+  hand, persist in their own OVSDB/OVN-NB databases, not in the qlvm
+  reconcilers; (b) the KERNEL side — `qvm-dom0` link up, the per-domain
+  `<subnet>.2/24` address on it (which yields the per-subnet /24 connected
+  routes), and the supernet route via `router_ip` — is pure kernel state
+  that dies on every dom0 reboot. The agent now re-Ensures it on each
+  start: `cmd/qlvm-agent` → `internal/netd` writes
+  `/etc/systemd/network/90-qlvm-{nic,br-ex,dom0}.network` (networkd owns
+  the addresses/routes) and restarts networkd only when a file actually
+  changed. Symptom of the pre-fix manual setup (cost a session 2026-10-30):
+  guest fully healthy, OVN fully healthy, but dom0 can't ping or ssh the VM
+  because the `/16` route and the `qvm-dom0` address/routes had vanished —
+  `ip route | grep 10.100` empty. Gotcha that bit the first wiring: the
+  agent unit runs `ProtectSystem=strict`, so `/etc/systemd/network` MUST be
+  in its `ReadWritePaths` or the drop-in write fails with EROFS ("read-only
+  file system") on every start and the agent flaps.
 - **Guest account is `user`, not the dom0's username.** The template
   bakes the dom0's pubkey into `/var/home/user/.ssh/authorized_keys`
   (see the SSH section below); ssh as `user@<vm-ip>`. SSHing as the

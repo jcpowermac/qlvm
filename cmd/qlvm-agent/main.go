@@ -19,6 +19,7 @@ import (
 	"github.com/jcpowermac/qlvm/internal/agent"
 	"github.com/jcpowermac/qlvm/internal/config"
 	"github.com/jcpowermac/qlvm/internal/coremap"
+	"github.com/jcpowermac/qlvm/internal/netd"
 	"github.com/jcpowermac/qlvm/internal/ovn"
 	"github.com/jcpowermac/qlvm/internal/ovs"
 	"github.com/jcpowermac/qlvm/internal/xenctl"
@@ -77,6 +78,9 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	if err := ensureDom0Net(cfg); err != nil {
+		log.Fatalf("netd: %v", err)
+	}
 
 	x, err := xenctl.New()
 	if err != nil {
@@ -100,6 +104,28 @@ func main() {
 	if err != nil {
 		log.Fatalf("agent: %v", err)
 	}
+}
+
+// ensureDom0Net re-ensures the dom0's networkd drop-ins (uplink DHCP, the
+// VM-supernet route via the OVN gateway router, and the qvm-dom0 LSW
+// join) on every agent start: all of it is kernel state that dies on
+// every dom0 reboot, and losing it silently strands the VM subnets.
+func ensureDom0Net(cfg *config.Config) error {
+	m, err := netd.NewSystem()
+	if err != nil {
+		return err
+	}
+	var addrs []string
+	for _, d := range cfg.Domains {
+		addrs = append(addrs, d.Subnet+".2/24")
+	}
+	return m.Ensure(netd.Params{
+		NIC:      cfg.Network.NIC,
+		Bridge:   ovs.BrEx,
+		RouterIP: cfg.Network.RouterIP,
+		Supernet: cfg.VMSupernet(),
+		Dom0LSW:  addrs,
+	})
 }
 
 // runExternalCommand runs a command and returns its error, capturing

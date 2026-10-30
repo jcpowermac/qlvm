@@ -4,10 +4,18 @@
 // create and marks externally created bridges unmanaged), so OVS owns
 // the topology and networkd owns the addresses.
 //
-// Two .network files are written: one DHCPs the physical NIC (the
-// pre-migration and failback state) and one DHCPs the OVS bridge (the
-// migrated state). Whichever device holds the uplink carries the dom0's
-// only LAN address.
+// Three .network files are written: one DHCPs the physical NIC (the
+// pre-migration and failback state), one DHCPs the OVS bridge (the
+// migrated state) and carries the VM-supernet route via the OVN gateway
+// router, and one addresses the qvm-dom0 OVS port on the work switch
+// (the dom0's LSW presence, so guest→dom0 dials land on an address the
+// dom0 owns). Whichever device holds the uplink carries the dom0's only
+// LAN address. All of this is kernel state that dies on every dom0
+// reboot, so qlvm-agent re-Ensures it on each start.
+//
+// The OVN side of the dom0 LSW join (the "dom0" LSP) and the qvm-dom0
+// OVS port still persist in their own databases and are not reconciled
+// here.
 package netd
 
 import (
@@ -16,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -26,6 +35,9 @@ const (
 	Dir = "/etc/systemd/network"
 	// filePrefix orders these files last so host-specific drop-ins win.
 	filePrefix = "90-qlvm-"
+	// Dom0LSWIf is the OVS port on br-int that carries the dom0 onto the
+	// work LSW (one per dom0, named after the legacy manual plumbing).
+	Dom0LSWIf = "qvm-dom0"
 
 	sdService = "org.freedesktop.systemd1"
 	sdObject  = "/org/freedesktop/systemd1"
@@ -54,22 +66,53 @@ func NewSystem() (*Manager, error) {
 	}, nil
 }
 
-// files returns the .network drop-ins for the NIC and the OVS bridge.
-func (m *Manager) files(nic, br string) map[string]string {
-	return map[string]string{
-		filePrefix + "nic.network": "[Match]\nName=" + nic + "\n\n[Network]\nDHCP=ipv4\n",
-		filePrefix + "br-ex.network": "[Match]\nName=" + br + "\n\n[Network]\nDHCP=ipv4\n",
+// Params is the desired dom0 network state rendered to drop-ins.
+type Params struct {
+	// NIC is the physical network device (DHCP).
+	NIC string
+	// Bridge is the OVS uplink bridge device (DHCP).
+	Bridge string
+	// RouterIP is the OVN gateway router's LAN IP — the next hop for the
+	// VM supernet route. Empty disables the route.
+	RouterIP string
+	// Supernet covers all VM subnets (e.g. "10.100.0.0/16").
+	Supernet string
+	// Dom0LSW is qvm-dom0's per-domain LSW addresses (e.g.
+	// ["10.100.1.2/24"]). Each also yields the connected /24 route that
+	// gives guest→dom0 traffic a direct LSW path. Empty skips the file.
+	Dom0LSW []string
+}
+
+// files returns the .network drop-ins for the NIC, the OVS bridge, and
+// (when configured) the qvm-dom0 LSW join.
+func (m *Manager) files(p Params) map[string]string {
+	br := "[Match]\nName=" + p.Bridge + "\n\n[Network]\nDHCP=ipv4\n"
+	if p.RouterIP != "" && p.Supernet != "" {
+		br += "\n[Route]\nDestination=" + p.Supernet + "\nGateway=" + p.RouterIP + "\n"
 	}
+	out := map[string]string{
+		filePrefix + "nic.network": "[Match]\nName=" + p.NIC + "\n\n[Network]\nDHCP=ipv4\n",
+		filePrefix + "br-ex.network": br,
+	}
+	if len(p.Dom0LSW) > 0 {
+		var b strings.Builder
+		b.WriteString("[Match]\nName=" + Dom0LSWIf + "\n\n[Network]\n")
+		for _, a := range p.Dom0LSW {
+			b.WriteString("Address=" + a + "\n")
+		}
+		out[filePrefix+"dom0.network"] = b.String()
+	}
+	return out
 }
 
 // Ensure writes the drop-ins and reloads networkd, only touching files
 // that changed so a re-run is a no-op.
-func (m *Manager) Ensure(nic, br string) error {
+func (m *Manager) Ensure(p Params) error {
 	if err := os.MkdirAll(m.Dir, 0o755); err != nil { //nolint:gosec,G301
 		return fmt.Errorf("create %s: %w", m.Dir, err)
 	}
 	changed := false
-	for path, want := range m.files(nic, br) {
+	for path, want := range m.files(p) {
 		full := filepath.Join(m.Dir, path)
 		have, err := os.ReadFile(full) //nolint:gosec,G304
 		if err == nil && string(have) == want {
