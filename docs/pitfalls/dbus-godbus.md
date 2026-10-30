@@ -16,6 +16,15 @@
   export an introspectable object. You cannot verify method signatures via
   introspection — you must test with `busctl call` and read the type codes
   in the response.
+- **`AddMatchSignal` already prepends `type='signal'`.** Adding
+  `WithMatchOption("type", "signal")` too produces the rule
+  `type='signal',type='signal',interface=...`, which the systemd bus
+  daemon rejects as `Invalid match rule` — and if the caller swallows the
+  `AddMatch` error (as `SubscribeProgress` did), the subscription is dead
+  and every Progress signal is silently lost. Keep only the interface and
+  member options in the option list. Found live 2026-10-30: `qlvm template
+  create` (and the GUI) showed zero progress for minutes.
+  Verify with `busctl monitor --system` while the operation runs.
 - **D-Bus policy must allow `org.freedesktop.DBus.Peer.Ping`** on the
   destination service if the client uses it for liveness checks. The
   qlvm CLI calls `Peer.Ping` before every operation; without it in the

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
@@ -169,21 +170,25 @@ func (c *Client) SetAppWhitelist(vm string, names []string) error {
 // ProgressDone signals carry (id) and invoke the callback with an empty
 // message to indicate completion.
 func (c *Client) SubscribeProgress(callback func(id, message string)) func() {
+	// AddMatchSignalContext already prepends the type=signal option; adding it
+// again produces "type='signal',type='signal',...", which the systemd bus
+// daemon rejects as "Invalid match rule" (the rule never becomes active).
+// Only the interface and member options go here.
 	optsProgress := []dbus.MatchOption{
-		dbus.WithMatchOption("type", "signal"),
 		dbus.WithMatchInterface(Iface),
 		dbus.WithMatchMember("Progress"),
 	}
 	optsDone := []dbus.MatchOption{
-		dbus.WithMatchOption("type", "signal"),
 		dbus.WithMatchInterface(Iface),
 		dbus.WithMatchMember("ProgressDone"),
 	}
 	if err := c.bus.AddMatchSignal(optsProgress...); err != nil {
+		log.Printf("qlvm client: subscribe Progress: %v", err)
 		return func() {}
 	}
 	if err := c.bus.AddMatchSignal(optsDone...); err != nil {
 		_ = c.bus.RemoveMatchSignal(optsProgress...)
+		log.Printf("qlvm client: subscribe ProgressDone: %v", err)
 		return func() {}
 	}
 
