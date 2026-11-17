@@ -456,28 +456,33 @@ type SharedMount struct {
 	What  string
 }
 
-// MountUnitName derives the .mount unit basename (no suffix) for the i-th
-// SharedMount from its guest path, systemd-style: /var/lib/qlvm/data ->
-// var-lib-qlvm-data-0.
-func MountUnitName(m SharedMount, i int) string {
+// MountUnitName derives the .mount unit basename for the i-th SharedMount
+// from its guest path, systemd-style: /var/lib/qlvm/data ->
+// var-lib-qlvm-data. The name must equal systemd's unit name for the Where
+// path (unit_verify rejects a mismatch: "Where= setting doesn't match unit
+// name"), so no per-share index suffix.
+func MountUnitName(m SharedMount, _ int) string {
 	name := strings.TrimPrefix(m.Where, "/")
-	return strings.ReplaceAll(name, "/", "-") + "-" + strconv.Itoa(i)
+	return strings.ReplaceAll(name, "/", "-")
 }
 
 // SharedMountUnit renders the .mount unit for a SharedMount: 9p with
-// trans=virtio (the xen9pfsd backend), gated on the network (_netdev) since
-// the share is reachable only through the VM's own NIC.
+// trans=xen — the xen9pfsd backend speaks Xen's 9pfs protocol (evtchn +
+// grant-table rings, xen/interface/io/9pfs.h), which the guest's 9pnet_xen
+// frontend (alias xen:9pfs) resolves by the 9p tag in What; trans=virtio
+// would look for a /dev/9p node that xen9pfsd never creates. _netdev lives
+// in [Mount] (in [Unit] it is an unknown key, ignored).
 func SharedMountUnit(m SharedMount) string {
 	return "[Unit]\n" +
 		"Description=qlvm shared mount " + m.Where + "\n" +
-		"_netdev=true\n" +
 		"After=systemd-networkd.service\n" +
 		"\n" +
 		"[Mount]\n" +
 		"What=" + m.What + "\n" +
 		"Where=" + m.Where + "\n" +
 		"Type=9p\n" +
-		"Options=trans=virtio\n" +
+		"Options=trans=xen\n" +
+		"_netdev=true\n" +
 		"\n" +
 		"[Install]\n" +
 		"WantedBy=multi-user.target\n"
@@ -968,6 +973,15 @@ func BakeMounts(ctx context.Context, fs FS, diskPath, fstype string, mounts []Sh
 	}
 	systemdDir := filepath.Join(root.target, "ostree", "deploy", osid, "deploy", dep, "etc", "systemd", "system")
 	wants := filepath.Join(systemdDir, "multi-user.target.wants")
+	// Without the per-share index in the unit name, two shares on the same
+	// guest path would write the same unit file: fail fast instead.
+	seen := make(map[string]bool, len(mounts))
+	for i, m := range mounts {
+		if seen[m.Where] {
+			return fmt.Errorf("mount %d: duplicate guest path %s", i, m.Where)
+		}
+		seen[m.Where] = true
+	}
 	// root.target is a real loop-mount mountpoint: direct os use is
 	// intentional (no FS seam method for dirs/symlinks, as in BakeNetworkd).
 	if err := os.MkdirAll(wants, 0o750); err != nil {
