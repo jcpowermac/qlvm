@@ -456,33 +456,41 @@ type SharedMount struct {
 	What  string
 }
 
-// MountUnitName derives the .mount unit basename for the i-th SharedMount
-// from its guest path, systemd-style: /var/lib/qlvm/data ->
-// var-lib-qlvm-data. The name must equal systemd's unit name for the Where
-// path (unit_verify rejects a mismatch: "Where= setting doesn't match unit
-// name"), so no per-share index suffix.
+// MountUnitName derives the unit basename for the i-th SharedMount from its
+// guest path, systemd-style: /var/lib/qlvm/data -> var-lib-qlvm-data. No
+// per-share index suffix (it was a source of bugs). For a .service this need
+// not match systemd's path-unit name (that constraint only applied to the
+// old .mount), but the path-derived name is kept for readability.
 func MountUnitName(m SharedMount, _ int) string {
 	name := strings.TrimPrefix(m.Where, "/")
 	return strings.ReplaceAll(name, "/", "-")
 }
 
-// SharedMountUnit renders the .mount unit for a SharedMount: 9p with
-// trans=xen — the xen9pfsd backend speaks Xen's 9pfs protocol (evtchn +
-// grant-table rings, xen/interface/io/9pfs.h), which the guest's 9pnet_xen
-// frontend (alias xen:9pfs) resolves by the 9p tag in What; trans=virtio
-// would look for a /dev/9p node that xen9pfsd never creates. _netdev lives
-// in [Mount] (in [Unit] it is an unknown key, ignored).
-func SharedMountUnit(m SharedMount) string {
+// SharedMountService renders the retry-loop .service for a SharedMount. A
+// plain .mount unit races at boot: the writable /var is a separate generated
+// mount that may not be up yet, so systemd can't create the <Where>
+// mountpoint on the still-ro composefs root ("Read-only file system" / "mount
+// point does not exist"), and the xen-9pfs device unit stays "inactive
+// (dead)" so After= ordering on it is unreliable. A oneshot that retries
+// mkdir+mount handles both: it waits for /var to become writable (mkdir
+// succeeds) and for the 9p frontend to connect (mount succeeds). trans=xen —
+// the xen9pfsd backend speaks Xen's 9pfs protocol (evtchn + grant-table
+// rings, xen/interface/io/9pfs.h), which the guest's 9pnet_xen frontend
+// (alias xen:9pfs) resolves by the 9p tag in What; trans=virtio would look
+// for a /dev/9p node that xen9pfsd never creates.
+func SharedMountService(m SharedMount) string {
+	exec := "/bin/sh -c 'n=0; while [ \"$n\" -lt 60 ]; do if mkdir -p " + m.Where +
+		" 2>/dev/null && mount -t 9p -o trans=xen " + m.What + " " + m.Where +
+		" 2>/dev/null; then exit 0; fi; n=$((n+1)); sleep 1; done; echo \"qlvm 9p share " +
+		m.Where + " (tag " + m.What + ") did not come up\" >&2; exit 1'"
 	return "[Unit]\n" +
-		"Description=qlvm shared mount " + m.Where + "\n" +
-		"After=systemd-networkd.service\n" +
+		"Description=qlvm 9p share " + m.Where + " (tag " + m.What + ")\n" +
+		"After=local-fs.target\n" +
 		"\n" +
-		"[Mount]\n" +
-		"What=" + m.What + "\n" +
-		"Where=" + m.Where + "\n" +
-		"Type=9p\n" +
-		"Options=trans=xen\n" +
-		"_netdev=true\n" +
+		"[Service]\n" +
+		"Type=oneshot\n" +
+		"RemainAfterExit=yes\n" +
+		"ExecStart=" + exec + "\n" +
 		"\n" +
 		"[Install]\n" +
 		"WantedBy=multi-user.target\n"
@@ -935,8 +943,9 @@ func BakeControl(ctx context.Context, fs FS, diskPath, fstype, user, token strin
 	return os.Symlink("../qlvm-ctl.service", filepath.Join(wants, "qlvm-ctl.service"))
 }
 
-// BakeMounts bakes one per-share systemd .mount unit (plus its enablement
-// symlink) into the deployment /etc overlay of a template copy at diskPath:
+// BakeMounts bakes one per-share systemd retry-loop .service (plus its
+// enablement symlink) into the deployment /etc overlay of a template copy at
+// diskPath:
 // loop-attach, mount the root partition rw (via the FS mounter, fstype from
 // the wiring layer), write the units, umount, detach. The units are the
 // guest-side contract for the 9p shares DomainConfig exports.
@@ -988,8 +997,8 @@ func BakeMounts(ctx context.Context, fs FS, diskPath, fstype string, mounts []Sh
 		return err
 	}
 	for i, m := range mounts {
-		unit := MountUnitName(m, i) + ".mount"
-		if err := fs.WriteFile(filepath.Join(systemdDir, unit), []byte(SharedMountUnit(m)), 0o644); err != nil {
+		unit := MountUnitName(m, i) + ".service"
+		if err := fs.WriteFile(filepath.Join(systemdDir, unit), []byte(SharedMountService(m)), 0o644); err != nil {
 			return err
 		}
 		link := filepath.Join(wants, unit)

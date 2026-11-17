@@ -560,15 +560,22 @@ func TestBakeMountsReleasesBootPartition(t *testing.T) {
 	assertAllReleased(t, f, "/dev/loop3")
 }
 
-func TestSharedMountUnit(t *testing.T) {
-	want := "[Unit]\nDescription=qlvm shared mount /var/lib/qlvm/data\n"
-	want += "After=systemd-networkd.service\n\n[Mount]\nWhat=vm1-0\nWhere=/var/lib/qlvm/data\n"
-	want += "Type=9p\nOptions=trans=xen\n_netdev=true\n\n[Install]\nWantedBy=multi-user.target\n"
+func TestSharedMountService(t *testing.T) {
+	want := `[Unit]
+Description=qlvm 9p share /var/lib/qlvm/data (tag vm1-0)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'n=0; while [ "$n" -lt 60 ]; do if mkdir -p /var/lib/qlvm/data 2>/dev/null && mount -t 9p -o trans=xen vm1-0 /var/lib/qlvm/data 2>/dev/null; then exit 0; fi; n=$((n+1)); sleep 1; done; echo "qlvm 9p share /var/lib/qlvm/data (tag vm1-0) did not come up" >&2; exit 1'
+
+[Install]
+WantedBy=multi-user.target
+`
 	assert.Equal(t, want,
-		SharedMountUnit(SharedMount{Where: "/var/lib/qlvm/data", What: "vm1-0"}),
-		"9p unit: 9p type with trans=xen (xen9pfsd), tag in What, guest path in Where")
-	// The unit name must match systemd's name for the Where path, or
-	// unit_verify rejects the unit ("Where= doesn't match unit name").
+		SharedMountService(SharedMount{Where: "/var/lib/qlvm/data", What: "vm1-0"}),
+		"9p service: oneshot retry loop, trans=xen (xen9pfsd), tag + path in ExecStart")
 	assert.Equal(t, "var-lib-qlvm-data", MountUnitName(SharedMount{Where: "/var/lib/qlvm/data"}, 0))
 	assert.Equal(t, "data", MountUnitName(SharedMount{Where: "/data"}, 1))
 }
@@ -596,14 +603,14 @@ func TestBakeMounts(t *testing.T) {
 	require.NoError(t, BakeMounts(context.Background(), f, disk, "xfs", mounts))
 
 	require.Len(t, f.wrote, 2)
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/var-lib-qlvm-data.mount", f.wrote[0].path)
-	assert.Equal(t, SharedMountUnit(mounts[0]), string(f.wrote[0].data))
-	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/projects.mount", f.wrote[1].path)
-	assert.Equal(t, SharedMountUnit(mounts[1]), string(f.wrote[1].data))
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/var-lib-qlvm-data.service", f.wrote[0].path)
+	assert.Equal(t, SharedMountService(mounts[0]), string(f.wrote[0].data))
+	assert.Equal(t, "r/ostree/deploy/os1/deploy/def456.0/etc/systemd/system/projects.service", f.wrote[1].path)
+	assert.Equal(t, SharedMountService(mounts[1]), string(f.wrote[1].data))
 
 	wantLinks := map[string]string{
-		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/var-lib-qlvm-data.mount": "/etc/systemd/system/var-lib-qlvm-data.mount",
-		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/projects.mount":         "/etc/systemd/system/projects.mount",
+		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/var-lib-qlvm-data.service": "/etc/systemd/system/var-lib-qlvm-data.service",
+		"ostree/deploy/os1/deploy/def456.0/etc/systemd/system/multi-user.target.wants/projects.service":          "/etc/systemd/system/projects.service",
 	}
 	for path, want := range wantLinks {
 		var saw bool

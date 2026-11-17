@@ -103,7 +103,9 @@ func (f *recBakeFS) WriteFile(p string, data []byte, _ os.FileMode) error {
 	switch {
 	case strings.HasSuffix(p, "10-bolt.network"):
 		*f.events = append(*f.events, "bake:"+string(data))
-	case strings.HasSuffix(p, ".mount"):
+	case strings.HasSuffix(p, ".service") && strings.Contains(string(data), "trans=xen"):
+		// 9p share retry-loop service (has trans=xen in ExecStart); excludes
+		// qlvm-ctl.service, which is the waypipe control listener, not a share.
 		*f.events = append(*f.events, "mountbake:"+path.Base(p)+":"+string(data))
 	}
 	return nil
@@ -296,15 +298,15 @@ func TestCreateHappyPath(t *testing.T) {
 		var unit0, unit1 bool
 		for _, e := range events {
 			switch {
-			case strings.HasPrefix(e, "mountbake:data-0.mount:"):
-				require.Contains(t, e, "What=vm1-0", "unit 0 must carry the unique 9p tag")
-				require.Contains(t, e, "Where=/data", "relative guest path mounts at /<guest>")
-				require.Contains(t, e, "Type=9p")
+			case strings.HasPrefix(e, "mountbake:data.service:"):
+				require.Contains(t, e, "trans=xen vm1-0 /data", "unit 0 must carry the unique 9p tag + path in the mount command")
+				require.Contains(t, e, "mkdir -p /data", "relative guest path mounts at /<guest>")
+				require.Contains(t, e, "-t 9p", "9p filesystem type")
 				require.Contains(t, e, "WantedBy=multi-user.target")
 				unit0 = true
-			case strings.HasPrefix(e, "mountbake:var-lib-qlvm-projects-1.mount:"):
-				require.Contains(t, e, "What=vm1-1", "unit 1 must carry the unique 9p tag")
-				require.Contains(t, e, "Where=/var/lib/qlvm/projects", "absolute guest path used verbatim")
+			case strings.HasPrefix(e, "mountbake:var-lib-qlvm-projects.service:"):
+				require.Contains(t, e, "trans=xen vm1-1 /var/lib/qlvm/projects", "unit 1 must carry the unique 9p tag + path")
+				require.Contains(t, e, "/var/lib/qlvm/projects", "absolute guest path used verbatim")
 				unit1 = true
 			}
 		}
