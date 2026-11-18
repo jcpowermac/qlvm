@@ -141,18 +141,40 @@ item and recovers automatically.
 tcp|vsock` modes are a follow-up). The user unit is installed from the repo via
 `install-system-files`, not from the ostree recipe.
 
-## Shared mounts
+## Shared mounts (9p)
 
-`vm create --mount host:guest` exports `host` into the guest as a 9p share (Xen
-`xen9pfsd`, `security_model=none`). Each share gets a unique 9p tag
-`<vm>-<i>` (0-based in `--mount` order). At create time qlvm bakes one
-systemd unit per share into the VM disk's deployment `/etc` overlay — named
-after the guest path with `/` runs collapsed and a `-<i>` suffix, e.g.
-`etc/systemd/system/var-lib-qlvm-data-0.mount` — with `Type=9p`,
-`Options=trans=virtio`, `What=<tag>`, `Where=<guest path>` (a relative
-guest path is mounted at `/<guest>`), `_netdev`, and an enabling symlink in
-`multi-user.target.wants`, so the share is mounted at boot by systemd. There
-is no kernel-cmdline mechanism involved.
+`vm create --mount host:guest` exports `host` into the guest as a 9p share
+(Xen `xen9pfsd` backend, `security_model=none`). Each share gets a unique 9p
+tag `<vm>-<i>`: on ostree VMs `--mount` shares are 0-based; on agent VMs the
+pi home (below) takes `<vm>-0` and `--mount` shares continue at `<vm>-1`.
+
+Guests mount with `trans=xen`, not `trans=virtio`: the `xen9pfsd` backend
+speaks Xen's 9pfs protocol (evtchn + grant-table rings), which the guest's
+`9pnet_xen` frontend resolves by the 9p tag in `What`. `trans=virtio` would
+look for a `/dev/9p` node that `xen9pfsd` never creates.
+
+How a share is mounted at boot differs by VM type:
+
+- **Ostree VMs (systemd)** — qlvm bakes one oneshot `.service` per share into
+  the deployment `/etc` overlay. A plain `Type=9p` `.mount` unit races at
+  boot (the writable `/var` overlay may not be up yet, so the mountpoint can't
+  be created on the still-ro composefs root, and the 9p device unit stays
+  `inactive (dead)`), so the service runs a retry loop —
+  `mkdir -p <where> && mount -t 9p -o trans=xen <tag> <where>` up to 60 times
+  — until `/var` is writable and the 9p frontend has connected.
+- **Agent VMs (busybox init, no systemd)** — each share is passed on the
+  kernel cmdline as `qlvm.mount=<tag>=<guest path>`; the guest init reads
+  these and mounts each with the same retry loop. No systemd unit is involved.
+
+### Agent VM pi home
+
+An agent VM's pi `$HOME` is always present as the index-0 share: guest path
+`/var/data`, backed by an isolated per-VM dom0 directory
+`/var/lib/qlvm/9p/<name>/data`. The dom0 side is created at VM create and
+chowned to the pi agent uid (1000): the `xen9pfsd` backend runs as root and
+attributes guest writes to the share root's owner, so the guest `piagent`
+(same uid) can create files. Each agent VM gets its own home, so multiple
+agent VMs run side by side without sharing config/secrets/workspace.
 
 ## Configuration
 
