@@ -339,6 +339,28 @@ func newUUID() string {
 // createAgentVM prepares an agent VM: copies kernel/initramfs from the
 // template dir (per-VM state), saves meta. No disk reflink, no networkd
 // bake, no control token bake (agent VMs use console, not ssh).
+// piAgentUID is the uid of the pi agent inside the guest (pi-in-xen
+// piagent) and, under 9p security_model=none, must match the dom0 user's uid
+// so share files round-trip to the same owner. The 9p daemon runs as root and
+// attributes guest writes to the share root's owner, so provisionAgentHomeHost
+// chowns the share root here.
+const piAgentUID = 1000
+
+// provisionAgentHomeHost creates the isolated per-VM dom0 share dir that
+// backs an agent VM's pi home and chowns it to piAgentUID, so the 9p daemon
+// (running as root) attributes guest writes to piagent and the guest piagent
+// (same uid) can create files. Returns the host path.
+func provisionAgentHomeHost(name string) (string, error) {
+	host := agentHomeHost(name)
+	if err := os.MkdirAll(host, 0o755); err != nil {
+		return host, err
+	}
+	if err := os.Chown(host, piAgentUID, piAgentUID); err != nil {
+		return host, err
+	}
+	return host, nil
+}
+
 func createAgentVM(_ context.Context, d CreateDeps, spec Spec, vmDir, ip, mac string, memory, vcpus int, cores []int, fail func(error) (*Meta, error)) (*Meta, error) {
 	// Copy kernel/initramfs from template to VM dir (per-VM state)
 	if err := copyFile(filepath.Join(d.Tpl.Dir, "vmlinuz"), filepath.Join(vmDir, "vmlinuz")); err != nil {
@@ -357,6 +379,11 @@ func createAgentVM(_ context.Context, d CreateDeps, spec Spec, vmDir, ip, mac st
 			return fail(fmt.Errorf("create workspace disk: %w", err))
 		}
 	}
+	// The pi home is an isolated 9p share (dom0 side pre-created here; the
+	// guest mounts it at /var/data via the busybox init retry loop).
+	if _, err := provisionAgentHomeHost(spec.Name); err != nil {
+		return fail(fmt.Errorf("provision 9p pi home: %w", err))
+	}
 	m := &Meta{
 		Name:            spec.Name,
 		Type:            "agent",
@@ -373,6 +400,7 @@ func createAgentVM(_ context.Context, d CreateDeps, spec Spec, vmDir, ip, mac st
 		Cores:           cores,
 	}
 	if err := m.Save(vmDir); err != nil {
+		_ = os.RemoveAll(agentHomeHost(spec.Name))
 		return fail(fmt.Errorf("save meta: %w", err))
 	}
 	return m, nil

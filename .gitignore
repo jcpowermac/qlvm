@@ -4,3 +4,4 @@ bin/
 qlvm
 qlvm-agent
 qlvm-vif
+.pi/
