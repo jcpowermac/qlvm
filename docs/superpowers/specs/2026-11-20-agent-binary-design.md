@@ -18,7 +18,7 @@ The existing three VM types stay: **persistent** (pet), **agent** (cattle),
 ## Goals
 
 - A new standalone binary `agent` on the user's PATH. Full surface:
-  `agent [name]`. Nothing else.
+  `agent [name] [-m host[:guest]]...`. No subcommands.
 - Launch = create + config-inject + start + attach, in one foreground
   process. The VM's lifetime is scoped to the command.
 - No per-VM pi config state: auth/model/settings are injected from a
@@ -28,6 +28,8 @@ The existing three VM types stay: **persistent** (pet), **agent** (cattle),
   at a predictable dom0 path, keyed by VM name.
 - `qlvm vm list` / `stop` / `delete` remain the fleet-management surface;
   `agent` does not grow subcommands.
+- Data mounts are first-class launch inputs (`-m`), stateless: nothing is
+  stored per VM, not even for named ones.
 
 ## Non-goals
 
@@ -42,7 +44,7 @@ The existing three VM types stay: **persistent** (pet), **agent** (cattle),
 ### 1. Binary surface
 
 ```
-agent [name]
+agent [name] [-m host[:guest]]...
 ```
 
 - `name` optional. If given and a VM of that name exists (any state), the
@@ -91,7 +93,25 @@ agent [name]
 - Core placement: whatever `qlvm vm create` does today for agent-type
   VMs (auto E-core placement), no new behavior.
 
-### 4. Implementation shape
+### 4. Data mounts (`-m`)
+
+```
+agent -m ~/repos/pi-in-xen                      # guest path = host path
+agent foo -m ~/docs:/data/docs -m ~/repos/pi-in-xen
+```
+
+- `-m host[:guest]`, repeatable. Maps to the existing `--mount` plumbing
+  (free-form 9p shares at share index 1+; the pi home at `/var/data`
+  stays index 0). Omitted guest path defaults to the same path inside the
+  VM (docker `-v` convention).
+- **Stateless**: mounts are inputs to the run. A relaunch of the same name
+  re-prompted for nothing — you pass them again (or shell-alias the
+  recurring set). They are recorded only in the VM's meta for the life of
+  that domain, like today's `--mount`, never in the host config dir.
+- Inherited `--mount` semantics stand: create-time only, rw, no cross-VM
+  locking (documented in the qlvm README).
+
+### 5. Implementation shape
 
 - New main package `cmd/agent` in the qlvm repo (alongside `cmd/qlvm`,
   `cmd/qlvm-agent`). Thin: it reuses the existing user-side client that
@@ -117,7 +137,9 @@ agent [name]
    names? (Restart-from-1 assumed.)
 2. Reuse-on-existing: launching `agent foo` when `foo` exists in a
    **running** state just attaches (no config re-inject, since the VM is
-   already up). Acceptable? (Assumed yes.)
+   already up). Acceptable? (Assumed yes.) If the stopped existing VM has
+   *different* mounts than the ones passed now, v1 just reuses the
+   existing VM as-is (mounts are create-time); a mismatch is a warning.
 3. Should `agent` refuse to launch when `~/.qlvm/agent/` is missing, or
    warn-and-continue (VM boots to the `/login` warning screen)? (Assumed:
    warn-and-continue.)
