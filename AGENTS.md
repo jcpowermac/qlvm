@@ -2,8 +2,25 @@
 
 Go toolset for managing Xen app/disposable VMs from an ostree Fedora dom0:
 `qlvm` (CLI, D-Bus client), `qlvm-agent` (root daemon, D-Bus server),
-`qlvm-gui` (Fyne GUI, D-Bus client), `qlvm-vif` (Xen vif hotplug script).
+`qlvm-gui` (Fyne GUI, D-Bus client), `qlvm-vif` (Xen vif hotplug script),
+`agent` (one-shot agent-VM launcher: create + inject config + start + attach).
 Usage: `README.md`. Original rewrite brief: `rewrite-golang.md`.
+
+## The `agent` launcher and dom0 config
+
+- `agent` (`/usr/local/bin/agent`; source `cmd/agent`, built in the
+  `.worktrees/agent-binary` worktree) is a one-shot agent-VM launcher:
+  create + inject config + start + attach, auto-named `agent-N`. It is a D-Bus
+  client to `qlvm-agent`, **but it loads `/etc/qlvm/qlvm.yaml` itself** on each
+  invocation and passes `agent.template` to `CreateVM` (the daemon requires the
+  template — `opts.Template` must be non-empty). So editing the config takes
+  effect on the next `agent` run; no daemon restart needed. `-m host[:guest]`
+  adds a 9p share.
+- `/etc/qlvm/qlvm.yaml` is the dom0 config (root-owned). Its `agent:` block sets
+  `template`, `memory_mb`, `vcpus` for the `agent` launcher.
+- **Templates are root-owned** (`/var/lib/qlvm/templates` is `root:root`):
+  `qlvm template create` must run with `sudo`.
+- Consumer example (pi-in-xen agent VM): `../pi-in-xen/AGENTS.md`.
 
 ## Hard constraints
 
