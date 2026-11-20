@@ -166,6 +166,27 @@ How a share is mounted at boot differs by VM type:
   kernel cmdline as `qlvm.mount=<tag>=<guest path>`; the guest init reads
   these and mounts each with the same retry loop. No systemd unit is involved.
 
+### Presenting data to a VM (docs, repos, ...)
+
+`--mount host:guest` is how you present arbitrary dom0 data to a VM —
+documentation trees, git repos, anything. `host` is any existing dom0
+directory (a repo working copy, a doc tree, a NAS mount — qlvm just exports
+it, it never copies); `guest` is where it appears inside the VM.
+
+```sh
+# agent VM with its docs and a repo presented in the pi home
+qlvm vm create worker --type agent --template pi-in-xen \
+  --mount /srv/docs:/var/data/docs \
+  --mount /srv/repos/myproj:/var/data/repos/myproj
+```
+
+The shares are read-write (the pi agent can commit/push from them with its
+dom0-visible credentials) and visible from dom0 at the `host` path. Limitation:
+mounts are fixed at `vm create` (recorded in `meta.yaml` and wired into the
+guest's boot path); to change the set, recreate the VM. To share one host
+directory between two VMs, point both at it — note there is no cross-VM
+locking, so concurrent writes to the same files can conflict.
+
 ### Agent VM pi home
 
 An agent VM's pi `$HOME` is always present as the index-0 share: guest path
